@@ -1,0 +1,712 @@
+"use client";
+
+import { useState, useEffect, useRef, useMemo } from "react";
+import { fetchAllSectionsDB } from "@/app/actions/academic-core";
+import { useAppState } from "@/lib/state-context";
+import { getSession } from "@/app/actions/auth";
+import { Progress } from "@/components/ui/progress";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Users, UserCheck, Wallet, TrendingUp, TrendingDown, ArrowUpRight,
+  CreditCard, BookOpen, GraduationCap, Megaphone, Sparkles,
+  ClipboardList, CheckCircle2, CalendarCheck, BarChart3, Clock, XCircle, FileText,
+  Plus, Bell, Upload, AlertTriangle, ChevronRight, UserPlus, Activity, Library, Building2,
+  Download, CalendarDays, MessageSquare, Star, PartyPopper,
+} from "lucide-react";
+import Link from "next/link";
+import {
+  ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar,
+  AreaChart, Area,
+} from "recharts";
+import {
+  fetchUsersDB, fetchAnnouncementsDB, fetchTimetableDB,
+  fetchLeaveRequestsDB, fetchLibraryBooksDB, fetchBookIssuesDB,
+  fetchAssignmentsDB, fetchSubmissionsDB,
+  type Announcement, type Assignment, type AssignmentSubmission,
+} from "@/app/actions/features";
+import {
+  fetchAcademicYearsDB, fetchClassesDB, fetchEnrollmentsDB,
+  fetchReportCardsDB, fetchStudentTermResultsDB, fetchTermExamsDB,
+} from "@/app/actions/academic-core";
+import { useLanguage } from "@/hooks/use-language";
+
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+// ── Animated Counter ───────────────────────────────────────────────────────
+function AnimatedCounter({ value, suffix = "", duration = 800 }: { value: number; suffix?: string; duration?: number }) {
+  const [display, setDisplay] = useState(0);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    let start = 0;
+    const step = Math.ceil(value / (duration / 16)) || 1;
+    const timer = setInterval(() => {
+      start += step;
+      if (start >= value) { setDisplay(value); clearInterval(timer); }
+      else setDisplay(start);
+    }, 16);
+    return () => clearInterval(timer);
+  }, [value, duration]);
+
+  return <span ref={ref}>{display.toLocaleString()}{suffix}</span>;
+}
+
+// ── Soft KPI Card (Neo Soft UI style) ───────────────────────────────────────
+function KpiCard({ label, value, sub, trend, icon: Icon, iconColor = "text-primary", valueColor, href }: {
+  label: string; value: React.ReactNode; sub?: string; trend?: "up" | "down";
+  icon: React.ElementType; iconColor?: string; valueColor?: string; href?: string;
+}) {
+  const inner = (
+    <div className="soft-card p-5 h-full">
+      <div className="flex items-start justify-between mb-3">
+        <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{label}</p>
+        <div className="h-9 w-9 rounded-full bg-muted flex items-center justify-center shrink-0">
+          <Icon className="h-4 w-4 text-muted-foreground" />
+        </div>
+      </div>
+      <div className="flex items-end gap-2">
+        <h3 className={`text-[28px] font-bold leading-none ${valueColor || "text-foreground"}`}>{value}</h3>
+      </div>
+      {sub && (
+        <p className={`text-[11px] mt-2 font-medium flex items-center gap-1 ${
+          trend === "up" ? "text-warning" : trend === "down" ? "text-destructive" : "text-muted-foreground"
+        }`}>
+          {trend === "up" && <TrendingUp className="h-3 w-3" />}
+          {trend === "down" && <TrendingDown className="h-3 w-3" />}
+          {sub}
+        </p>
+      )}
+    </div>
+  );
+  return href ? <Link href={href}>{inner}</Link> : inner;
+}
+
+function SoftCard({ title, action, children, className = "" }: { title?: string; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`soft-card p-5 ${className}`}>
+      {title && (
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-[15px] font-semibold text-foreground">{title}</h3>
+          {action}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+const quickActions = [
+  { label: "Add Student", href: "/students", color: "from-[#2563EB] to-[#3B82F6]", icon: UserPlus },
+  { label: "Attendance", href: "/attendance", color: "from-[#06B6D4] to-[#22D3EE]", icon: CalendarCheck },
+  { label: "Fee Voucher", href: "/fees", color: "from-[#22C55E] to-[#4ADE80]", icon: CreditCard },
+  { label: "Generate Result", href: "/exams/manage", color: "from-[#F59E0B] to-[#FBBF24]", icon: FileText },
+  { label: "Add Teacher", href: "/teachers", color: "from-[#8B5CF6] to-[#A78BFA]", icon: UserCheck },
+];
+
+function SkeletonCard() {
+  return <div className="soft-card p-5"><div className="skeleton h-8 w-8 rounded-full mb-4 ml-auto" /><div className="skeleton h-3 w-20 mb-2" /><div className="skeleton h-7 w-28 mb-2" /><div className="skeleton h-3 w-16" /></div>;
+}
+
+const fmtToday = () => new Date().toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+const todayISO = () => new Date().toISOString().split("T")[0];
+
+// ── Main Dashboard ──────────────────────────────────────────────────────────
+export default function DashboardPage() {
+  const { t } = useLanguage();
+  const { activeRole, students, feeRecords, attendance, exams, classes, subjects, schoolInfo, applications, notifications } = useAppState();
+  const [sessionRole, setSessionRole] = useState<string | null>(null);
+  const [sessionName, setSessionName] = useState<string | null>(null);
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+  const [users, setUsers] = useState<any[]>([]);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [timetable, setTimetable] = useState<any[]>([]);
+  const [academicYearName, setAcademicYearName] = useState("");
+  const [leaveRequests, setLeaveRequests] = useState<any[]>([]);
+  const [libraryBooks, setLibraryBooks] = useState<any[]>([]);
+  const [bookIssues, setBookIssues] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [studentResults, setStudentResults] = useState<any[]>([]);
+  const [wardStudents, setWardStudents] = useState<any[]>([]);
+  const [selectedWardId, setSelectedWardId] = useState<string | null>(null);
+  const [myAssignments, setMyAssignments] = useState<Assignment[]>([]);
+  const [recentSubmissions, setRecentSubmissions] = useState<(AssignmentSubmission & { assignmentTitle: string })[]>([]);
+  const [toGradeCount, setToGradeCount] = useState(0);
+  const [myUpcomingExams, setMyUpcomingExams] = useState<any[]>([]);
+
+  useEffect(() => {
+    getSession().then(s => {
+      setSessionRole(s?.role ?? null);
+      setSessionEmail(s?.email ?? null);
+      setSessionName(s?.name ?? null);
+    });
+  }, []);
+
+  const myStudent = useMemo(() => students.find(s => s.email === sessionEmail && s.status === "Active"), [students, sessionEmail]);
+
+  useEffect(() => {
+    if (!sessionRole || !sessionEmail) return;
+    if (sessionRole === "STUDENT" && myStudent) {
+      fetchStudentTermResultsDB(myStudent.id).then(setStudentResults);
+      fetchAssignmentsDB(myStudent.class).then(setMyAssignments);
+      // "Upcoming Exams" needs the real relational TermExam data (scoped to the
+      // student's own class), not the unused legacy `exams` demo array.
+      fetchEnrollmentsDB(undefined, undefined, myStudent.id).then(enrollments => {
+        const mine = enrollments[0];
+        if (!mine) return;
+        fetchTermExamsDB(mine.academicYearId, mine.classId).then(examList => {
+          const today = todayISO();
+          const upcoming = examList
+            .filter((e: any) => e.startDate >= today)
+            .sort((a: any, b: any) => a.startDate.localeCompare(b.startDate));
+          setMyUpcomingExams(upcoming.slice(0, 4));
+        });
+      });
+    } else if (sessionRole === "PARENT") {
+      const wards = students.filter(s => s.parentEmail === sessionEmail && s.status === "Active");
+      setWardStudents(wards);
+      if (wards.length > 0) {
+        setSelectedWardId(prev => prev ?? wards[0].id);
+        Promise.all(wards.map(w => fetchStudentTermResultsDB(w.id))).then(results => {
+          setStudentResults(results.flat());
+        });
+      }
+    } else if (sessionRole === "TEACHER" && sessionName) {
+      fetchAssignmentsDB(undefined, sessionName).then(async (list) => {
+        setMyAssignments(list);
+        const recent = list.slice(0, 6);
+        const subsByAssignment = await Promise.all(recent.map(a => fetchSubmissionsDB(a.id)));
+        const flat = subsByAssignment.flatMap((subs, i) => subs.map(s => ({ ...s, assignmentTitle: recent[i].title })));
+        flat.sort((a, b) => (b.submittedAt || "").localeCompare(a.submittedAt || ""));
+        setRecentSubmissions(flat.slice(0, 5));
+        setToGradeCount(flat.filter(s => !s.grade).length);
+      });
+    }
+  }, [sessionRole, sessionEmail, sessionName, students, myStudent]);
+
+  useEffect(() => {
+    Promise.all([
+      fetchUsersDB(),
+      fetchAnnouncementsDB(),
+      fetchTimetableDB(),
+      fetchAcademicYearsDB(),
+      fetchLeaveRequestsDB(),
+      fetchLibraryBooksDB(),
+      fetchBookIssuesDB(),
+    ]).then(([u, a, t, yrs, leaves, books, issues]) => {
+      setUsers(u as any[]);
+      setAnnouncements(a);
+      setTimetable(t);
+      setLeaveRequests(leaves);
+      setLibraryBooks(books);
+      setBookIssues(issues);
+      const active = yrs.find((y: any) => y.isActive) || yrs[0];
+      if (active) {
+        setAcademicYearName(active.name);
+        fetchClassesDB(active.id).then(cls => {
+          if (cls.length) fetchEnrollmentsDB(active.id, cls[0].id);
+        });
+      }
+      setLoading(false);
+    });
+  }, []);
+
+  const teachers = users.filter(u => u.role === "TEACHER");
+  const totalStudents = students.length;
+  const activeStudents = students.filter(s => s.status === "Active").length;
+  const todayAtt = attendance.filter(a => a.date === todayISO());
+  const presentCount = todayAtt.filter(a => a.status === "Present").length;
+  const attPct = todayAtt.length > 0 ? Math.round((presentCount / todayAtt.length) * 100) : 0;
+  const totalFees = feeRecords.reduce((s, f) => s + f.amount, 0);
+  const paidFees = feeRecords.filter(f => f.status === "Paid").reduce((s, f) => s + f.amount, 0);
+  const pendingFeesCount = feeRecords.filter(f => f.status === "Unpaid").length;
+  const pendingApps = applications.filter(a => a.status === "Pending" || a.status === "Under Review");
+
+  const studentTrend = students.length > 0 ? Math.round((activeStudents / students.length) * 100) : 0;
+  const lastMonthFees = feeRecords.filter(f => f.month === "May").reduce((s, f) => s + f.amount, 0);
+  const currentMonthFees = feeRecords.filter(f => f.month === "June").reduce((s, f) => s + f.amount, 0);
+  const feeTrend = lastMonthFees > 0 ? Math.round(((currentMonthFees - lastMonthFees) / lastMonthFees) * 100) : 0;
+  const activeLeaves = leaveRequests.filter((l: any) => l.status === "Approved");
+  const pendingLeaves = leaveRequests.filter((l: any) => l.status === "Pending");
+  const recentNotifs = notifications.slice(0, 3);
+
+  const totalClasses = classes.length;
+  const [totalSections, setTotalSections] = useState(0);
+  useEffect(() => { fetchAllSectionsDB().then(s => setTotalSections(s.length)); }, []);
+
+  const totalBooks = libraryBooks.length;
+  const totalIssues = bookIssues.length;
+  const pendingReturns = bookIssues.filter((i: any) => i.status === "Issued").length;
+  const todayTimetable = timetable.filter(t => t.dayOfWeek === DAY_NAMES[new Date().getDay()]);
+  const myTodayTimetable = todayTimetable.filter(t => t.teacherName === sessionName);
+  const recentExams = exams.slice(0, 4);
+
+  // Enrollment trend (last 6 months, from admission applications)
+  const enrollmentTrend = useMemo(() => {
+    const now = new Date();
+    const months: { key: string; label: string }[] = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({ key: `${d.getFullYear()}-${d.getMonth()}`, label: d.toLocaleDateString("en-US", { month: "short" }) });
+    }
+    return months.map(m => {
+      const count = applications.filter(a => {
+        const d = new Date(a.submittedAt);
+        return `${d.getFullYear()}-${d.getMonth()}` === m.key;
+      }).length;
+      return { month: m.label, applications: count };
+    });
+  }, [applications]);
+
+  const selectedWard = wardStudents.find(w => w.id === selectedWardId) || wardStudents[0];
+  const wardResults = studentResults.filter((r: any) => r.studentId === selectedWard?.id);
+  const wardFees = feeRecords.filter(f => f.studentId === selectedWard?.id);
+  const wardPendingFees = wardFees.filter(f => f.status !== "Paid").reduce((s, f) => s + (f.amount - (f.amountPaid || 0)), 0);
+  const wardAttendance = attendance.filter(a => a.studentId === selectedWard?.id);
+  const wardAttPct = wardAttendance.length > 0 ? Math.round((wardAttendance.filter(a => a.status === "Present").length / wardAttendance.length) * 100) : 0;
+  const wardAvgPct = wardResults.length > 0 ? Math.round(wardResults.reduce((s: number, r: any) => s + (r.percentage || 0), 0) / wardResults.length) : 0;
+
+  const myAttendance = myStudent ? attendance.filter(a => a.studentId === myStudent.id) : [];
+  const myAttPct = myAttendance.length > 0 ? Math.round((myAttendance.filter(a => a.status === "Present").length / myAttendance.length) * 100) : 0;
+  const myAvgPct = studentResults.length > 0 ? Math.round(studentResults.reduce((s: number, r: any) => s + (r.percentage || 0), 0) / studentResults.length) : 0;
+  const myGpa = (myAvgPct / 100 * 4).toFixed(1);
+  const myPendingHomework = myAssignments.filter(a => new Date(a.dueDate) >= new Date()).length;
+  const myBookIssues = bookIssues.filter((b: any) => b.studentId === myStudent?.id && b.status !== "Returned");
+  const myFeeRecords = feeRecords.filter(f => f.studentId === myStudent?.id);
+  const myPendingFees = myFeeRecords.filter(f => f.status !== "Paid").reduce((s, f) => s + Math.max(0, f.amount - (f.discount || 0) - (f.amountPaid || 0)), 0);
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="skeleton h-8 w-64 mb-2 rounded-lg" />
+        <div className="skeleton h-4 w-96 mb-6 rounded-lg" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map(i => <SkeletonCard key={i} />)}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2"><SkeletonCard /></div>
+          <div><SkeletonCard /></div>
+        </div>
+      </div>
+    );
+  }
+
+  // ══════════════════════════════ STUDENT ═══════════════════════════════════
+  if (sessionRole === "STUDENT") {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="dashboard-heading">{t("dash.myAcademicProfile")}</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              {myStudent?.class || "—"} · Section {myStudent?.section || "—"}
+            </p>
+          </div>
+          <Link href="/results">
+            <Button size="sm" variant="outline" className="h-9 text-xs font-semibold rounded-xl">
+              <Download className="h-3.5 w-3.5 mr-1.5" /> {t("dash.transcript")}
+            </Button>
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          <KpiCard label={t("parent.attendance")} value={`${myAttPct}%`} sub={t("dash.overall")} trend="up" icon={CalendarCheck} iconColor="text-primary" />
+          <KpiCard label={t("dash.currentGpa")} value={<>{myGpa}<span className="text-sm text-muted-foreground"> / 4.0</span></>} sub={`${t("dash.avgScore")} ${myAvgPct}%`} icon={GraduationCap} iconColor="text-info" />
+          <KpiCard label={t("dash.pendingHomework")} value={myPendingHomework} sub={myPendingHomework > 0 ? t("dash.dueSoon") : t("dash.allCaughtUp")} icon={AlertTriangle} iconColor="text-warning" trend={myPendingHomework > 0 ? "down" : undefined} />
+          <KpiCard label={t("dash.libraryBooks")} value={myBookIssues.length} sub={t("dash.currentlyIssued")} icon={Library} iconColor="text-success" href="/library" />
+          <KpiCard label={t("dash.pendingFees")} value={`Rs.${myPendingFees.toLocaleString()}`} valueColor={myPendingFees > 0 ? "text-destructive" : undefined} sub={myPendingFees > 0 ? t("dash.dueSoon") : t("dash.allPaid")} trend={myPendingFees > 0 ? "down" : undefined} icon={CreditCard} iconColor="text-warning" href="/fees" />
+        </div>
+
+        {studentResults.length > 0 && (
+          <SoftCard title={t("dash.myRecentResults")} action={<Link href="/results" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">{t("dash.viewAll")} <ChevronRight className="h-3 w-3" /></Link>}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {studentResults.slice(0, 6).map((r: any) => {
+                const pct = r.percentage ?? 0;
+                const passed = pct >= 40;
+                return (
+                  <div key={r.id} className={`rounded-2xl border p-4 ${passed ? "border-success/20 bg-success/5" : "border-destructive/20 bg-destructive/5"}`}>
+                    <div className="flex items-start justify-between mb-2">
+                      <div>
+                        <p className="text-xs font-bold text-foreground">{r.examName}</p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">{r.examType || t("dash.termExam")}</p>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${passed ? "bg-success/15 text-success" : "bg-destructive/15 text-destructive"}`}>{passed ? t("dash.pass") : t("dash.fail")}</span>
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <span className="text-2xl font-black text-foreground">{pct.toFixed(0)}<span className="text-sm">%</span></span>
+                      <span className="text-xs font-bold mb-0.5 text-muted-foreground">{r.grade || "-"}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </SoftCard>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <SoftCard title={t("dash.announcements")} className="lg:col-span-2" action={<Link href="/announcements" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">{t("dash.viewAll")} <ChevronRight className="h-3 w-3" /></Link>}>
+            <div className="space-y-2">
+              {announcements.slice(0, 4).map(a => (
+                <div key={a.id} className="p-3 rounded-2xl hover:bg-secondary/50 transition-colors">
+                  <p className="text-xs font-semibold text-foreground">{a.title}</p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1">{a.content}</p>
+                </div>
+              ))}
+              {announcements.length === 0 && <p className="text-xs text-muted-foreground text-center py-6">{t("dash.noAnnouncementsYet")}</p>}
+            </div>
+          </SoftCard>
+          <SoftCard title={t("dash.upcomingExams")} action={<Link href="/exams" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">{t("dash.viewAll")} <ChevronRight className="h-3 w-3" /></Link>}>
+            <div className="space-y-2">
+              {myUpcomingExams.map((exam: any) => (
+                <div key={exam.id} className="flex items-center gap-3 p-2.5 rounded-2xl hover:bg-secondary/50 transition-colors">
+                  <div className="h-8 w-8 rounded-xl bg-primary/10 flex items-center justify-center"><FileText className="h-4 w-4 text-primary" /></div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-foreground truncate">{exam.name}</p>
+                    <p className="text-[10px] text-muted-foreground">{exam.examType}</p>
+                  </div>
+                  <Badge variant="outline" className="text-[10px]">{exam.startDate}</Badge>
+                </div>
+              ))}
+              {myUpcomingExams.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">{t("dash.noUpcomingExams")}</p>}
+            </div>
+          </SoftCard>
+        </div>
+      </div>
+    );
+  }
+
+  // ══════════════════════════════ TEACHER ════════════════════════════════════
+  if (sessionRole === "TEACHER") {
+    const published = exams.filter((e: any) => e.status === "Published").length;
+    const pending = exams.filter((e: any) => e.status === "Draft" || e.status === "MarksEntered").length;
+    const resultsChartData = [
+      { name: "Published", value: published },
+      { name: "Pending", value: pending },
+      { name: "Total", value: exams.length },
+    ];
+
+    return (
+      <div className="space-y-6">
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="dashboard-heading">{t("dash.welcomeBack")}, {sessionName || "Teacher"}</h1>
+            <p className="text-sm text-muted-foreground mt-1">{t("dash.todaysAgenda")}, {fmtToday()}.</p>
+          </div>
+          <Link href="/classes">
+            <Button size="sm" variant="outline" className="h-9 text-xs font-semibold rounded-xl">
+              <Building2 className="h-3.5 w-3.5 mr-1.5" /> {t("dash.myClasses")}
+            </Button>
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <KpiCard label={t("dash.todaysClasses")} value={myTodayTimetable.length} sub={myTodayTimetable[0] ? `${t("dash.firstClassAt")} ${myTodayTimetable[0].startTime}` : t("dash.noClassesToday")} icon={CalendarDays} iconColor="text-primary" />
+          <KpiCard label={t("dash.avgAttendance")} value={`${attPct}%`} sub={t("dash.acrossSections")} trend="up" icon={CheckCircle2} iconColor="text-success" />
+          <KpiCard label={t("dash.toGrade")} value={toGradeCount} sub={toGradeCount > 0 ? t("dash.submissionsWaiting") : t("dash.allGraded")} icon={ClipboardList} iconColor="text-warning" href="/assignments" />
+          <KpiCard label={t("dash.upcomingExams")} value={recentExams.length} sub={t("dash.seeExamSchedule")} icon={FileText} iconColor="text-info" href="/exams" />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2 space-y-4">
+            <SoftCard title={t("dash.todaysSchedule")} action={<Link href="/timetable" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">{t("dash.viewFullCalendar")} <ChevronRight className="h-3 w-3" /></Link>}>
+              {myTodayTimetable.length > 0 ? (
+                <div className="relative pl-6 space-y-4 before:absolute before:left-[7px] before:top-2 before:bottom-2 before:w-px before:bg-border">
+                  {myTodayTimetable.map((slot: any) => (
+                    <div key={slot.id} className="relative">
+                      <span className="absolute -left-6 top-1.5 h-3 w-3 rounded-full bg-primary border-2 border-card" />
+                      <div className="rounded-2xl bg-secondary/40 p-4 flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-foreground">{slot.subjectName}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{slot.className} · {slot.startTime} - {slot.endTime}</p>
+                        </div>
+                        {slot.room && <Badge variant="outline" className="text-[10px] shrink-0">{t("dash.room")} {slot.room}</Badge>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="text-xs text-muted-foreground text-center py-8">{t("dash.noClassesScheduled")}</p>}
+            </SoftCard>
+
+            <SoftCard title={t("dash.recentStudentActivity")}>
+              <div className="space-y-2">
+                {recentSubmissions.length > 0 ? recentSubmissions.map(s => (
+                  <div key={s.id} className="flex items-start gap-3 p-3 rounded-2xl hover:bg-secondary/50 transition-colors">
+                    <div className="h-8 w-8 rounded-xl bg-primary/10 flex items-center justify-center shrink-0"><Upload className="h-3.5 w-3.5 text-primary" /></div>
+                    <div className="min-w-0">
+                      <p className="text-xs text-foreground"><span className="font-bold">{s.studentName}</span> {t("dash.submitted")} <span className="font-semibold">{s.assignmentTitle}</span></p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">{s.submittedAt}{!s.grade && ` · ${t("dash.needsGrading")}`}</p>
+                    </div>
+                  </div>
+                )) : <p className="text-xs text-muted-foreground text-center py-6">{t("dash.noRecentSubmissions")}</p>}
+              </div>
+            </SoftCard>
+          </div>
+
+          <div className="space-y-4">
+            <SoftCard title={t("dash.resultsOverview")} action={<Badge variant="outline" className="text-[10px]">{t("dash.thisTerm")}</Badge>}>
+              <div className="h-[160px] -ml-2">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={resultsChartData}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                    <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={24} />
+                    <Tooltip contentStyle={{ borderRadius: 12, fontSize: 12 }} />
+                    <Bar dataKey="value" fill="hsl(var(--primary))" radius={[8, 8, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </SoftCard>
+            <SoftCard title={t("dash.quickActions")}>
+              <div className="grid grid-cols-2 gap-3">
+                <Link href="/assignments" className="flex flex-col items-center justify-center gap-2 rounded-2xl bg-secondary/50 hover:bg-secondary p-4 transition-colors">
+                  <ClipboardList className="h-5 w-5 text-primary" /><span className="text-[11px] font-semibold text-foreground">{t("dash.newAssignment")}</span>
+                </Link>
+                <Link href="/announcements" className="flex flex-col items-center justify-center gap-2 rounded-2xl bg-secondary/50 hover:bg-secondary p-4 transition-colors">
+                  <Megaphone className="h-5 w-5 text-primary" /><span className="text-[11px] font-semibold text-foreground">{t("dash.postNotice")}</span>
+                </Link>
+                <Link href="/exams/manage" className="flex flex-col items-center justify-center gap-2 rounded-2xl bg-secondary/50 hover:bg-secondary p-4 transition-colors">
+                  <CalendarDays className="h-5 w-5 text-primary" /><span className="text-[11px] font-semibold text-foreground">{t("dash.scheduleExam")}</span>
+                </Link>
+                <Link href="/discipline" className="flex flex-col items-center justify-center gap-2 rounded-2xl bg-secondary/50 hover:bg-secondary p-4 transition-colors">
+                  <AlertTriangle className="h-5 w-5 text-primary" /><span className="text-[11px] font-semibold text-foreground">{t("dash.incidentReport")}</span>
+                </Link>
+              </div>
+            </SoftCard>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ══════════════════════════════ PARENT ═════════════════════════════════════
+  if (sessionRole === "PARENT" && wardStudents.length > 0) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="dashboard-heading">{t("dash.parentDashboard")}</h1>
+            <p className="text-sm text-muted-foreground mt-1">{t("dash.parentOverviewSub")}</p>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {wardStudents.map(w => (
+              <button key={w.id} onClick={() => setSelectedWardId(w.id)}
+                className={`flex items-center gap-2 pl-1.5 pr-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+                  selectedWard?.id === w.id ? "bg-primary text-primary-foreground" : "bg-secondary/70 text-foreground hover:bg-secondary"
+                }`}>
+                <span className={`h-5 w-5 rounded-full flex items-center justify-center text-[9px] font-bold ${selectedWard?.id === w.id ? "bg-white/20" : "bg-primary/15 text-primary"}`}>{w.name.charAt(0)}</span>
+                {w.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <KpiCard label={t("dash.currentAttendance")} value={`${wardAttPct}%`} sub={t("dash.overall")} trend="up" icon={CalendarCheck} iconColor="text-primary" />
+          <KpiCard label={t("dash.averageGrade")} value={`${wardAvgPct}%`} sub={wardResults[0]?.grade ? `${t("dash.grade")} ${wardResults[0].grade}` : t("dash.noResultsYet")} icon={Star} iconColor="text-info" />
+          <KpiCard label={t("dash.pendingFees")} value={`Rs.${wardPendingFees.toLocaleString()}`} sub={wardPendingFees > 0 ? t("dash.dueSoon") : t("dash.allPaid")} valueColor={wardPendingFees > 0 ? "text-destructive" : undefined} icon={CreditCard} iconColor="text-warning" href="/parent/fees" trend={wardPendingFees > 0 ? "down" : undefined} />
+          <KpiCard label={t("dash.announcements")} value={announcements.length} sub={announcements[0]?.title?.slice(0, 24) || t("dash.noUpdates")} icon={Megaphone} iconColor="text-success" href="/announcements" />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <SoftCard title={t("dash.academicProgress")} className="lg:col-span-2">
+            <div className="h-[280px] -ml-2">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={wardResults.map((r: any) => ({ exam: r.examName, score: r.percentage ?? 0 }))}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                  <XAxis dataKey="exam" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
+                  <Tooltip contentStyle={{ borderRadius: 12, fontSize: 12 }} />
+                  <Line type="monotone" dataKey="score" stroke="hsl(var(--primary))" strokeWidth={3} dot={{ r: 4, fill: "hsl(var(--primary))" }} />
+                </LineChart>
+              </ResponsiveContainer>
+              {wardResults.length === 0 && <p className="text-xs text-muted-foreground text-center -mt-32">{t("dash.noPublishedResults")}</p>}
+            </div>
+          </SoftCard>
+          <SoftCard title={t("dash.feeStatus")}>
+            <div className="space-y-3">
+              {wardFees.slice(0, 3).map(f => {
+                const pct = f.amount > 0 ? Math.round(((f.amountPaid || (f.status === "Paid" ? f.amount : 0)) / f.amount) * 100) : 0;
+                return (
+                  <div key={f.id} className="rounded-2xl bg-secondary/40 p-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-xs font-bold text-foreground">{f.month || f.feeType || "Fee"}</span>
+                      <span className={`text-xs font-bold ${f.status === "Paid" ? "text-success" : "text-destructive"}`}>{f.status === "Paid" ? "100%" : `Rs.${f.amount}`}</span>
+                    </div>
+                    <Progress value={pct} className="h-1.5" />
+                  </div>
+                );
+              })}
+              {wardFees.length === 0 && <p className="text-xs text-muted-foreground text-center py-6">{t("dash.noFeeRecords")}</p>}
+              <Link href="/parent/fees">
+                <Button className="w-full h-9 text-xs font-semibold rounded-xl mt-2">{t("dash.payNow")}</Button>
+              </Link>
+            </div>
+          </SoftCard>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <SoftCard title={t("dash.announcements")} action={<Link href="/announcements" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">{t("dash.viewAll")} <ChevronRight className="h-3 w-3" /></Link>}>
+            <div className="space-y-2">
+              {announcements.slice(0, 3).map(a => (
+                <div key={a.id} className="flex items-start gap-3 p-3 rounded-2xl hover:bg-secondary/50 transition-colors">
+                  <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-[10px] font-bold text-primary">{a.authorName?.charAt(0) || "S"}</div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-foreground">{a.authorName || "School"}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{a.content}</p>
+                  </div>
+                </div>
+              ))}
+              {announcements.length === 0 && <p className="text-xs text-muted-foreground text-center py-6">{t("dash.noAnnouncementsYet")}</p>}
+            </div>
+          </SoftCard>
+          <SoftCard title={t("dash.todaysSchedule")}>
+            <div className="flex flex-col items-center justify-center text-center py-6 gap-3">
+              <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center"><ClipboardList className="h-5 w-5 text-primary" /></div>
+              <p className="text-xs text-muted-foreground max-w-xs">
+                {selectedWard?.name} {t("dash.hasClassesToday").replace(
+                  "{n}",
+                  String(todayTimetable.filter((slot: any) => slot.className === selectedWard?.class).length)
+                )}
+              </p>
+              <Link href="/timetable">
+                <Button size="sm" variant="outline" className="h-8 text-xs font-semibold rounded-xl">{t("dash.viewFullSchedule")}</Button>
+              </Link>
+            </div>
+          </SoftCard>
+        </div>
+      </div>
+    );
+  }
+
+  // ══════════════════════════════ ADMIN (default) ════════════════════════════
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="dashboard-heading">System Overview</h1>
+          <p className="text-sm text-muted-foreground mt-1">Welcome back. Here is the latest summary.</p>
+        </div>
+        <Badge variant="outline" className="h-9 px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5">
+          <CalendarDays className="h-3.5 w-3.5" /> {academicYearName || "Current Term"}
+        </Badge>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard label="Total Students" value={<AnimatedCounter value={totalStudents} />} valueColor="text-primary" sub={`+${studentTrend}% vs last term`} trend="up" icon={Users} href="/students" />
+        <KpiCard label="Total Teachers" value={<AnimatedCounter value={teachers.length} />} sub="Optimal staffing level" icon={GraduationCap} href="/teachers" />
+        <KpiCard label="Monthly Revenue" value={`Rs.${currentMonthFees.toLocaleString()}`} valueColor="text-warning" sub={`${feeTrend >= 0 ? "+" : ""}${feeTrend}% vs last month`} trend={feeTrend >= 0 ? "up" : "down"} icon={Wallet} href="/fees" />
+        <KpiCard label="Overall Attendance" value={`${attPct}%`} valueColor={attPct >= 90 ? "text-foreground" : "text-destructive"} sub="vs last week" trend={attPct >= 90 ? "up" : "down"} icon={Activity} href="/attendance" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <SoftCard title="Enrollment Trends" className="lg:col-span-2" action={
+          <div className="flex gap-1 bg-secondary/60 rounded-xl p-1">
+            <button className="px-3 py-1 text-[11px] font-semibold rounded-lg bg-card shadow-sm text-foreground">6 Months</button>
+            <button className="px-3 py-1 text-[11px] font-semibold rounded-lg text-muted-foreground">1 Year</button>
+          </div>
+        }>
+          <div className="h-[280px] -ml-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={enrollmentTrend}>
+                <defs>
+                  <linearGradient id="enrollmentFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.28} />
+                    <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="hsl(var(--border))" />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
+                <YAxis hide />
+                <Tooltip contentStyle={{ borderRadius: 12, fontSize: 12, border: "none", boxShadow: "0 8px 24px -8px rgba(30,41,82,0.25)" }} />
+                <Area type="monotone" dataKey="applications" stroke="hsl(var(--primary))" strokeWidth={4} fill="url(#enrollmentFill)" dot={false} activeDot={{ r: 5, fill: "hsl(var(--primary))" }} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </SoftCard>
+
+        <SoftCard title="Pending Approvals" action={<Badge className="h-5 min-w-5 px-1.5 rounded-full text-[10px]">{pendingApps.length + pendingLeaves.length}</Badge>}>
+          <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
+            {pendingApps.slice(0, 3).map(app => (
+              <div key={app.id} className="flex items-start gap-3 p-3 rounded-2xl bg-secondary/40">
+                <div className="h-8 w-8 rounded-xl bg-primary/10 flex items-center justify-center shrink-0"><UserPlus className="h-3.5 w-3.5 text-primary" /></div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-foreground">New Admission</p>
+                  <p className="text-[10px] text-muted-foreground">{app.firstName} {app.lastName} ({app.applyingForClass})</p>
+                </div>
+              </div>
+            ))}
+            {pendingLeaves.slice(0, 2).map((l: any) => (
+              <div key={l.id} className="flex items-start gap-3 p-3 rounded-2xl bg-secondary/40">
+                <div className="h-8 w-8 rounded-xl bg-warning/10 flex items-center justify-center shrink-0"><Clock className="h-3.5 w-3.5 text-warning" /></div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-foreground">Staff Leave Request</p>
+                  <p className="text-[10px] text-muted-foreground">{l.employeeName} · {l.days || ""} Days</p>
+                </div>
+              </div>
+            ))}
+            {pendingApps.length + pendingLeaves.length === 0 && <p className="text-xs text-muted-foreground text-center py-8">Nothing pending</p>}
+          </div>
+          <Link href="/admissions">
+            <Button variant="ghost" className="w-full h-9 text-xs font-semibold rounded-xl mt-3 text-primary hover:text-primary">View All Approvals</Button>
+          </Link>
+        </SoftCard>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <SoftCard title="Recent Admissions" className="lg:col-span-2" action={<Link href="/admissions" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">View All <ChevronRight className="h-3 w-3" /></Link>}>
+          <div className="space-y-1">
+            {applications.slice(0, 4).map(app => (
+              <div key={app.id} className="flex items-center gap-3 p-3 rounded-2xl hover:bg-secondary/50 transition-colors">
+                <div className="h-9 w-9 rounded-xl bg-primary/10 flex items-center justify-center text-xs font-bold text-primary shrink-0">{app.firstName?.charAt(0)}{app.lastName?.charAt(0)}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-foreground truncate">{app.firstName} {app.lastName}</p>
+                  <p className="text-[10px] text-muted-foreground">{app.applyingForClass} · {app.parentName}</p>
+                </div>
+                <span className="text-[10px] text-muted-foreground shrink-0">{app.submittedAt}</span>
+                <Badge className={`text-[10px] shrink-0 ${app.status === "Approved" ? "bg-success/15 text-success" : app.status === "Rejected" ? "bg-destructive/15 text-destructive" : "bg-warning/15 text-warning"}`}>{app.status}</Badge>
+              </div>
+            ))}
+            {applications.length === 0 && <p className="text-xs text-muted-foreground text-center py-6">No admissions yet</p>}
+          </div>
+        </SoftCard>
+
+        <SoftCard title="Financial Summary">
+          <div className="space-y-3">
+            {[
+              { label: "Collected", value: paidFees, color: "bg-success" },
+              { label: "Pending", value: feeRecords.filter(f => f.status === "Unpaid").reduce((s, f) => s + f.amount, 0), color: "bg-warning" },
+              { label: "Overdue", value: feeRecords.filter(f => f.status === "Overdue").reduce((s, f) => s + f.amount, 0), color: "bg-destructive" },
+            ].map(row => {
+              const pct = totalFees > 0 ? Math.round((row.value / totalFees) * 100) : 0;
+              return (
+                <div key={row.label}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[11px] font-semibold text-muted-foreground">{row.label}</span>
+                    <span className="text-xs font-bold text-foreground">Rs.{row.value.toLocaleString()}</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-secondary/60 overflow-hidden"><div className={`h-full rounded-full ${row.color}`} style={{ width: `${pct}%` }} /></div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center justify-between mt-4 pt-4 border-t border-border">
+            <div>
+              <p className="text-[10px] text-muted-foreground font-medium">Net Balance</p>
+              <p className="text-lg font-bold text-success">+Rs.{(paidFees - pendingFeesCount * 0).toLocaleString()}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-[10px] text-muted-foreground font-medium">Collection Rate</p>
+              <p className="text-lg font-bold text-primary">{totalFees > 0 ? Math.round((paidFees / totalFees) * 100) : 0}%</p>
+            </div>
+          </div>
+        </SoftCard>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <KpiCard label="Library" value={totalBooks} sub={`${totalIssues} issued`} icon={Library} iconColor="text-info" href="/library" />
+        <KpiCard label="Classes & Sections" value={totalClasses} sub={`${totalSections} sections`} icon={Building2} iconColor="text-primary" href="/classes" />
+        <KpiCard label="Exams" value={exams.length} sub={`${recentExams.length} upcoming`} icon={FileText} iconColor="text-destructive" href="/exams" />
+      </div>
+    </div>
+  );
+}

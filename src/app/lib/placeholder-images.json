@@ -1,0 +1,17 @@
+
+{
+  "placeholderImages": [
+    {
+      "id": "school-logo",
+      "description": "Prestigious school crest",
+      "imageUrl": "https://picsum.photos/seed/scholarly1/200/200",
+      "imageHint": "school crest"
+    },
+    {
+      "id": "hero-bg",
+      "description": "Modern school building",
+      "imageUrl": "https://picsum.photos/seed/scholarly2/1200/800",
+      "imageHint": "school building"
+    }
+  ]
+}
