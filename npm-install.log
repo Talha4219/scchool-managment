@@ -129,3 +129,42 @@ npm warn tar TAR_ENTRY_ERROR ENOENT: no such file or directory, lstat 'D:\code\R
 npm warn tar TAR_ENTRY_ERROR ENOENT: no such file or directory, lstat 'D:\code\React\School-managment\school-managment\node_modules\next\dist\esm\server\route-matchers'
 npm warn tar TAR_ENTRY_ERROR ENOENT: no such file or directory, lstat 'D:\code\React\School-managment\school-managment\node_modules\next\dist\server\route-matchers'
 npm warn tar TAR_ENTRY_ERROR ENOENT: no such file or directory, open 'D:\code\React\School-managment\school-managment\node_modules\next\dist\compiled\next-server\app-page-turbo-experimental.runtime.dev.js'
+npm verbose reify failed optional dependency D:\code\React\School-managment\school-managment\node_modules\@next\swc-win32-x64-msvc
+npm warn cleanup Failed to remove some directories [
+npm warn cleanup   [
+npm warn cleanup     '\\\\?\\D:\\code\\React\\School-managment\\school-managment\\node_modules\\next',
+npm warn cleanup     [Error: EPERM: operation not permitted, rmdir 'D:\code\React\School-managment\school-managment\node_modules\next\dist\server\route-modules\pages'] {
+npm warn cleanup       errno: -4048,
+npm warn cleanup       code: 'EPERM',
+npm warn cleanup       syscall: 'rmdir',
+npm warn cleanup       path: 'D:\\code\\React\\School-managment\\school-managment\\node_modules\\next\\dist\\server\\route-modules\\pages'
+npm warn cleanup     }
+npm warn cleanup   ],
+npm warn cleanup   [
+npm warn cleanup     'D:\\code\\React\\School-managment\\school-managment\\node_modules\\next',
+npm warn cleanup     [Error: EPERM: operation not permitted, rmdir 'D:\code\React\School-managment\school-managment\node_modules\next\dist\build\webpack\loaders\css-loader'] {
+npm warn cleanup       errno: -4048,
+npm warn cleanup       code: 'EPERM',
+npm warn cleanup       syscall: 'rmdir',
+npm warn cleanup       path: 'D:\\code\\React\\School-managment\\school-managment\\node_modules\\next\\dist\\build\\webpack\\loaders\\css-loader'
+npm warn cleanup     }
+npm warn cleanup   ]
+npm warn cleanup ]
+npm verbose stack Error: read ECONNRESET
+npm verbose stack     at TLSWrap.onStreamRead (node:internal/stream_base_commons:216:20)
+npm error code ECONNRESET
+npm error syscall read
+npm error errno -4077
+npm error network read ECONNRESET
+npm error network This is a problem related to network connectivity.
+npm error network In most cases you are behind a proxy or have bad network settings.
+npm error network
+npm error network If you are behind a proxy, please make sure that the
+npm error network 'proxy' config is set properly.  See: 'npm help config'
+npm verbose cwd D:\code\React\School-managment\school-managment
+npm verbose os Windows_NT 10.0.26200
+npm verbose node v22.17.0
+npm verbose npm  v11.4.2
+npm verbose exit -4077
+npm verbose code -4077
+npm error A complete log of this run can be found in: C:\Users\11 TRD\AppData\Local\npm-cache\_logs\2026-08-15T06_05_39_448Z-debug-0.log
