@@ -31,12 +31,12 @@ function CopyButton({ value }: { value: string }) {
 
 // ── Child Selector ────────────────────────────────────────────────────────────
 
-function ChildSelector({ children, selectedIdx, onSelect }: {
-  children: ParentPortalChild[]; selectedIdx: number; onSelect: (i: number) => void;
+function ChildSelector({ kids, selectedIdx, onSelect }: {
+  kids: ParentPortalChild[]; selectedIdx: number; onSelect: (i: number) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const selected = children[selectedIdx];
-  if (children.length <= 1) return null;
+  const selected = kids[selectedIdx];
+  if (kids.length <= 1) return null;
 
   return (
     <div className="relative">
@@ -56,7 +56,7 @@ function ChildSelector({ children, selectedIdx, onSelect }: {
 
       {open && (
         <div className="absolute top-full mt-1 left-0 z-50 bg-white border border-secondary rounded-xl shadow-lg overflow-hidden min-w-[220px]">
-          {children.map((child, i) => (
+          {kids.map((child, i) => (
             <button
               key={child.id}
               onClick={() => { onSelect(i); setOpen(false); }}
@@ -159,7 +159,7 @@ export default function ParentDashboard() {
           <h1 className="text-3xl font-bold tracking-tight text-primary font-headline">{t("parent.portalTitle")}</h1>
           <p className="text-muted-foreground mt-1">{t("parent.welcomeMsg")}</p>
         </div>
-        <ChildSelector children={data.children} selectedIdx={selectedIdx} onSelect={setSelectedIdx} />
+        <ChildSelector kids={data.children} selectedIdx={selectedIdx} onSelect={setSelectedIdx} />
       </div>
 
       {/* Child Info Banner */}

@@ -27,23 +27,6 @@ export default function CommunicationsPage() {
 
   const [studentDetails, setStudentDetails] = useState<any>(null);
 
-  if (activeRole !== "ADMIN" && activeRole !== "TEACHER") {
-    if (!permsLoaded) return null;
-  if (!can("communications.view")) return <Unauthorized />;
-
-  return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] max-w-md mx-auto text-center space-y-4">
-        <div className="p-4 bg-red-50 text-red-700 rounded-full">
-          <Lock className="h-10 w-10" />
-        </div>
-        <h2 className="text-2xl font-bold text-primary">Access Restricted</h2>
-        <p className="text-muted-foreground text-sm leading-relaxed">
-          AI Communications suite is only available to instructors and administrators.
-        </p>
-      </div>
-    );
-  }
-
   // Load selected student dynamic stats
   useEffect(() => {
     const student = students.find(s => s.id === selectedStudentId);
@@ -92,6 +75,23 @@ export default function CommunicationsPage() {
       }
     });
   }, [selectedStudentId, students, attendance, exams]);
+
+  if (activeRole !== "ADMIN" && activeRole !== "TEACHER") {
+    if (!permsLoaded) return null;
+    if (!can("communications.view")) return <Unauthorized />;
+
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] max-w-md mx-auto text-center space-y-4">
+        <div className="p-4 bg-red-50 text-red-700 rounded-full">
+          <Lock className="h-10 w-10" />
+        </div>
+        <h2 className="text-2xl font-bold text-primary">Access Restricted</h2>
+        <p className="text-muted-foreground text-sm leading-relaxed">
+          AI Communications suite is only available to instructors and administrators.
+        </p>
+      </div>
+    );
+  }
 
   const handleGenerate = async () => {
     if (!studentDetails) return;
