@@ -17,6 +17,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { usePermission } from "@/hooks/use-permission";
+import { Unauthorized } from "@/components/unauthorized";
 import {
   fetchTransportRoutesDB, createTransportRouteDB,
   fetchTransportVehiclesDB,
@@ -37,6 +39,7 @@ const defaultVehicles: TransportVehicle[] = [
 export default function TransportPage() {
   const { students, schoolInfo } = useAppState();
   const { toast } = useToast();
+  const { can, loaded: permsLoaded } = usePermission();
 
   const [loading, setLoading] = useState(true);
   const [routes, setRoutes] = useState<TransportRoute[]>([]);
@@ -168,6 +171,9 @@ export default function TransportPage() {
     toast({ title: "Allocated", description: `${student.name} assigned to ${route?.routeName || "route"}.` });
     setAllocateDialog(false);
   };
+
+  if (!permsLoaded) return null;
+  if (!can("transport.view")) return <Unauthorized />;
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">

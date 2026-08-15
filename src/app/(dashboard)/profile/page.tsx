@@ -9,9 +9,20 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { getSessionProfileDB, changePasswordDB } from "@/app/actions/features";
-import { User, Mail, Shield, Calendar, KeyRound, Eye, EyeOff } from "lucide-react";
+import { getSessionProfileDB, changePasswordDB, fetchPayslipsDB, fetchLeaveRequestsDB, createLeaveRequestDB } from "@/app/actions/features";
+import type { Payslip, LeaveRequest } from "@/lib/types";
+import { User, Mail, Shield, Calendar, KeyRound, Eye, EyeOff, Receipt, CalendarDays, Plus, Loader2 } from "lucide-react";
+
+const LEAVE_TYPES = ["Sick", "Casual", "Annual", "Maternity", "Paternity", "Unpaid"] as const;
+const leaveStatusBadge: Record<string, string> = {
+  Pending: "bg-yellow-100 text-yellow-800", Approved: "bg-green-100 text-green-800", Rejected: "bg-red-100 text-red-800",
+};
+const payslipStatusBadge: Record<string, string> = {
+  Draft: "bg-gray-100 text-gray-800", Generated: "bg-blue-100 text-blue-800", Paid: "bg-green-100 text-green-800",
+};
 
 type ProfileData = { id: number; name: string; email: string; role: string; createdAt: Date };
 
@@ -19,6 +30,7 @@ const roleBadge: Record<string, string> = {
   ADMIN:   "bg-blue-100 text-blue-800",
   TEACHER: "bg-green-100 text-green-800",
   STUDENT: "bg-orange-100 text-orange-800",
+  EMPLOYEE: "bg-cyan-100 text-cyan-800",
 };
 
 export default function ProfilePage() {
@@ -26,6 +38,11 @@ export default function ProfilePage() {
 
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const [payslips, setPayslips] = useState<Payslip[]>([]);
+  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
+  const [leaveForm, setLeaveForm] = useState({ leaveType: "Sick" as (typeof LEAVE_TYPES)[number], startDate: "", endDate: "", totalDays: 1, reason: "" });
+  const [submittingLeave, setSubmittingLeave] = useState(false);
 
   const [oldPassword,     setOldPassword]     = useState("");
   const [newPassword,     setNewPassword]     = useState("");
@@ -38,8 +55,30 @@ export default function ProfilePage() {
     getSessionProfileDB().then(data => {
       setProfile(data);
       setLoading(false);
+      if (data && (data.role === "TEACHER" || data.role === "EMPLOYEE")) {
+        fetchPayslipsDB().then(setPayslips);
+        fetchLeaveRequestsDB().then(setLeaveRequests);
+      }
     });
   }, []);
+
+  const reloadLeave = () => fetchLeaveRequestsDB().then(setLeaveRequests);
+
+  const handleApplyLeave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profile || !leaveForm.startDate || !leaveForm.endDate) return;
+    setSubmittingLeave(true);
+    const res = await createLeaveRequestDB({
+      employeeId: profile.id, employeeName: profile.name, leaveType: leaveForm.leaveType,
+      startDate: leaveForm.startDate, endDate: leaveForm.endDate, totalDays: leaveForm.totalDays,
+      reason: leaveForm.reason, status: "Pending", approvedBy: "", appliedAt: new Date().toISOString().split("T")[0],
+    });
+    setSubmittingLeave(false);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Leave request submitted." });
+    setLeaveForm({ leaveType: "Sick", startDate: "", endDate: "", totalDays: 1, reason: "" });
+    reloadLeave();
+  };
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -165,6 +204,91 @@ export default function ProfilePage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Self-service: My Payslips + My Leave — teaching/non-teaching staff only */}
+      {(displayProfile.role === "TEACHER" || displayProfile.role === "EMPLOYEE") && (
+        <>
+          <Card className="border-none shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2"><Receipt className="h-5 w-5 text-primary" /> My Payslips</CardTitle>
+              <CardDescription>Your own payslip history — visible only to you and admins.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {payslips.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4">No payslips yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {payslips.map(p => (
+                    <div key={p.id} className="flex items-center justify-between border-b border-secondary/30 py-2 last:border-0">
+                      <div>
+                        <p className="font-medium text-sm">{p.month} {p.year}</p>
+                        <p className="text-xs text-muted-foreground">Net Pay: {p.netPay.toLocaleString()}</p>
+                      </div>
+                      <Badge className={payslipStatusBadge[p.status]}>{p.status}</Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-none shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2"><CalendarDays className="h-5 w-5 text-primary" /> My Leave</CardTitle>
+              <CardDescription>Apply for leave and track your requests.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <form onSubmit={handleApplyLeave} className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Leave Type</Label>
+                  <Select value={leaveForm.leaveType} onValueChange={v => setLeaveForm(f => ({ ...f, leaveType: v as any }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>{LEAVE_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Total Days</Label>
+                  <Input type="number" min={1} value={leaveForm.totalDays} onChange={e => setLeaveForm(f => ({ ...f, totalDays: Number(e.target.value) }))} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Start Date</Label>
+                  <Input type="date" value={leaveForm.startDate} onChange={e => setLeaveForm(f => ({ ...f, startDate: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">End Date</Label>
+                  <Input type="date" value={leaveForm.endDate} onChange={e => setLeaveForm(f => ({ ...f, endDate: e.target.value }))} />
+                </div>
+                <div className="space-y-1 col-span-2">
+                  <Label className="text-xs">Reason</Label>
+                  <Textarea value={leaveForm.reason} onChange={e => setLeaveForm(f => ({ ...f, reason: e.target.value }))} />
+                </div>
+                <Button type="submit" className="col-span-2" disabled={submittingLeave || !leaveForm.startDate || !leaveForm.endDate}>
+                  {submittingLeave ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
+                  Apply for Leave
+                </Button>
+              </form>
+
+              <Separator />
+
+              {leaveRequests.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No leave requests yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {leaveRequests.map(lr => (
+                    <div key={lr.id} className="flex items-center justify-between border-b border-secondary/30 py-2 last:border-0">
+                      <div>
+                        <p className="font-medium text-sm">{lr.leaveType} — {lr.startDate} to {lr.endDate}</p>
+                        <p className="text-xs text-muted-foreground">{lr.totalDays} day(s)</p>
+                      </div>
+                      <Badge className={leaveStatusBadge[lr.status]}>{lr.status}</Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
 
       {/* Change Password Card */}
       <Card className="border-none shadow-sm">

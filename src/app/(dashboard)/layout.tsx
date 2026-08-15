@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, createContext, useContext, useCallback, Suspense } from "react";
 import { AppSidebar } from "@/components/dashboard/app-sidebar";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Search, Bell, MessageSquare, Zap, LogOut, User, Settings, ShieldAlert, UserCheck, GraduationCap, Loader2, Menu, Check, X, ChevronRight, Users } from "lucide-react";
+import { Search, Bell, MessageSquare, Zap, LogOut, User, Settings, ShieldAlert, UserCheck, GraduationCap, Loader2, Menu, Check, X, ChevronRight, Users, AlertOctagon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useAppState } from "@/lib/state-context";
@@ -16,6 +16,7 @@ import { logout, getSession } from "@/app/actions/auth";
 import { fetchProfilePhotoAction } from "@/app/actions/features";
 import { fetchConversationsDB, fetchUnreadMessageCountDB, type ConversationSummary } from "@/app/actions/messaging";
 import { globalSearchDB, type GlobalSearchResult } from "@/app/actions/academic-core";
+import { fetchUnresolvedErrorCountAction } from "@/app/actions/error-log-admin";
 import { LanguageSwitcher } from "@/components/ui/language-switcher";
 import { useLanguage } from "@/hooks/use-language";
 import { Agentation } from "agentation";
@@ -60,10 +61,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const displayName = sessionName || "User";
   const displayRole = sessionRole || activeRole;
   const displayInitials = displayName.split(" ").filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join("");
-  const roleLabel: Record<string, string> = { ADMIN: "Administrator", TEACHER: "Teacher", STUDENT: "Student", PARENT: "Parent" };
+  const roleLabel: Record<string, string> = { ADMIN: "Administrator", TEACHER: "Teacher", STUDENT: "Student", PARENT: "Parent", EMPLOYEE: "Employee" };
   const roleBadgeStyle: Record<string, string> = {
     ADMIN: "bg-primary/10 text-primary", TEACHER: "bg-green-50 text-green-700",
     STUDENT: "bg-orange-50 text-orange-700", PARENT: "bg-purple-50 text-purple-700",
+    EMPLOYEE: "bg-cyan-50 text-cyan-700",
   };
 
   const filteredNotifications = notifications.filter(n => {
@@ -131,6 +133,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const interval = setInterval(load, 25000);
     return () => clearInterval(interval);
   }, []);
+
+  // Admin-only: surfaces unresolved server-action failures (Settings → Error
+  // Log) so a silently-failing production write is actually noticed, not just
+  // sitting in a table nobody queries.
+  const [unresolvedErrorCount, setUnresolvedErrorCount] = useState(0);
+  useEffect(() => {
+    if (sessionRole !== "ADMIN") return;
+    const load = () => { fetchUnresolvedErrorCountAction().then(setUnresolvedErrorCount); };
+    load();
+    const interval = setInterval(load, 60000);
+    return () => clearInterval(interval);
+  }, [sessionRole]);
 
   // Radix generates its dropdown trigger/content ids via React's useId, which is
   // only stable when the SSR tree shape and the client's first-paint tree shape
@@ -212,6 +226,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
             <div className="flex items-center gap-2 shrink-0">
               <LanguageSwitcher />
+
+              {/* Unresolved error alert (admin only) */}
+              {isAdmin && unresolvedErrorCount > 0 && (
+                <Link
+                  href="/settings?tab=errors"
+                  title={`${unresolvedErrorCount} unresolved server error${unresolvedErrorCount === 1 ? "" : "s"}`}
+                  className="relative flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10 text-destructive shadow-sm hover:bg-destructive/20 transition-colors"
+                >
+                  <AlertOctagon className="h-4 w-4" />
+                  <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold text-white">
+                    {unresolvedErrorCount > 9 ? "9+" : unresolvedErrorCount}
+                  </span>
+                </Link>
+              )}
 
               {/* Notifications */}
               {(() => {

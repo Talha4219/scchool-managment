@@ -8,6 +8,8 @@ import { prisma } from "@/lib/prisma";
 import { query } from "@/lib/db";
 import { initializeDatabase } from "@/lib/db-init";
 import { encrypt, decrypt, type SessionPayload } from "@/lib/auth";
+import { logServerError } from "@/lib/error-log";
+import { isEmailConfigured, sendEmail } from "@/lib/email";
 
 let _authDbInitialized = false;
 async function ensureDbInit() {
@@ -80,6 +82,10 @@ export async function login(email: string, password: string): Promise<{ error?: 
       return { error: "Your account is pending admin approval. You will be notified once approved." };
     }
 
+    if (status === 'INACTIVE') {
+      return { error: "This account has been deactivated. Contact the school office if you believe this is a mistake." };
+    }
+
     const payload: SessionPayload = { userId: user.id, name: user.name, email: user.email, role: user.role };
     const token = await encrypt(payload);
     const cookieStore = await cookies();
@@ -93,7 +99,7 @@ export async function login(email: string, password: string): Promise<{ error?: 
 
     return { role: user.role };
   } catch (err) {
-    console.error("Login error:", err);
+    logServerError("auth", "Login error:", err);
     return { error: "An error occurred. Please try again." };
   }
 }
@@ -116,7 +122,7 @@ export async function register(
 
     return { pending: true };
   } catch (err) {
-    console.error("Register error:", err);
+    logServerError("auth", "Register error:", err);
     return { error: "An error occurred. Please try again." };
   }
 }
@@ -158,7 +164,7 @@ export async function registerTeacher(
 
     return { pending: true };
   } catch (err) {
-    console.error("Register teacher error:", err);
+    logServerError("auth", "Register teacher error:", err);
     return { error: "An error occurred. Please try again." };
   }
 }
@@ -169,10 +175,11 @@ function hashToken(token: string): string {
 
 // Step 1 of self-service reset: issue a single-use token for the account.
 // Always returns a generic outcome to the caller — the UI never states
-// outright whether the email is registered — but since this deployment has
-// no email transport wired up yet, the raw link is handed back in `resetLink`
-// so an admin/teacher can be sent it directly. Once SMTP is configured this
-// function is the one place to change: email the link instead of returning it.
+// outright whether the email is registered. When SMTP is configured
+// (isEmailConfigured()) the link is emailed directly and never returned to
+// the caller — the proper flow. Until a school sets SMTP_* env vars, the raw
+// link is handed back in `resetLink` instead, so an admin/teacher can still
+// relay it manually rather than the feature being fully absent.
 export async function requestPasswordResetAction(email: string): Promise<{ message: string; resetLink?: string }> {
   const generic = { message: "If an account exists for that email, a password reset link has been generated." };
   try {
@@ -198,9 +205,25 @@ export async function requestPasswordResetAction(email: string): Promise<{ messa
       [id, user.id, hashToken(token), expiresAt]
     );
 
-    return { ...generic, resetLink: `/reset-password?token=${token}` };
+    const origin = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const resetLink = `/reset-password?token=${token}`;
+
+    if (isEmailConfigured()) {
+      const result = await sendEmail({
+        to: user.email,
+        subject: "Reset your password",
+        html: `<p>Hi ${user.name},</p><p>Click the link below to reset your password. This link expires in 1 hour and can only be used once.</p><p><a href="${origin}${resetLink}">${origin}${resetLink}</a></p><p>If you didn't request this, you can safely ignore this email.</p>`,
+      });
+      if (result.error) {
+        logServerError("auth", "requestPasswordResetAction: email send failed, falling back to link", result.error);
+        return { ...generic, resetLink };
+      }
+      return generic;
+    }
+
+    return { ...generic, resetLink };
   } catch (err) {
-    console.error("requestPasswordResetAction error:", err);
+    logServerError("auth", "requestPasswordResetAction error:", err);
     return generic;
   }
 }
@@ -227,7 +250,7 @@ export async function resetPasswordWithTokenAction(token: string, newPassword: s
 
     return {};
   } catch (err) {
-    console.error("resetPasswordWithTokenAction error:", err);
+    logServerError("auth", "resetPasswordWithTokenAction error:", err);
     return { error: "Failed to reset password. Please try again." };
   }
 }

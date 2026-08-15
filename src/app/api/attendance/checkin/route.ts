@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { query } from "@/lib/db";
-import { checkInByCardUid } from "@/lib/attendance-checkin";
+import { checkInByCardUid, checkInByStaffCardUid } from "@/lib/attendance-checkin";
 
 // Headless integration endpoint for RFID/biometric reader agents — a local
 // bridge script (ZKTeco pyzk poller, Suprema BioStar webhook, a Raspberry Pi
@@ -32,7 +32,13 @@ export async function POST(req: NextRequest) {
 
     await query(`UPDATE attendance_device_keys SET last_used_at=NOW() WHERE id=$1`, [keyRes.rows[0].id]);
 
-    const result = await checkInByCardUid(cardUid, "device");
+    // One physical device/API key serves both students and staff — figure
+    // out which badge type was scanned before dispatching, so the "not
+    // recognized" error is only returned once both lookups miss.
+    const isStaffCard = await query(`SELECT 1 FROM staff_id_cards WHERE card_uid=$1`, [cardUid.trim()]);
+    const result = isStaffCard.rows.length > 0
+      ? await checkInByStaffCardUid(cardUid, "device")
+      : await checkInByCardUid(cardUid, "device");
     if (result.error) return NextResponse.json(result, { status: 409 });
     return NextResponse.json(result, { status: 200 });
   } catch (err) {

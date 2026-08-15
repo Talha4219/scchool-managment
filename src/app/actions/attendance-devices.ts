@@ -3,9 +3,9 @@
 import { randomBytes, createHash } from "crypto";
 import { query, checkDbConnection } from "@/lib/db";
 import { getSession } from "./auth";
-import { checkInByCardUid, type CheckInResult } from "@/lib/attendance-checkin";
+import { checkInByCardUid, checkInByStaffCardUid, type CheckInResult } from "@/lib/attendance-checkin";
 
-type Role = "ADMIN" | "TEACHER" | "STUDENT" | "PARENT";
+type Role = "ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE";
 async function requireRole(...roles: Role[]) {
   const session = await getSession();
   if (!session) return { error: "Not authenticated." } as const;
@@ -121,5 +121,14 @@ export async function kioskCheckInAction(cardUid: string): Promise<CheckInResult
   if ("error" in auth) return { error: auth.error };
   const isOnline = await checkDbConnection();
   if (!isOnline) return { error: "Database offline." };
+  // Same badge/card population as the device endpoint — check which table
+  // the UID belongs to before dispatching so a staff badge tapped at the
+  // kiosk works too, not just student cards.
+  const staffCard = await query("SELECT 1 FROM staff_id_cards WHERE card_uid=$1", [cardUid.trim()]);
+  if (staffCard.rows.length > 0) {
+    const staffResult = await checkInByStaffCardUid(cardUid, "kiosk");
+    if (staffResult.error) return { error: staffResult.error };
+    return { studentName: staffResult.staffName, status: staffResult.status, time: staffResult.time };
+  }
   return checkInByCardUid(cardUid, "kiosk");
 }

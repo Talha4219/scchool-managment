@@ -17,12 +17,14 @@ import { fetchAlumniDB, createAlumniDB } from "@/app/actions/features";
 import type { Alumni } from "@/lib/types";
 import {
   GraduationCap, Plus, Search, Users, Building, Gift,
-  Linkedin, Phone, Mail, MapPin, CalendarDays, Filter,
+  Linkedin, Phone, Mail, MapPin, CalendarDays, Filter, BadgeCheck,
 } from "lucide-react";
 
 function formatDate(d: string) {
   if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
+  // Pinned to UTC to keep server and client rendering the same calendar day
+  // for a date-only string — see accounting/page.tsx's formatDate for why.
+  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
 export default function AlumniPage() {
@@ -310,7 +312,14 @@ export default function AlumniPage() {
               ) : filteredAlumni.map(a => (
                 <TableRow key={a.id} className="hover:bg-secondary/5">
                   <TableCell>
-                    <div className="font-semibold text-primary">{a.name}</div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-semibold text-primary">{a.name}</span>
+                      {a.sourceStudentId && (
+                        <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-green-200 bg-green-50 text-green-700 gap-0.5" title="Auto-created from a real student record on graduation">
+                          <BadgeCheck className="h-2.5 w-2.5" /> Verified
+                        </Badge>
+                      )}
+                    </div>
                     {a.linkedinUrl && (
                       <a href={a.linkedinUrl} target="_blank" rel="noopener noreferrer"
                         className="text-xs text-blue-600 hover:underline flex items-center gap-1 mt-0.5">

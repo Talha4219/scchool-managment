@@ -313,10 +313,10 @@ export default function SignUpPage() {
                   {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </Field>
-              {confirmPassword && confirmPassword !== password && <p className="-mt-2 text-xs text-red-500">Passwords do not match</p>}
+              {confirmPassword && confirmPassword !== password && <p role="alert" className="-mt-2 text-xs text-red-500">Passwords do not match</p>}
 
               {error && (
-                <div className="flex items-center gap-2.5 text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
+                <div role="alert" className="flex items-center gap-2.5 text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
                   <ShieldCheck className="w-4 h-4 shrink-0 text-red-500" /> {error}
                 </div>
               )}
@@ -379,7 +379,7 @@ export default function SignUpPage() {
               </div>
 
               {error && (
-                <div className="flex items-center gap-2.5 text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
+                <div role="alert" className="flex items-center gap-2.5 text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
                   <ShieldCheck className="w-4 h-4 shrink-0 text-red-500" /> {error}
                 </div>
               )}

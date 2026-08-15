@@ -7,7 +7,7 @@ import {
   fetchAcademicYearsDB, fetchClassesDB, fetchSectionsByClassDB, fetchEnrollmentsDB,
 } from "@/app/actions/academic-core";
 import { fetchFeePaymentHistoryDB, type FeePaymentHistoryEntry } from "@/app/actions/db";
-import { fetchGatewayAvailabilityAction, initiateFeePaymentAction, type Gateway } from "@/app/actions/payments";
+import { fetchGatewayAvailabilityAction, initiateFeePaymentAction, isFeeReminderChannelConfigured, sendFeeReminderAction, sendOverdueFeeRemindersAction, type Gateway } from "@/app/actions/payments";
 import { exportToCsv } from "@/lib/export-csv";
 import type { AcademicYear, ClassItem, SectionItem } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -73,11 +73,14 @@ export default function FeesPage() {
   // Real logged-in role/email — NOT the legacy `activeRole` demo role-switcher
   // (that state defaults to "ADMIN" and is never synced to the actual session,
   // which was letting real students see the full admin fee ledger/controls).
-  const [activeRole, setSessionRole] = useState<"ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | null>(null);
+  const [activeRole, setSessionRole] = useState<"ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE" | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   useEffect(() => {
     getSession().then(s => { setSessionRole((s?.role as any) ?? null); setSessionEmail(s?.email ?? null); });
   }, []);
+
+  const [smsChannelConfigured, setSmsChannelConfigured] = useState(false);
+  useEffect(() => { isFeeReminderChannelConfigured().then(setSmsChannelConfigured); }, []);
 
   // ── Relational roster (real Academic Year → Class → Section) ────────────────
   const [relYears, setRelYears] = useState<AcademicYear[]>([]);
@@ -383,13 +386,27 @@ export default function FeesPage() {
     setRegenTarget(null);
   };
 
-  const handleSendReminders = () => {
+  const handleSendReminders = async () => {
     if (selectedDefaulters.size === 0) {
       toast({ title: "No Selection", description: "Select at least one defaulter.", variant: "destructive" });
       return;
     }
-    sendFeeReminders(Array.from(selectedDefaulters));
-    toast({ title: "Reminders Sent", description: `Reminders dispatched to ${selectedDefaulters.size} student(s).` });
+    const ids = Array.from(selectedDefaulters);
+    sendFeeReminders(ids); // in-app notification, always fires
+
+    // Real SMS/WhatsApp to the parent's phone, only when a gateway is configured —
+    // the in-app notification above doesn't reach anyone who isn't already logged
+    // into the portal, which is exactly who a fee reminder needs to reach.
+    if (smsChannelConfigured) {
+      let sent = 0;
+      for (const id of ids) {
+        const res = await sendFeeReminderAction(id);
+        if (!res.error) sent++;
+      }
+      toast({ title: "Reminders Sent", description: `In-app notice sent to ${ids.length} student(s); SMS/WhatsApp delivered to ${sent} parent(s) with a phone number on file.` });
+    } else {
+      toast({ title: "Reminders Sent", description: `In-app notice dispatched to ${ids.length} student(s). Configure an SMS/WhatsApp gateway in Settings to also text parents directly.` });
+    }
     setSelectedDefaulters(new Set());
   };
 
@@ -1344,7 +1361,7 @@ export default function FeesPage() {
                   </div>
 
                   {payError && (
-                    <div className="flex items-start gap-2 text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-xs">
+                    <div role="alert" className="flex items-start gap-2 text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-xs">
                       <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
                       {payError}
                     </div>

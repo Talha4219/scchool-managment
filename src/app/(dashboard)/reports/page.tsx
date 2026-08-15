@@ -7,6 +7,8 @@ import {
   fetchSchoolResultsOverviewDB, fetchSchoolAttendanceOverviewDB,
 } from "@/app/actions/academic-core";
 import { fetchUsersDB } from "@/app/actions/features";
+import { usePermission } from "@/hooks/use-permission";
+import { Unauthorized } from "@/components/unauthorized";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -71,6 +73,7 @@ export default function ReportsPage() {
   const {
     schoolInfo, students, feeRecords, applications,
   } = useAppState();
+  const { can, loaded: permsLoaded } = usePermission();
 
   // Real relational data — the legacy `classes`/`exams`/`attendance` arrays from
   // useAppState are dead demo state (always 0 rows for `exams`/`class_sections`
@@ -236,6 +239,9 @@ export default function ReportsPage() {
   }, [applications]);
 
   const applicationTableData = useMemo(() => applications.slice(0, 15), [applications]);
+
+  if (!permsLoaded) return null;
+  if (!can("reports.view")) return <Unauthorized />;
 
   return (
     <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }} className="space-y-8">

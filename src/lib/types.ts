@@ -1,5 +1,5 @@
 
-export type UserRole = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT';
+export type UserRole = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE';
 
 export interface SchoolInfo {
   name: string;
@@ -259,6 +259,9 @@ export interface CourseMaterial {
   title: string;
   type: 'video' | 'document' | 'quiz' | 'link';
   url: string;
+  fileName?: string;
+  description?: string;
+  createdByName?: string;
   createdAt: string;
 }
 
@@ -489,6 +492,7 @@ export interface EmployeeRecord {
   bankName: string;
   bankAccount: string;
   profilePhoto: string;
+  payScaleId: string | null;
 }
 
 export interface LeaveRequest {
@@ -793,6 +797,7 @@ export interface Alumni {
   isDonor: boolean;
   donationAmount: number;
   status: 'Active' | 'Inactive';
+  sourceStudentId?: string;
 }
 
 export interface AlumniEvent {
@@ -924,6 +929,10 @@ export interface OnlineExam {
   proctoringEnabled: boolean;
   shuffleQuestions: boolean;
   status: 'Draft' | 'Scheduled' | 'Ongoing' | 'Completed' | 'Cancelled';
+  // When set, a submitted attempt's score is written into marks_entries for
+  // this exam_subjects row — this online exam counts toward the student's
+  // real term result/report card instead of being a standalone practice quiz.
+  examSubjectId: string | null;
 }
 
 export interface OnlineExamQuestion {

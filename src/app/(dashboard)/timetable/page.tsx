@@ -21,7 +21,8 @@ import {
   fetchAcademicYearsDB, fetchClassesDB, fetchSectionsByClassDB, fetchEnrollmentsDB,
 } from "@/app/actions/academic-core";
 import { getSession } from "@/app/actions/auth";
-import { Plus, Trash2, UploadCloud, AlertTriangle, ShieldAlert, Settings, Copy, ArrowUp, ArrowDown } from "lucide-react";
+import { fetchSubstitutionsForDateDB, type SubstitutionRecord } from "@/app/actions/substitutions";
+import { Plus, Trash2, UploadCloud, AlertTriangle, ShieldAlert, Settings, Copy, ArrowUp, ArrowDown, Repeat } from "lucide-react";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 import type { AcademicYear, ClassItem, SectionItem } from "@/lib/types";
@@ -49,6 +50,7 @@ export default function TimetablePage() {
   const [periods, setPeriods] = useState<PeriodSlot[]>([]);
 
   const [entries, setEntries] = useState<TimetableEntry[]>([]);
+  const [todaySubs, setTodaySubs] = useState<SubstitutionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ subjectId: "", teacherId: "", dayOfWeek: "Monday", periodId: "", room: "" });
@@ -227,6 +229,12 @@ export default function TimetablePage() {
     load();
   };
 
+  useEffect(() => {
+    const today = new Date().toISOString().split("T")[0];
+    fetchSubstitutionsForDateDB(today).then(setTodaySubs);
+  }, []);
+  const subForEntry = (entryId: string) => todaySubs.find(s => s.timetableEntryId === entryId);
+
   const getCell = (day: string, periodId: string) => entries.filter(e => {
     const p = periods.find(pp => pp.startTime === e.startTime && pp.endTime === e.endTime);
     return e.dayOfWeek === day && p?.id === periodId;
@@ -377,14 +385,22 @@ export default function TimetablePage() {
                         const cells = getCell(d, p.id);
                         return (
                           <td key={d} className="p-2 align-top">
-                            {cells.map(e => (
+                            {cells.map(e => {
+                              const sub = subForEntry(e.id);
+                              return (
                               <div key={e.id} className={`border rounded-lg p-2 mb-1 relative group ${e.status === "draft" ? "bg-warning/10 border-warning/30" : "bg-primary/10 border-primary/20"}`}>
                                 <div className="flex items-center gap-1">
                                   <p className="font-semibold text-primary text-xs">{e.subjectName}</p>
                                   {e.status === "draft" && <span className="text-[8px] uppercase font-bold text-warning">Draft</span>}
                                 </div>
                                 <p className="text-[10px] text-muted-foreground">{e.className}</p>
-                                <p className="text-[10px] text-muted-foreground">{e.teacherName}</p>
+                                <p className={`text-[10px] ${sub ? "text-muted-foreground line-through" : "text-muted-foreground"}`}>{e.teacherName}</p>
+                                {sub && (
+                                  <p className={`text-[10px] font-semibold flex items-center gap-1 ${sub.status === "unfilled" ? "text-red-600" : "text-blue-600"}`}>
+                                    <Repeat className="h-2.5 w-2.5" />
+                                    {sub.substituteTeacherName || "Unfilled — needs cover"}
+                                  </p>
+                                )}
                                 {e.room && <p className="text-[10px] text-muted-foreground">{e.room}</p>}
                                 {sessionRole === "ADMIN" && (
                                   <button onClick={() => handleDelete(e.id)} className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-600">
@@ -392,7 +408,8 @@ export default function TimetablePage() {
                                   </button>
                                 )}
                               </div>
-                            ))}
+                              );
+                            })}
                           </td>
                         );
                       })}

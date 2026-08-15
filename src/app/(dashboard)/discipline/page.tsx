@@ -52,7 +52,9 @@ const STATUS_FLOW: Record<string, string[]> = {
 
 function formatDate(d: string) {
   if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
+  // Pinned to UTC to keep server and client rendering the same calendar day
+  // for a date-only string — see accounting/page.tsx's formatDate for why.
+  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
 export default function DisciplinePage() {

@@ -2,11 +2,12 @@
 
 import { query } from '@/lib/db';
 import { getSession } from '@/app/actions/auth';
+import { logServerError } from '@/lib/error-log';
 
 export interface MessagingContact {
   userId: number;
   name: string;
-  role: 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT';
+  role: 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE';
 }
 
 // Every allowed contact is derived from real relational data (Enrollment /
@@ -124,7 +125,7 @@ export async function fetchMessagesDB(conversationId: string): Promise<{ error?:
         id: r.id, senderId: r.sender_id, body: r.body, sentAt: r.sent_at, mine: r.sender_id === session.userId,
       })),
     };
-  } catch (err) { console.error(err); return { error: 'Failed to load messages.' }; }
+  } catch (err) { logServerError("messaging", err); return { error: 'Failed to load messages.' }; }
 }
 
 export async function sendMessageDB(recipientUserId: number, body: string): Promise<{ error?: string; conversationId?: string }> {
@@ -160,7 +161,7 @@ export async function sendMessageDB(recipientUserId: number, body: string): Prom
       [messageId, conversationId, session.userId, body.trim()]
     );
     return { conversationId };
-  } catch (err) { console.error(err); return { error: 'Failed to send message.' }; }
+  } catch (err) { logServerError("messaging", err); return { error: 'Failed to send message.' }; }
 }
 
 export async function fetchUnreadMessageCountDB(): Promise<number> {

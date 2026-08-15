@@ -376,7 +376,7 @@ export default function ParentFeesPage() {
                     <span className="font-bold text-accent">Rs. {netDue(payVoucher).toLocaleString()}</span>
                   </div>
                   {payError && (
-                    <div className="flex items-start gap-2 text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-xs">
+                    <div role="alert" className="flex items-start gap-2 text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-xs">
                       <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {payError}
                     </div>
                   )}

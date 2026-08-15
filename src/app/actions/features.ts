@@ -5,8 +5,10 @@ import { prisma } from '@/lib/prisma';
 import type { ParentRecord, TeacherSubjectAssignment, ExamSession, ExamMarkEntry, StudentExamScore, ClassCompilation, ResultPosition } from '@/lib/types';
 import bcrypt from 'bcryptjs';
 import { getSession } from '@/app/actions/auth';
+import { logServerError } from '@/lib/error-log';
+import { logAudit } from '@/lib/audit';
 
-async function notify(title: string, message: string, recipientRole: string, recipientEmail?: string | null) {
+export async function notify(title: string, message: string, recipientRole: string, recipientEmail?: string | null) {
   try {
     const id = `n_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const date = new Date().toISOString().split('T')[0];
@@ -14,7 +16,7 @@ async function notify(title: string, message: string, recipientRole: string, rec
       `INSERT INTO notifications (id, title, message, date, recipient_role, recipient_email, read) VALUES ($1,$2,$3,$4,$5,$6,false)`,
       [id, title, message, date, recipientRole, recipientEmail || null]
     );
-  } catch (err) { console.error('notify failed', err); }
+  } catch (err) { logServerError("features", 'notify failed', err); }
 }
 
 export interface Announcement {
@@ -103,7 +105,7 @@ export async function createAnnouncementDB(data: Omit<Announcement, 'id'>): Prom
        data.targetRole || null, data.targetClass || null, data.priority]
     );
     return {};
-  } catch (err) { console.error(err); return { error: 'Failed to create.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to create.' }; }
 }
 
 export async function deleteAnnouncementDB(id: string): Promise<{ error?: string }> {
@@ -186,7 +188,7 @@ export async function createAssignmentDB(
     ].filter(Boolean) as Promise<void>[]));
 
     return { id };
-  } catch (err) { console.error(err); return { error: 'Failed to create.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to create.' }; }
 }
 
 export async function deleteAssignmentDB(id: string): Promise<{ error?: string }> {
@@ -269,7 +271,7 @@ export async function submitAssignmentDB(data: { assignmentId: string; notes: st
       await notify('New Submission', `${studentName} submitted "${title}"${isLate ? ' (late)' : ''}.`, 'TEACHER', teacher_email);
     }
     return {};
-  } catch (err) { console.error(err); return { error: 'Failed to submit.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to submit.' }; }
 }
 
 export async function gradeSubmissionDB(id: string, grade: string, feedback: string): Promise<{ error?: string }> {
@@ -405,7 +407,7 @@ async function insertTimetableEntry(data: TimetableEntryInput, opts?: { competen
     }
 
     return { id };
-  } catch (err) { console.error(err); return { error: 'Failed to create.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to create.' }; }
 }
 
 export async function createTimetableEntryDB(
@@ -441,7 +443,7 @@ export async function copyTimetableDB(
     }
 
     return { copied, skipped };
-  } catch (err) { console.error(err); return { error: 'Failed to copy timetable.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to copy timetable.' }; }
 }
 
 export async function deleteTimetableEntryDB(id: string): Promise<{ error?: string }> {
@@ -470,7 +472,7 @@ export async function publishTimetableDB(
       [`ttpub_${Date.now()}`, classId, sectionId, academicYearId, publishedByUserId || null, publishedByName || null]
     );
     return { count: res.rowCount ?? 0 };
-  } catch (err) { console.error(err); return { error: 'Failed to publish timetable.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to publish timetable.' }; }
 }
 
 export interface TimetablePublication {
@@ -516,7 +518,7 @@ export async function createPeriodSlotDB(data: Omit<PeriodSlot, 'id'>): Promise<
       [id, data.academicYearId, data.periodNumber, data.label, data.startTime, data.endTime, data.isBreak]
     );
     return { id };
-  } catch (err) { console.error(err); return { error: 'Failed to add period.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to add period.' }; }
 }
 
 export async function updatePeriodSlotDB(id: string, data: Partial<Omit<PeriodSlot, 'id' | 'academicYearId'>>): Promise<{ error?: string }> {
@@ -541,22 +543,43 @@ export async function deletePeriodSlotDB(id: string): Promise<{ error?: string }
 
 // ── User Management (Prisma) ─────────────────────────────────────────────────
 
+// Every function below manages other users' accounts or every role's
+// permissions — admin-only, checked server-side (not just hidden client UI).
+// These had no session check at all before this pass: any authenticated
+// request (or a crafted unauthenticated one) could call updateUserDB to
+// self-promote to ADMIN, or flip another role's permissions.
+async function requireAdmin() {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' } as const;
+  if (session.role !== 'ADMIN') return { error: 'Only administrators can do this.' } as const;
+  return { session };
+}
+
 export async function fetchUsersDB() {
+  const auth = await requireAdmin();
+  if ('error' in auth) return [];
   try {
     const res = await query(
-      `SELECT u.id, u.name, u.email, u.role, u.created_at, COALESCE(u.status, 'ACTIVE') AS status
+      `SELECT u.id, u.name, u.email, u.role, u.created_at, COALESCE(u.status, 'ACTIVE') AS status,
+              u.custom_role_id, cr.name AS custom_role_name, cr.color AS custom_role_color
        FROM users u
-       WHERE COALESCE(u.status, 'ACTIVE') = 'ACTIVE'
+       LEFT JOIN custom_roles cr ON cr.id = u.custom_role_id
+       WHERE COALESCE(u.status, 'ACTIVE') IN ('ACTIVE', 'INACTIVE')
        ORDER BY u.created_at DESC`
     );
     return res.rows.map(r => ({
       id: r.id, name: r.name, email: r.email, role: r.role,
       createdAt: new Date(r.created_at), status: r.status,
+      customRoleId: r.custom_role_id as string | null,
+      customRoleName: r.custom_role_name as string | null,
+      customRoleColor: r.custom_role_color as string | null,
     }));
   } catch { return []; }
 }
 
 export async function fetchPendingUsersDB() {
+  const auth = await requireAdmin();
+  if ('error' in auth) return [];
   try {
     const res = await query(
       `SELECT u.id, u.name, u.email, u.role, u.created_at,
@@ -586,50 +609,184 @@ export async function fetchPendingUsersDB() {
 }
 
 export async function approveUserDB(id: number): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
   try {
     await query('UPDATE users SET status=$1 WHERE id=$2', ['ACTIVE', id]);
+    await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'user', entityId: String(id), summary: `Approved pending account #${id}`, after: { status: 'ACTIVE' } });
     return {};
   } catch { return { error: 'Failed to approve user.' }; }
 }
 
 export async function rejectUserDB(id: number): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
   try {
     await query('DELETE FROM teacher_profiles WHERE user_id=$1', [id]);
     await prisma.user.delete({ where: { id } });
+    await logAudit({ actor: auth.session, action: 'DELETE', entityType: 'user', entityId: String(id), summary: `Rejected and removed pending account #${id}` });
     return {};
   } catch { return { error: 'Failed to reject user.' }; }
 }
 
-export async function updateUserDB(id: number, data: { name?: string; role?: 'ADMIN' | 'TEACHER' | 'STUDENT' }): Promise<{ error?: string }> {
-  try { await prisma.user.update({ where: { id }, data }); return {}; }
-  catch { return { error: 'Failed to update user.' }; }
+export async function updateUserDB(
+  id: number,
+  data: { name?: string; role?: 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE'; customRoleId?: string | null }
+): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
+  try {
+    const { customRoleId, ...prismaData } = data;
+    if (Object.keys(prismaData).length > 0) await prisma.user.update({ where: { id }, data: prismaData });
+    if (customRoleId !== undefined) await query('UPDATE users SET custom_role_id=$1 WHERE id=$2', [customRoleId, id]);
+    await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'user', entityId: String(id), summary: `Updated user #${id}`, after: data });
+    return {};
+  } catch { return { error: 'Failed to update user.' }; }
+}
+
+export async function deactivateUserDB(id: number): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
+  if (auth.session.userId === id) return { error: "You can't deactivate your own account." };
+  try {
+    await query(`UPDATE users SET status='INACTIVE' WHERE id=$1`, [id]);
+    await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'user', entityId: String(id), summary: `Deactivated user #${id}`, after: { status: 'INACTIVE' } });
+    return {};
+  } catch { return { error: 'Failed to deactivate user.' }; }
+}
+
+export async function reactivateUserDB(id: number): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
+  try {
+    await query(`UPDATE users SET status='ACTIVE', failed_login_attempts=0, locked_until=NULL WHERE id=$1`, [id]);
+    await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'user', entityId: String(id), summary: `Reactivated user #${id}`, after: { status: 'ACTIVE' } });
+    return {};
+  } catch { return { error: 'Failed to reactivate user.' }; }
 }
 
 export async function deleteUserDB(id: number): Promise<{ error?: string }> {
-  try { await prisma.user.delete({ where: { id } }); return {}; }
-  catch { return { error: 'Failed to delete user.' }; }
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
+  if (auth.session.userId === id) return { error: "You can't delete your own account." };
+  try {
+    await prisma.user.delete({ where: { id } });
+    await logAudit({ actor: auth.session, action: 'DELETE', entityType: 'user', entityId: String(id), summary: `Deleted user #${id}` });
+    return {};
+  } catch { return { error: 'Failed to delete user.' }; }
 }
 
 export async function resetUserPasswordDB(id: number, newPassword: string): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
   try {
     const passwordHash = await bcrypt.hash(newPassword, 12);
     await prisma.user.update({ where: { id }, data: { passwordHash } });
+    await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'user', entityId: String(id), summary: `Reset password for user #${id}` });
     return {};
   } catch { return { error: 'Failed to reset password.' }; }
 }
 
-export async function createUserDB(name: string, email: string, password: string, role: 'ADMIN' | 'TEACHER' | 'STUDENT'): Promise<{ error?: string }> {
+export async function createUserDB(
+  name: string, email: string, password: string,
+  role: 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE',
+  customRoleId?: string | null
+): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) return { error: 'Email already in use.' };
     const passwordHash = await bcrypt.hash(password, 12);
-    await prisma.user.create({ data: { name, email, passwordHash, role } });
+    const user = await prisma.user.create({ data: { name, email, passwordHash, role } });
+    if (customRoleId) await query('UPDATE users SET custom_role_id=$1 WHERE id=$2', [customRoleId, user.id]);
+    await logAudit({ actor: auth.session, action: 'CREATE', entityType: 'user', entityId: String(user.id), summary: `Created user ${name} (${role})`, after: { name, email, role, customRoleId: customRoleId || null } });
     return {};
   } catch { return { error: 'Failed to create user.' }; }
 }
 
+// Self-service: the session JWT only carries the base `role` (set at login),
+// so a custom-role assignment needs a live lookup rather than requiring
+// every affected user to log out and back in for it to take effect.
+export async function fetchMyCustomRoleIdDB(): Promise<string | null> {
+  const session = await getSession();
+  if (!session) return null;
+  try {
+    const res = await query('SELECT custom_role_id FROM users WHERE id=$1', [session.userId]);
+    return res.rows[0]?.custom_role_id ?? null;
+  } catch { return null; }
+}
+
+// ── Custom Roles ───────────────────────────────────────────────────────────────
+
+export interface CustomRole {
+  id: string; name: string; baseRole: string; description: string; color: string; createdAt: string;
+}
+
+export async function fetchCustomRolesDB(): Promise<CustomRole[]> {
+  const session = await getSession();
+  if (!session) return [];
+  try {
+    const res = await query('SELECT * FROM custom_roles ORDER BY name');
+    return res.rows.map(r => ({
+      id: r.id, name: r.name, baseRole: r.base_role, description: r.description || '',
+      color: r.color || 'blue', createdAt: r.created_at,
+    }));
+  } catch { return []; }
+}
+
+// A new custom role starts as a clone of its base role's current permissions
+// (copy-on-create) rather than all-off — an empty grid is a worse first run
+// than "identical to Teacher, now go customize it."
+export async function createCustomRoleDB(data: { name: string; baseRole: string; description?: string; color?: string }): Promise<{ error?: string; id?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
+  try {
+    const { nanoid } = await import('nanoid');
+    const id = `cr_${nanoid(8)}`;
+    await query(
+      'INSERT INTO custom_roles (id, name, base_role, description, color) VALUES ($1,$2,$3,$4,$5)',
+      [id, data.name, data.baseRole, data.description || '', data.color || 'blue']
+    );
+    const basePerms = await query('SELECT permission, enabled FROM role_permissions WHERE role=$1', [data.baseRole]);
+    for (const p of basePerms.rows) {
+      await query('INSERT INTO role_permissions (role, permission, enabled) VALUES ($1,$2,$3) ON CONFLICT (role, permission) DO NOTHING', [id, p.permission, p.enabled]);
+    }
+    await logAudit({ actor: auth.session, action: 'CREATE', entityType: 'custom_role', entityId: id, summary: `Created custom role "${data.name}" (based on ${data.baseRole})`, after: data });
+    return { id };
+  } catch { return { error: 'Failed to create custom role.' }; }
+}
+
+export async function updateCustomRoleDB(id: string, data: { name?: string; description?: string; color?: string }): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
+  try {
+    await query(
+      'UPDATE custom_roles SET name=COALESCE($1,name), description=COALESCE($2,description), color=COALESCE($3,color) WHERE id=$4',
+      [data.name ?? null, data.description ?? null, data.color ?? null, id]
+    );
+    await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'custom_role', entityId: id, summary: `Updated custom role ${id}`, after: data });
+    return {};
+  } catch { return { error: 'Failed to update custom role.' }; }
+}
+
+export async function deleteCustomRoleDB(id: string): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
+  try {
+    const inUse = await query('SELECT COUNT(*) FROM users WHERE custom_role_id=$1', [id]);
+    if (parseInt(inUse.rows[0].count) > 0) return { error: 'Cannot delete a custom role that is still assigned to users.' };
+    await query('DELETE FROM role_permissions WHERE role=$1', [id]);
+    await query('DELETE FROM custom_roles WHERE id=$1', [id]);
+    await logAudit({ actor: auth.session, action: 'DELETE', entityType: 'custom_role', entityId: id, summary: `Deleted custom role ${id}` });
+    return {};
+  } catch { return { error: 'Failed to delete custom role.' }; }
+}
+
 // ── Role Permissions ──────────────────────────────────────────────────────────
 
+// Deliberately NOT admin-gated: every logged-in user calls this for their own
+// role/custom-role to render their own sidebar and page access.
 export async function fetchRolePermissionsDB(role?: string): Promise<Record<string, boolean>> {
   try {
     const where = role ? `WHERE role = $1` : '';
@@ -642,6 +799,8 @@ export async function fetchRolePermissionsDB(role?: string): Promise<Record<stri
 }
 
 export async function fetchAllRolePermissionsDB(): Promise<Record<string, Record<string, boolean>>> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return {};
   try {
     const res = await query(`SELECT role, permission, enabled FROM role_permissions ORDER BY role, permission`);
     const map: Record<string, Record<string, boolean>> = {};
@@ -654,17 +813,22 @@ export async function fetchAllRolePermissionsDB(): Promise<Record<string, Record
 }
 
 export async function updateRolePermissionDB(role: string, permission: string, enabled: boolean): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
   try {
     await query(
       `INSERT INTO role_permissions (role, permission, enabled) VALUES ($1, $2, $3)
        ON CONFLICT (role, permission) DO UPDATE SET enabled = $3`,
       [role, permission, enabled]
     );
+    await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'role_permission', entityId: `${role}:${permission}`, summary: `Set ${permission} = ${enabled} for role ${role}`, after: { enabled } });
     return {};
   } catch { return { error: 'Failed to update permission.' }; }
 }
 
 export async function bulkUpdateRolePermissionsDB(role: string, permissions: Record<string, boolean>): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
   try {
     for (const [perm, enabled] of Object.entries(permissions)) {
       await query(
@@ -673,6 +837,7 @@ export async function bulkUpdateRolePermissionsDB(role: string, permissions: Rec
         [role, perm, enabled]
       );
     }
+    await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'role_permission', entityId: role, summary: `Bulk-updated ${Object.keys(permissions).length} permission(s) for role ${role}`, after: permissions });
     return {};
   } catch { return { error: 'Failed to update permissions.' }; }
 }
@@ -725,6 +890,17 @@ export async function createTeacherWithProfileDB(
     const passwordHash = await bcrypt.hash(password, 12);
     const user = await prisma.user.create({ data: { name, email, passwordHash, role: 'TEACHER' } });
     const id = `tp_${Date.now()}`;
+    // employees is the canonical HR record for every staff member (teachers
+    // included) — create the linked row in the same flow so this person is
+    // immediately visible/editable in HR and selectable in Payroll/Leave.
+    const empId = `emp_tp_${user.id}`;
+    await query(
+      `INSERT INTO employees (id, user_id, name, email, phone, department, designation, employment_type, joining_date, cnic, address, emergency_contact, emergency_phone, qualification, experience, status, bank_name, bank_account, profile_photo, pay_scale_id)
+       VALUES ($1,$2,$3,$4,$5,'Teaching',$6,$7,$8,$9,$10,'','',$11,$12,$13,'','','',$14)`,
+      [empId, user.id, name, email, profile.phone, profile.designation || '', profile.employmentType || 'fulltime',
+       profile.joiningDate, profile.cnic, profile.address, profile.qualification, profile.experienceYears,
+       profile.status === 'inactive' ? 'Inactive' : 'Active', profile.payScaleId || null]
+    );
     await query(
       `INSERT INTO teacher_profiles (id, user_id, phone, cnic, specialization, qualification, experience_years, joining_date, address, profile_photo, degree_photo, employee_id, employment_type, status, pay_scale_id, designation)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
@@ -751,6 +927,61 @@ export async function fetchAllTeacherProfilesDB(): Promise<TeacherProfile[]> {
     const res = await query('SELECT * FROM teacher_profiles ORDER BY created_at DESC');
     return res.rows.map(mapTeacherProfile);
   } catch { return []; }
+}
+
+// Every other field on a teacher was permanently fixed at creation time until
+// this — the Teacher module redesign's core fix. ADMIN-only, unlike the
+// sibling functions above which have no session check (pre-existing gap;
+// not touched here to keep this change contained — see the redesign plan).
+export async function updateTeacherProfileDB(
+  userId: number, data: Partial<Omit<TeacherProfile, 'id' | 'userId' | 'status'>>
+): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can edit teacher profiles.' };
+  try {
+    const fields: string[] = []; const vals: any[] = []; let i = 1;
+    if (data.phone !== undefined) { fields.push(`phone=$${i++}`); vals.push(data.phone); }
+    if (data.cnic !== undefined) { fields.push(`cnic=$${i++}`); vals.push(data.cnic); }
+    if (data.specialization !== undefined) { fields.push(`specialization=$${i++}`); vals.push(data.specialization); }
+    if (data.qualification !== undefined) { fields.push(`qualification=$${i++}`); vals.push(data.qualification); }
+    if (data.experienceYears !== undefined) { fields.push(`experience_years=$${i++}`); vals.push(data.experienceYears); }
+    if (data.joiningDate !== undefined) { fields.push(`joining_date=$${i++}`); vals.push(data.joiningDate); }
+    if (data.address !== undefined) { fields.push(`address=$${i++}`); vals.push(data.address); }
+    if (data.profilePhoto !== undefined) { fields.push(`profile_photo=$${i++}`); vals.push(data.profilePhoto); }
+    if (data.degreePhoto !== undefined) { fields.push(`degree_photo=$${i++}`); vals.push(data.degreePhoto); }
+    if (data.employeeId !== undefined) { fields.push(`employee_id=$${i++}`); vals.push(data.employeeId || null); }
+    if (data.employmentType !== undefined) { fields.push(`employment_type=$${i++}`); vals.push(data.employmentType); }
+    if (data.designation !== undefined) { fields.push(`designation=$${i++}`); vals.push(data.designation); }
+    if (data.payScaleId !== undefined) { fields.push(`pay_scale_id=$${i++}`); vals.push(data.payScaleId || null); }
+    if (!fields.length) return {};
+    vals.push(userId);
+    await query(`UPDATE teacher_profiles SET ${fields.join(',')} WHERE user_id=$${i}`, vals);
+
+    // employees is the canonical HR record — keep the linked row's
+    // overlapping fields in sync so HR/Payroll see the same data a Teacher
+    // profile edit just wrote, without a second manual entry.
+    const empFields: string[] = []; const empVals: any[] = []; let j = 1;
+    if (data.phone !== undefined) { empFields.push(`phone=$${j++}`); empVals.push(data.phone); }
+    if (data.cnic !== undefined) { empFields.push(`cnic=$${j++}`); empVals.push(data.cnic); }
+    if (data.address !== undefined) { empFields.push(`address=$${j++}`); empVals.push(data.address); }
+    if (data.qualification !== undefined) { empFields.push(`qualification=$${j++}`); empVals.push(data.qualification); }
+    if (data.experienceYears !== undefined) { empFields.push(`experience=$${j++}`); empVals.push(data.experienceYears); }
+    if (data.joiningDate !== undefined) { empFields.push(`joining_date=$${j++}`); empVals.push(data.joiningDate); }
+    if (data.employmentType !== undefined) { empFields.push(`employment_type=$${j++}`); empVals.push(data.employmentType); }
+    if (data.designation !== undefined) { empFields.push(`designation=$${j++}`); empVals.push(data.designation || ''); }
+    if (data.payScaleId !== undefined) { empFields.push(`pay_scale_id=$${j++}`); empVals.push(data.payScaleId || null); }
+    if (empFields.length) {
+      empVals.push(userId);
+      await query(`UPDATE employees SET ${empFields.join(',')} WHERE user_id=$${j}`, empVals);
+    }
+
+    await logAudit({
+      actor: { userId: session.userId, name: session.name, role: session.role },
+      action: 'UPDATE', entityType: 'teacher_profile', entityId: String(userId),
+      summary: `Updated teacher profile fields: ${Object.keys(data).join(', ')}`,
+    });
+    return {};
+  } catch { return { error: 'Failed to update teacher profile.' }; }
 }
 
 // ── Teacher status (deactivation guarded by active assignments) ────────────────
@@ -885,7 +1116,7 @@ export async function createParentDB(data: Omit<ParentRecord, 'id'>): Promise<{ 
       [id, data.name, data.email, data.phone || null, JSON.stringify(data.studentIds || []), data.status]
     );
     return { id };
-  } catch (err) { console.error(err); return { error: 'Failed to create parent.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to create parent.' }; }
 }
 
 export async function updateParentDB(id: string, data: Partial<Omit<ParentRecord, 'id'>>): Promise<{ error?: string }> {
@@ -982,7 +1213,7 @@ export async function createExamSessionDB(
       ]
     );
     return { id };
-  } catch (err) { console.error(err); return { error: 'Failed to create exam session.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to create exam session.' }; }
 }
 
 export async function updateExamSessionStatusDB(
@@ -1104,7 +1335,7 @@ export async function upsertExamMarksDB(data: {
       );
       return { id };
     }
-  } catch (err) { console.error(err); return { error: 'Failed to save marks.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to save marks.' }; }
 }
 
 // ── Class Compilations ────────────────────────────────────────────────────────
@@ -1174,7 +1405,7 @@ export async function submitClassCompilationDB(
       [sessionId, className]
     );
     return { id };
-  } catch (err) { console.error(err); return { error: 'Failed to submit compilation.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to submit compilation.' }; }
 }
 
 // ── Teacher Subject Assignments ───────────────────────────────────────────────
@@ -1215,7 +1446,7 @@ export async function createTeacherSubjectAssignmentDB(
       [id, data.teacherId, data.teacherName, data.subjectName, data.className]
     );
     return { id };
-  } catch (err) { console.error(err); return { error: 'Failed to create assignment.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to create assignment.' }; }
 }
 
 export async function deleteTeacherSubjectAssignmentDB(id: string): Promise<{ error?: string }> {
@@ -1307,7 +1538,7 @@ export async function approveClassCompilationDB(
       );
     }
     return {};
-  } catch (err) { console.error(err); return { error: 'Failed to approve compilation.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to approve compilation.' }; }
 }
 
 export async function rejectClassCompilationDB(
@@ -1329,7 +1560,7 @@ export async function rejectClassCompilationDB(
       [session_id, class_name]
     );
     return {};
-  } catch (err) { console.error(err); return { error: 'Failed to reject compilation.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to reject compilation.' }; }
 }
 
 export async function fetchResultPositionsDB(
@@ -1367,7 +1598,7 @@ export async function publishSessionDB(
       [publish ? 'published' : 'approved', sessionId]
     );
     return {};
-  } catch (err) { console.error(err); return { error: 'Failed to update session status.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to update session status.' }; }
 }
 
 export async function fetchPublishedResultsForStudentDB(
@@ -1408,7 +1639,7 @@ export async function fetchPublishedResultsForStudentDB(
       });
     }
     return results;
-  } catch (err) { console.error(err); return []; }
+  } catch (err) { logServerError("features", err); return []; }
 }
 
 // ── Profile Photo ─────────────────────────────────────────────────────────────
@@ -1480,6 +1711,69 @@ export async function updateCourseDB(id: string, data: Partial<import('@/lib/typ
 
 export async function deleteCourseDB(id: string): Promise<{ error?: string }> {
   try { await query('DELETE FROM courses WHERE id=$1', [id]); return {}; } catch { return { error: 'Failed to delete course.' }; }
+}
+
+// ── Course Materials (Notes + Video Lectures) ───────────────────────────────
+// Notes are stored as base64 data URIs (type='document'), the same
+// readAsDataURL pattern already used for photo uploads elsewhere in this app —
+// no blob storage exists here, and study notes are small enough for this to
+// be fine. Video Lectures (type='video') store a YouTube/Vimeo URL, embedded
+// via iframe — actual video file upload isn't attempted, base64-in-DB doesn't
+// scale to video file sizes and there's no alternative storage in this codebase.
+
+async function requireCourseMaterialWriteAccess(courseId: string): Promise<{ userId: number; name: string; role: string } | { error: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' };
+  if (session.role === 'ADMIN') return { userId: session.userId, name: session.name, role: session.role };
+  if (session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage course materials.' };
+  const courseRes = await query('SELECT teacher_name FROM courses WHERE id=$1', [courseId]);
+  if (courseRes.rows.length === 0) return { error: 'Course not found.' };
+  if (courseRes.rows[0].teacher_name !== session.name) {
+    return { error: 'You can only manage materials for your own courses.' };
+  }
+  return { userId: session.userId, name: session.name, role: session.role };
+}
+
+export async function fetchCourseMaterialsDB(courseId: string): Promise<import('@/lib/types').CourseMaterial[]> {
+  const session = await getSession();
+  if (!session) return [];
+  try {
+    const res = await query('SELECT * FROM course_materials WHERE course_id=$1 ORDER BY created_at DESC', [courseId]);
+    return res.rows.map(r => ({
+      id: r.id, courseId: r.course_id, title: r.title, type: r.type, url: r.url,
+      fileName: r.file_name, description: r.description, createdByName: r.created_by_name, createdAt: r.created_at,
+    }));
+  } catch { return []; }
+}
+
+export async function createCourseMaterialDB(data: {
+  courseId: string; title: string; type: 'video' | 'document'; url: string; fileName?: string; description?: string;
+}): Promise<{ error?: string; id?: string }> {
+  const auth = await requireCourseMaterialWriteAccess(data.courseId);
+  if ('error' in auth) return { error: auth.error };
+  if (!data.title.trim() || !data.url.trim()) return { error: 'Title and content are required.' };
+  try {
+    const id = `cm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    await query(
+      `INSERT INTO course_materials (id, course_id, title, type, url, file_name, description, created_by_user_id, created_by_name, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [id, data.courseId, data.title.trim(), data.type, data.url, data.fileName || null, data.description || null, auth.userId, auth.name, new Date().toISOString()]
+    );
+    return { id };
+  } catch { return { error: 'Failed to add material.' }; }
+}
+
+export async function deleteCourseMaterialDB(id: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' };
+  try {
+    const res = await query('SELECT course_id FROM course_materials WHERE id=$1', [id]);
+    if (res.rows.length === 0) return {};
+    const auth = await requireCourseMaterialWriteAccess(res.rows[0].course_id);
+    if ('error' in auth) return { error: auth.error };
+    await query('DELETE FROM course_materials WHERE id=$1', [id]);
+    return {};
+  } catch { return { error: 'Failed to delete material.' }; }
 }
 
 // Library ────────────────────────────────────────────────────────────────────
@@ -1629,19 +1923,90 @@ export async function fetchTransportVehiclesDB(routeId?: string): Promise<import
 
 // HR ──────────────────────────────────────────────────────────────────────────
 export async function fetchEmployeesDB(): Promise<import('@/lib/types').EmployeeRecord[]> {
-  try { const res = await query('SELECT * FROM employees ORDER BY name'); return res.rows.map(r => ({ id: r.id, userId: r.user_id, name: r.name, email: r.email, phone: r.phone, department: r.department, designation: r.designation, employmentType: r.employment_type, joiningDate: r.joining_date, cnic: r.cnic, address: r.address, emergencyContact: r.emergency_contact, emergencyPhone: r.emergency_phone, qualification: r.qualification, experience: r.experience, status: r.status, bankName: r.bank_name, bankAccount: r.bank_account, profilePhoto: r.profile_photo })); } catch { return []; }
+  const session = await getSession();
+  if (!session) return [];
+  try { const res = await query('SELECT * FROM employees ORDER BY name'); return res.rows.map(r => ({ id: r.id, userId: r.user_id, name: r.name, email: r.email, phone: r.phone, department: r.department, designation: r.designation, employmentType: r.employment_type, joiningDate: r.joining_date, cnic: r.cnic, address: r.address, emergencyContact: r.emergency_contact, emergencyPhone: r.emergency_phone, qualification: r.qualification, experience: r.experience, status: r.status, bankName: r.bank_name, bankAccount: r.bank_account, profilePhoto: r.profile_photo, payScaleId: r.pay_scale_id ?? null })); } catch { return []; }
 }
 
-export async function createEmployeeDB(data: Omit<import('@/lib/types').EmployeeRecord, 'id'>): Promise<{ error?: string; id?: string }> {
+// Every staff member (teaching or not) is fundamentally a `users` row —
+// this replaces the old createEmployeeDB, which never created a login and
+// always wrote user_id=0, making every HR-added "employee" a phantom record
+// invisible to Payroll/Leave. ADMIN-only.
+export async function createStaffEmployeeDB(
+  name: string, email: string, password: string,
+  data: Omit<import('@/lib/types').EmployeeRecord, 'id' | 'userId' | 'name' | 'email'>
+): Promise<{ error?: string; userId?: number }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can add staff.' };
   try {
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) return { error: 'Email already in use.' };
+    const passwordHash = await bcrypt.hash(password, 12);
+    const user = await prisma.user.create({ data: { name, email, passwordHash, role: 'EMPLOYEE' } });
     const id = `emp_${Date.now()}`;
-    await query(`INSERT INTO employees (id, user_id, name, email, phone, department, designation, employment_type, joining_date, cnic, address, emergency_contact, emergency_phone, qualification, experience, status, bank_name, bank_account, profile_photo) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
-      [id, data.userId, data.name, data.email, data.phone, data.department, data.designation, data.employmentType, data.joiningDate, data.cnic, data.address, data.emergencyContact, data.emergencyPhone, data.qualification, data.experience, data.status, data.bankName, data.bankAccount, data.profilePhoto]);
-    return { id };
-  } catch (err: any) { return { error: err?.message || 'Failed.' }; }
+    await query(`INSERT INTO employees (id, user_id, name, email, phone, department, designation, employment_type, joining_date, cnic, address, emergency_contact, emergency_phone, qualification, experience, status, bank_name, bank_account, profile_photo, pay_scale_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+      [id, user.id, name, email, data.phone, data.department, data.designation, data.employmentType, data.joiningDate, data.cnic, data.address, data.emergencyContact, data.emergencyPhone, data.qualification, data.experience, data.status, data.bankName, data.bankAccount, data.profilePhoto, (data as any).payScaleId || null]);
+    return { userId: user.id };
+  } catch (err: any) { return { error: err?.message || 'Failed to create staff member.' }; }
+}
+
+export async function updateEmployeeDB(userId: number, data: Partial<Omit<import('@/lib/types').EmployeeRecord, 'id' | 'userId'>>): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can edit staff.' };
+  try {
+    const fields: string[] = []; const vals: any[] = []; let i = 1;
+    const colMap: Record<string, string> = { phone: 'phone', department: 'department', designation: 'designation', employmentType: 'employment_type', joiningDate: 'joining_date', cnic: 'cnic', address: 'address', emergencyContact: 'emergency_contact', emergencyPhone: 'emergency_phone', qualification: 'qualification', experience: 'experience', status: 'status', bankName: 'bank_name', bankAccount: 'bank_account', profilePhoto: 'profile_photo', payScaleId: 'pay_scale_id' };
+    for (const [key, col] of Object.entries(colMap)) {
+      const v = (data as any)[key];
+      if (v !== undefined) { fields.push(`${col}=$${i++}`); vals.push(v); }
+    }
+    if (!fields.length) return {};
+    vals.push(userId);
+    await query(`UPDATE employees SET ${fields.join(',')} WHERE user_id=$${i}`, vals);
+    // Keep the linked Teacher profile's overlapping fields in sync too.
+    await query(
+      `UPDATE teacher_profiles SET
+         phone = COALESCE($1, phone), cnic = COALESCE($2, cnic), address = COALESCE($3, address),
+         qualification = COALESCE($4, qualification), experience_years = COALESCE($5, experience_years),
+         joining_date = COALESCE($6, joining_date), employment_type = COALESCE($7, employment_type),
+         designation = COALESCE($8, designation), pay_scale_id = COALESCE($9, pay_scale_id)
+       WHERE user_id=$10`,
+      [data.phone ?? null, data.cnic ?? null, data.address ?? null, data.qualification ?? null,
+       data.experience ?? null, data.joiningDate ?? null, data.employmentType ?? null,
+       data.designation ?? null, (data as any).payScaleId ?? null, userId]
+    );
+    return {};
+  } catch { return { error: 'Failed to update staff member.' }; }
+}
+
+export async function deleteEmployeeDB(userId: number): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can remove staff.' };
+  try { await query('DELETE FROM employees WHERE user_id=$1', [userId]); return {}; }
+  catch { return { error: 'Failed to remove staff member.' }; }
+}
+
+// Powers every staff picker (Leave, Salary Structures, Payslips, Performance)
+// — real people only, sourced from users+employees, never hand-typed again.
+export async function fetchStaffDirectoryDB(): Promise<{ userId: number; name: string; role: string; department: string; designation: string; payScaleId: string | null }[]> {
+  const session = await getSession();
+  if (!session) return [];
+  try {
+    const res = await query(
+      `SELECT u.id as user_id, u.name, u.role, e.department, e.designation, e.pay_scale_id
+       FROM users u JOIN employees e ON e.user_id = u.id
+       WHERE u.role IN ('ADMIN','TEACHER','EMPLOYEE')
+       ORDER BY u.name`
+    );
+    return res.rows.map(r => ({ userId: r.user_id, name: r.name, role: r.role, department: r.department, designation: r.designation, payScaleId: r.pay_scale_id }));
+  } catch { return []; }
 }
 
 export async function fetchLeaveRequestsDB(employeeId?: number): Promise<import('@/lib/types').LeaveRequest[]> {
+  const session = await getSession();
+  if (!session) return [];
+  // Non-admins may only see their own leave requests (self-service).
+  if (session.role !== 'ADMIN') employeeId = session.userId;
   try {
     let sql = 'SELECT * FROM leave_requests';
     const params: any[] = [];
@@ -1652,25 +2017,78 @@ export async function fetchLeaveRequestsDB(employeeId?: number): Promise<import(
   } catch { return []; }
 }
 
+// Any authenticated staff member can self-submit; admins can submit on
+// behalf of someone else via the HR picker.
 export async function createLeaveRequestDB(data: Omit<import('@/lib/types').LeaveRequest, 'id'>): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'You must be signed in to submit a leave request.' };
   try {
     const id = `lr_${Date.now()}`;
     await query(`INSERT INTO leave_requests (id, employee_id, employee_name, leave_type, start_date, end_date, total_days, reason, status, approved_by, applied_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [id, data.employeeId, data.employeeName, data.leaveType, data.startDate, data.endDate, data.totalDays, data.reason, data.status, data.approvedBy || null, data.appliedAt]);
+      [id, data.employeeId, data.employeeName, data.leaveType, data.startDate, data.endDate, data.totalDays, data.reason, data.status, data.approvedBy || '', data.appliedAt]);
     return {};
   } catch { return { error: 'Failed.' }; }
 }
 
 export async function approveLeaveDB(id: string, approvedBy: string): Promise<{ error?: string }> {
-  try { await query('UPDATE leave_requests SET status=$1, approved_by=$2 WHERE id=$3', ['Approved', approvedBy, id]); return {}; } catch { return { error: 'Failed.' }; }
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can approve leave.' };
+  try {
+    const leaveRes = await query('SELECT employee_id, start_date, end_date FROM leave_requests WHERE id=$1', [id]);
+    await query('UPDATE leave_requests SET status=$1, approved_by=$2 WHERE id=$3', ['Approved', approvedBy, id]);
+
+    // Missing link this session added: an approved leave now feeds the
+    // timetable substitution engine for every date in range, same as marking
+    // a teacher Absent does — a school shouldn't need both a leave approval
+    // AND a separate manual attendance entry to get a substitute assigned.
+    if (leaveRes.rows.length > 0) {
+      const { employee_id, start_date, end_date } = leaveRes.rows[0];
+      const { generateSubstitutionsForTeacherDateDB } = await import('./substitutions');
+      const start = new Date(`${start_date}T00:00:00`);
+      const end = new Date(`${end_date}T00:00:00`);
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        await generateSubstitutionsForTeacherDateDB(employee_id, d.toISOString().split('T')[0], 'leave');
+      }
+    }
+    return {};
+  } catch { return { error: 'Failed.' }; }
 }
 
 export async function rejectLeaveDB(id: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can reject leave.' };
   try { await query("UPDATE leave_requests SET status='Rejected' WHERE id=$1", [id]); return {}; } catch { return { error: 'Failed.' }; }
+}
+
+// Performance ─────────────────────────────────────────────────────────────────
+export async function fetchPerformanceEvaluationsDB(employeeId?: number): Promise<import('@/lib/types').PerformanceEvaluation[]> {
+  const session = await getSession();
+  if (!session) return [];
+  try {
+    let sql = 'SELECT * FROM performance_evaluations';
+    const params: any[] = [];
+    if (employeeId !== undefined) { params.push(employeeId); sql += ` WHERE employee_id=$${params.length}`; }
+    sql += ' ORDER BY evaluation_date DESC';
+    const res = await query(sql, params);
+    return res.rows.map(r => ({ id: r.id, employeeId: r.employee_id, employeeName: r.employee_name, evaluatorName: r.evaluator_name, evaluationDate: r.evaluation_date, rating: r.rating, feedback: r.feedback, goals: r.goals, overallScore: r.overall_score }));
+  } catch { return []; }
+}
+
+export async function createPerformanceEvaluationDB(data: Omit<import('@/lib/types').PerformanceEvaluation, 'id'>): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can record a performance evaluation.' };
+  try {
+    const id = `pe_${Date.now()}`;
+    await query(`INSERT INTO performance_evaluations (id, employee_id, employee_name, evaluator_name, evaluation_date, rating, feedback, goals, overall_score) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, data.employeeId, data.employeeName, data.evaluatorName, data.evaluationDate, data.rating, data.feedback, data.goals, data.overallScore]);
+    return { id };
+  } catch { return { error: 'Failed to save evaluation.' }; }
 }
 
 // Payroll ─────────────────────────────────────────────────────────────────────
 export async function fetchSalaryStructuresDB(): Promise<import('@/lib/types').SalaryStructure[]> {
+  const session = await getSession();
+  if (!session) return [];
   try {
     const res = await query('SELECT * FROM salary_structures ORDER BY employee_name');
     return res.rows.map(r => ({ id: r.id, name: r.name, employeeId: r.employee_id, employeeName: r.employee_name, basicSalary: r.basic_salary, allowances: r.allowances || [], deductions: r.deductions || [], totalSalary: r.total_salary, isActive: r.is_active }));
@@ -1678,6 +2096,8 @@ export async function fetchSalaryStructuresDB(): Promise<import('@/lib/types').S
 }
 
 export async function createSalaryStructureDB(data: Omit<import('@/lib/types').SalaryStructure, 'id'>): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can create a salary structure.' };
   try {
     const id = `ss_${Date.now()}`;
     await query(`INSERT INTO salary_structures (id, name, employee_id, employee_name, basic_salary, allowances, deductions, total_salary, is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -1686,7 +2106,27 @@ export async function createSalaryStructureDB(data: Omit<import('@/lib/types').S
   } catch { return { error: 'Failed.' }; }
 }
 
+export async function updateSalaryStructureDB(id: string, data: Partial<Omit<import('@/lib/types').SalaryStructure, 'id' | 'employeeId' | 'employeeName'>>): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can edit a salary structure.' };
+  try {
+    const fields: string[] = []; const vals: any[] = []; let i = 1;
+    if (data.name !== undefined) { fields.push(`name=$${i++}`); vals.push(data.name); }
+    if (data.basicSalary !== undefined) { fields.push(`basic_salary=$${i++}`); vals.push(data.basicSalary); }
+    if (data.allowances !== undefined) { fields.push(`allowances=$${i++}`); vals.push(JSON.stringify(data.allowances)); }
+    if (data.deductions !== undefined) { fields.push(`deductions=$${i++}`); vals.push(JSON.stringify(data.deductions)); }
+    if (data.totalSalary !== undefined) { fields.push(`total_salary=$${i++}`); vals.push(data.totalSalary); }
+    if (data.isActive !== undefined) { fields.push(`is_active=$${i++}`); vals.push(data.isActive); }
+    if (!fields.length) return {};
+    vals.push(id);
+    await query(`UPDATE salary_structures SET ${fields.join(',')} WHERE id=$${i}`, vals);
+    return {};
+  } catch { return { error: 'Failed to update salary structure.' }; }
+}
+
 export async function generatePayslipDB(data: Omit<import('@/lib/types').Payslip, 'id'>): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can generate a payslip.' };
   try {
     const id = `ps_${Date.now()}`;
     await query(`INSERT INTO payslips (id, employee_id, employee_name, month, year, basic_salary, allowances, deductions, gross_pay, total_deductions, net_pay, tax_amount, overtime_pay, status, generated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
@@ -1695,7 +2135,45 @@ export async function generatePayslipDB(data: Omit<import('@/lib/types').Payslip
   } catch { return { error: 'Failed.' }; }
 }
 
+// Generates one payslip per active staff member with an active salary
+// structure for the given month/year, skipping (and counting) anyone
+// without one — the manual one-by-one flow is the norm in budget school ERPs.
+export async function bulkGeneratePayslipsDB(month: string, year: number): Promise<{ error?: string; generated?: number; skipped?: number }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can generate payslips.' };
+  try {
+    const structures = await query('SELECT * FROM salary_structures WHERE is_active = true');
+    const existing = await query('SELECT employee_id FROM payslips WHERE month=$1 AND year=$2', [month, year]);
+    const already = new Set(existing.rows.map((r: any) => r.employee_id));
+    let generated = 0, skipped = 0;
+    for (const s of structures.rows) {
+      if (already.has(s.employee_id)) { skipped++; continue; }
+      const allowances = s.allowances || []; const deductions = s.deductions || [];
+      const allowanceTotal = allowances.reduce((sum: number, a: any) => sum + (a.type === 'Percentage' ? Math.round(s.basic_salary * a.amount / 100) : a.amount), 0);
+      const deductionTotal = deductions.reduce((sum: number, d: any) => sum + (d.type === 'Percentage' ? Math.round(s.basic_salary * d.amount / 100) : d.amount), 0);
+      const grossPay = s.basic_salary + allowanceTotal;
+      const netPay = grossPay - deductionTotal;
+      const id = `ps_${Date.now()}_${s.employee_id}`;
+      await query(`INSERT INTO payslips (id, employee_id, employee_name, month, year, basic_salary, allowances, deductions, gross_pay, total_deductions, net_pay, tax_amount, overtime_pay, status, generated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0,'Generated',$12)`,
+        [id, s.employee_id, s.employee_name, month, year, s.basic_salary, JSON.stringify(allowances), JSON.stringify(deductions), grossPay, deductionTotal, netPay, new Date().toISOString()]);
+      generated++;
+    }
+    return { generated, skipped };
+  } catch { return { error: 'Bulk generation failed.' }; }
+}
+
+export async function markPayslipPaidDB(id: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can mark a payslip paid.' };
+  try { await query("UPDATE payslips SET status='Paid' WHERE id=$1", [id]); return {}; }
+  catch { return { error: 'Failed.' }; }
+}
+
 export async function fetchPayslipsDB(employeeId?: number): Promise<import('@/lib/types').Payslip[]> {
+  const session = await getSession();
+  if (!session) return [];
+  // Non-admins may only see their own payslips (self-service), never anyone else's.
+  if (session.role !== 'ADMIN') employeeId = session.userId;
   try {
     let sql = 'SELECT * FROM payslips';
     const params: any[] = [];
@@ -1834,10 +2312,20 @@ export async function registerForEventDB(data: Omit<import('@/lib/types').EventR
 
 // Alumni ──────────────────────────────────────────────────────────────────────
 export async function fetchAlumniDB(): Promise<import('@/lib/types').Alumni[]> {
-  try { const res = await query('SELECT * FROM alumni ORDER BY graduation_year DESC, name'); return res.rows.map(r => ({ id: r.id, name: r.name, email: r.email, phone: r.phone, graduationYear: r.graduation_year, class: r.class, currentOccupation: r.current_occupation, company: r.company, address: r.address, linkedinUrl: r.linkedin_url, facebookUrl: r.facebook_url, isDonor: r.is_donor, donationAmount: r.donation_amount, status: r.status })); } catch { return []; }
+  try {
+    const res = await query('SELECT * FROM alumni ORDER BY graduation_year DESC, name');
+    return res.rows.map(r => ({
+      id: r.id, name: r.name, email: r.email, phone: r.phone, graduationYear: r.graduation_year, class: r.class,
+      currentOccupation: r.current_occupation, company: r.company, address: r.address, linkedinUrl: r.linkedin_url,
+      facebookUrl: r.facebook_url, isDonor: r.is_donor, donationAmount: r.donation_amount, status: r.status,
+      sourceStudentId: r.source_student_id,
+    }));
+  } catch { return []; }
 }
 
 export async function createAlumniDB(data: Omit<import('@/lib/types').Alumni, 'id'>): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can add alumni.' };
   try {
     const id = `al_${Date.now()}`;
     await query(`INSERT INTO alumni (id, name, email, phone, graduation_year, class, current_occupation, company, address, linkedin_url, facebook_url, is_donor, donation_amount, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
@@ -1885,7 +2373,9 @@ export async function createResearchProjectDB(data: Omit<import('@/lib/types').R
 
 // Online Exams ────────────────────────────────────────────────────────────────
 export async function fetchOnlineExamsDB(): Promise<import('@/lib/types').OnlineExam[]> {
-  try { const res = await query('SELECT * FROM online_exams ORDER BY start_time DESC'); return res.rows.map(r => ({ id: r.id, title: r.title, className: r.class_name, subject: r.subject, duration: r.duration, totalMarks: r.total_marks, passingMarks: r.passing_marks, startTime: r.start_time, endTime: r.end_time, instructions: r.instructions, proctoringEnabled: r.proctoring_enabled, shuffleQuestions: r.shuffle_questions, status: r.status })); } catch { return []; }
+  const session = await getSession();
+  if (!session) return [];
+  try { const res = await query('SELECT * FROM online_exams ORDER BY start_time DESC'); return res.rows.map(r => ({ id: r.id, title: r.title, className: r.class_name, subject: r.subject, duration: r.duration, totalMarks: r.total_marks, passingMarks: r.passing_marks, startTime: r.start_time, endTime: r.end_time, instructions: r.instructions, proctoringEnabled: r.proctoring_enabled, shuffleQuestions: r.shuffle_questions, status: r.status, examSubjectId: r.exam_subject_id ?? null })); } catch { return []; }
 }
 
 export async function createOnlineExamDB(data: Omit<import('@/lib/types').OnlineExam, 'id'>): Promise<{ error?: string; id?: string }> {
@@ -1894,8 +2384,8 @@ export async function createOnlineExamDB(data: Omit<import('@/lib/types').Online
   if (session.role !== 'ADMIN' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can create exams.' };
   try {
     const id = `oe_${Date.now()}`;
-    await query(`INSERT INTO online_exams (id, title, class_name, subject, duration, total_marks, passing_marks, start_time, end_time, instructions, proctoring_enabled, shuffle_questions, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-      [id, data.title, data.className, data.subject, data.duration, data.totalMarks, data.passingMarks, data.startTime, data.endTime, data.instructions, data.proctoringEnabled, data.shuffleQuestions, data.status]);
+    await query(`INSERT INTO online_exams (id, title, class_name, subject, duration, total_marks, passing_marks, start_time, end_time, instructions, proctoring_enabled, shuffle_questions, status, exam_subject_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      [id, data.title, data.className, data.subject, data.duration, data.totalMarks, data.passingMarks, data.startTime, data.endTime, data.instructions, data.proctoringEnabled, data.shuffleQuestions, data.status, data.examSubjectId || null]);
     return { id };
   } catch { return { error: 'Failed.' }; }
 }
@@ -1909,14 +2399,36 @@ export async function updateOnlineExamDB(id: string, data: Partial<Omit<import('
       `UPDATE online_exams SET title=COALESCE($1,title), class_name=COALESCE($2,class_name), subject=COALESCE($3,subject),
        duration=COALESCE($4,duration), total_marks=COALESCE($5,total_marks), passing_marks=COALESCE($6,passing_marks),
        start_time=COALESCE($7,start_time), end_time=COALESCE($8,end_time), instructions=COALESCE($9,instructions),
-       proctoring_enabled=COALESCE($10,proctoring_enabled), shuffle_questions=COALESCE($11,shuffle_questions), status=COALESCE($12,status)
-       WHERE id=$13`,
+       proctoring_enabled=COALESCE($10,proctoring_enabled), shuffle_questions=COALESCE($11,shuffle_questions), status=COALESCE($12,status),
+       exam_subject_id=COALESCE($13,exam_subject_id)
+       WHERE id=$14`,
       [data.title ?? null, data.className ?? null, data.subject ?? null, data.duration ?? null, data.totalMarks ?? null,
        data.passingMarks ?? null, data.startTime ?? null, data.endTime ?? null, data.instructions ?? null,
-       data.proctoringEnabled ?? null, data.shuffleQuestions ?? null, data.status ?? null, id]
+       data.proctoringEnabled ?? null, data.shuffleQuestions ?? null, data.status ?? null, data.examSubjectId ?? null, id]
     );
     return {};
   } catch { return { error: 'Failed to update exam.' }; }
+}
+
+// Writes a submitted/graded online-exam score into marks_entries so it
+// counts toward the student's real term result — only when the exam was
+// explicitly tied to a real exam_subjects row (online_exams.exam_subject_id).
+// Bypasses upsertMarksEntryDB's ADMIN/TEACHER role gate on purpose: this is a
+// system-triggered sync following a legitimate student submission or teacher
+// grading action that has already been authorized by its own caller.
+async function syncOnlineExamScoreToMarksDB(examId: string, studentId: string, score: number): Promise<void> {
+  try {
+    const examRes = await query('SELECT exam_subject_id FROM online_exams WHERE id=$1', [examId]);
+    const examSubjectId = examRes.rows[0]?.exam_subject_id;
+    if (!examSubjectId) return;
+    const existing = await query('SELECT id FROM marks_entries WHERE exam_subject_id=$1 AND student_id=$2', [examSubjectId, studentId]);
+    if (existing.rows.length > 0) {
+      await query('UPDATE marks_entries SET marks_obtained=$1 WHERE id=$2', [score, existing.rows[0].id]);
+    } else {
+      const id = `me_oe_${Date.now()}`;
+      await query('INSERT INTO marks_entries (id, exam_subject_id, student_id, marks_obtained) VALUES ($1,$2,$3,$4)', [id, examSubjectId, studentId, score]);
+    }
+  } catch (err) { logServerError("features", "syncOnlineExamScoreToMarksDB failed", err); }
 }
 
 export async function deleteOnlineExamDB(id: string): Promise<{ error?: string }> {
@@ -2022,7 +2534,7 @@ export async function fetchAvailableOnlineExamsForStudentDB(): Promise<import('@
       `SELECT * FROM online_exams WHERE class_name = ANY($1) AND status IN ('Scheduled','Ongoing','Completed') ORDER BY start_time DESC`,
       [classNames]
     );
-    return res.rows.map((r: any) => ({ id: r.id, title: r.title, className: r.class_name, subject: r.subject, duration: r.duration, totalMarks: r.total_marks, passingMarks: r.passing_marks, startTime: r.start_time, endTime: r.end_time, instructions: r.instructions, proctoringEnabled: r.proctoring_enabled, shuffleQuestions: r.shuffle_questions, status: r.status }));
+    return res.rows.map((r: any) => ({ id: r.id, title: r.title, className: r.class_name, subject: r.subject, duration: r.duration, totalMarks: r.total_marks, passingMarks: r.passing_marks, startTime: r.start_time, endTime: r.end_time, instructions: r.instructions, proctoringEnabled: r.proctoring_enabled, shuffleQuestions: r.shuffle_questions, status: r.status, examSubjectId: r.exam_subject_id ?? null }));
   } catch { return []; }
 }
 
@@ -2062,7 +2574,7 @@ export async function startOnlineExamAttemptDB(examId: string): Promise<{ error?
     );
     if (exam.status === 'Scheduled') await query(`UPDATE online_exams SET status='Ongoing' WHERE id=$1`, [examId]);
     return { attempt: { id, examId, studentId: student.id, studentName: student.name, answers: [], score: 0, startedAt, submittedAt: null, status: 'InProgress' } };
-  } catch (err) { console.error(err); return { error: 'Failed to start exam.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to start exam.' }; }
 }
 
 export async function fetchMyOnlineExamAttemptDB(examId: string): Promise<OnlineExamAttemptView | null> {
@@ -2133,8 +2645,12 @@ export async function submitOnlineExamAttemptDB(attemptId: string): Promise<{ er
       'UPDATE online_exam_attempts SET answers=$1, score=$2, submitted_at=$3, status=$4 WHERE id=$5',
       [JSON.stringify(graded), score, submittedAt, status, attemptId]
     );
+    // Objective-only exams are fully graded at this point — sync now. Exams
+    // with subjective questions sync later, once a teacher finishes grading
+    // via gradeOnlineExamAnswerDB (status flips to 'Graded' there).
+    if (!hasSubjective) await syncOnlineExamScoreToMarksDB(attempt.exam_id, student.id, score);
     return { score, totalMarks };
-  } catch (err) { console.error(err); return { error: 'Failed to submit exam.' }; }
+  } catch (err) { logServerError("features", err); return { error: 'Failed to submit exam.' }; }
 }
 
 export async function fetchOnlineExamAttemptsDB(examId: string): Promise<OnlineExamAttemptView[]> {
@@ -2162,6 +2678,10 @@ export async function gradeOnlineExamAnswerDB(attemptId: string, questionId: str
     answers[idx].marksObtained = marksObtained;
     const newScore = answers.reduce((sum: number, a: any) => sum + (a.marksObtained || 0), 0);
     await query('UPDATE online_exam_attempts SET answers=$1, score=$2, status=$3 WHERE id=$4', [JSON.stringify(answers), newScore, 'Graded', attemptId]);
+    const attemptRes = await query('SELECT exam_id, student_id FROM online_exam_attempts WHERE id=$1', [attemptId]);
+    if (attemptRes.rows.length > 0) {
+      await syncOnlineExamScoreToMarksDB(attemptRes.rows[0].exam_id, attemptRes.rows[0].student_id, newScore);
+    }
     return {};
   } catch { return { error: 'Failed to grade answer.' }; }
 }
@@ -2359,7 +2879,7 @@ export async function getParentPortalData(): Promise<ParentPortalData | null> {
       })),
     };
   } catch (err) {
-    console.error('getParentPortalData error', err);
+    logServerError("features", 'getParentPortalData error', err);
     return null;
   }
 }

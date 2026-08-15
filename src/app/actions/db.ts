@@ -4,13 +4,14 @@ import { query, checkDbConnection } from '../../lib/db';
 import { initializeDatabase } from '../../lib/db-init';
 import { getSession } from './auth';
 import { logAudit } from '../../lib/audit';
+import { logServerError } from '../../lib/error-log';
 import {
   SchoolInfo, StudentRecord, ClassSection, Section, Subject, FeeCategory,
   AcademicTerm, FeeRecord, AttendanceRecord, ExamRecord, NotificationRecord,
   AdmissionApplication, FeeStructure,
 } from '../../lib/types';
 
-type Role = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT';
+type Role = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE';
 
 // Every mutation in this file runs behind one of these — role gating used to live
 // only in the React components that called them, so a raw request to the server
@@ -230,7 +231,7 @@ export async function fetchDBState() {
       applications: appsRes.rows.map(mapRowToApplication),
     };
   } catch (err) {
-    console.error("Failed to fetch state from DB", err);
+    logServerError("db", "Failed to fetch state from DB", err);
     return null;
   }
 }
@@ -444,7 +445,7 @@ export async function applyFeeDiscountDB(voucherId: string, discount: number, re
     });
 
     return {};
-  } catch (err) { console.error(err); return { error: "Failed to apply discount." }; }
+  } catch (err) { logServerError("db", err); return { error: "Failed to apply discount." }; }
 }
 
 export interface AuditLogEntry {
@@ -498,7 +499,7 @@ export async function fetchAuditLogDB(filters?: { entityType?: string; search?: 
       after: r.after_data,
       createdAt: r.created_at,
     }));
-  } catch (err) { console.error(err); return []; }
+  } catch (err) { logServerError("db", err); return []; }
 }
 
 // Recomputes amount_paid/status/payment_method/payment_date on fee_records from the
@@ -562,8 +563,26 @@ export async function writeFeePaymentLedgerEntryDB(
       [id, feeRecordId, amount, method || null, date, type, recordedByUserId || null]
     );
     await recomputeFeeStatusDB(feeRecordId);
+
+    // Single choke point for every fee payment (admin-recorded AND the JazzCash/
+    // EasyPaisa gateway callbacks route through here), so this is the one place
+    // that needs an audit entry to cover the whole category — not each caller.
+    let actor: { userId: number; name: string; role: string } | null = null;
+    if (recordedByUserId) {
+      const userRes = await query(`SELECT name, role FROM users WHERE id=$1`, [recordedByUserId]);
+      if (userRes.rows.length > 0) actor = { userId: recordedByUserId, name: userRes.rows[0].name, role: userRes.rows[0].role };
+    }
+    await logAudit({
+      actor,
+      action: type === "refund" ? 'UPDATE' : 'CREATE',
+      entityType: 'fee_payment',
+      entityId: feeRecordId,
+      summary: `${type === "refund" ? "Refunded" : "Recorded payment of"} Rs. ${amount.toLocaleString()} via ${method || "unspecified method"} for voucher ${feeRecordId}${!recordedByUserId ? " (online gateway)" : ""}`,
+      after: { amount, method, date, type },
+    });
+
     return {};
-  } catch (err) { console.error(err); return { error: "Failed to record payment." }; }
+  } catch (err) { logServerError("db", err); return { error: "Failed to record payment." }; }
 }
 
 // Shared ledger writer behind payFeeVoucherDB/recordPartialPaymentDB — every payment
@@ -574,7 +593,11 @@ export async function recordFeePaymentDB(
 ): Promise<{ error?: string }> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { error: auth.error };
-  return writeFeePaymentLedgerEntryDB(feeRecordId, amount, method, date, recordedByUserId, type);
+  // Callers reached through this wrapper (payFeeVoucherDB, recordPartialPaymentDB)
+  // don't carry a userId parameter of their own — default to the admin session
+  // already established above so the audit trail always has a real actor instead
+  // of falling through to the "online gateway" no-session case in the ledger writer.
+  return writeFeePaymentLedgerEntryDB(feeRecordId, amount, method, date, recordedByUserId ?? auth.session.userId, type);
 }
 
 export interface FeePaymentHistoryEntry {

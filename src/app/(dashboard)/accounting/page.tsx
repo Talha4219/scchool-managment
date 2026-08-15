@@ -41,7 +41,11 @@ function formatCurrency(n: number) {
 
 function formatDate(d: string) {
   if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
+  // timeZone pinned to UTC: a date-only string like "2026-08-13" parses as UTC
+  // midnight, and formatting it in the runtime's local offset renders a
+  // different calendar day on the server (often UTC) than in the browser —
+  // a classic hydration mismatch. Pinning keeps server and client identical.
+  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
 const entryTypeConfig = {

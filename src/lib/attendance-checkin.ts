@@ -11,7 +11,7 @@ export interface CheckInResult {
   studentName?: string;
   className?: string;
   sectionName?: string;
-  status?: "Present" | "Late";
+  status?: "Present" | "Late" | "Checked Out" | "Half Day";
   time?: string;
 }
 
@@ -80,4 +80,69 @@ export async function checkInByCardUid(cardUid: string, source: "device" | "kios
     studentName: name, className: class_name, sectionName: section_name || "",
     status: attendanceStatus, time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
   };
+}
+
+export interface StaffCheckInResult {
+  error?: string;
+  staffName?: string;
+  status?: "Present" | "Late" | "Checked Out" | "Half Day";
+  time?: string;
+}
+
+// Simpler than the student path — no class/section/session indirection,
+// just one row per (user_id, date). Same late-cutoff convention. A SECOND
+// same-day scan from the same badge is treated as checkout (a real gate
+// reader is tapped in and out), which can flip today's status to "Half Day"
+// and trigger the substitution engine for the teacher's remaining periods.
+export async function checkInByStaffCardUid(cardUid: string, source: "device" | "kiosk"): Promise<StaffCheckInResult> {
+  const trimmed = cardUid.trim();
+  if (!trimmed) return { error: "Empty card ID." };
+
+  const cardRes = await query(
+    `SELECT sic.user_id, u.name FROM staff_id_cards sic JOIN users u ON u.id = sic.user_id WHERE sic.card_uid=$1`,
+    [trimmed]
+  );
+  if (cardRes.rows.length === 0) return { error: "Card not recognized. Ask the office to enroll it." };
+  const { user_id, name } = cardRes.rows[0];
+
+  const now = new Date();
+  const today = now.toISOString().split("T")[0];
+  const attendanceStatus: "Present" | "Late" = now.getHours() >= LATE_AFTER_HOUR ? "Late" : "Present";
+
+  const existing = await query(`SELECT id, check_in_time, check_out_time FROM staff_attendance WHERE user_id=$1 AND date=$2`, [user_id, today]);
+  if (existing.rows.length > 0) {
+    const row = existing.rows[0];
+    if (row.check_in_time && !row.check_out_time) {
+      const checkoutHM = now.toTimeString().slice(0, 5);
+      const yearRes = await query("SELECT id FROM academic_years WHERE is_active=true LIMIT 1");
+      let isHalfDay = false;
+      if (yearRes.rows.length > 0) {
+        const lastPeriod = await query(
+          "SELECT end_time FROM period_slots WHERE academic_year_id=$1 AND is_break=false ORDER BY period_number DESC LIMIT 1",
+          [yearRes.rows[0].id]
+        );
+        if (lastPeriod.rows.length > 0) isHalfDay = checkoutHM < lastPeriod.rows[0].end_time;
+      }
+      const newStatus = isHalfDay ? "Half Day" : null;
+      await query(
+        `UPDATE staff_attendance SET check_out_time=NOW()${newStatus ? ", status=$2" : ""} WHERE id=$1`,
+        newStatus ? [row.id, newStatus] : [row.id]
+      );
+      if (isHalfDay) {
+        const { generateSubstitutionsForTeacherDateDB } = await import("@/app/actions/substitutions");
+        await generateSubstitutionsForTeacherDateDB(user_id, today, "half_day", checkoutHM);
+      }
+      return { staffName: name, status: isHalfDay ? "Half Day" : "Checked Out", time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) };
+    }
+    return { error: `${name} already checked in and out today.` };
+  }
+
+  const recordId = `sa-dev-${Date.now()}`;
+  await query(
+    `INSERT INTO staff_attendance (id, user_id, date, status, source, check_in_time)
+     VALUES ($1,$2,$3,$4,$5,NOW())`,
+    [recordId, user_id, today, attendanceStatus, source]
+  );
+
+  return { staffName: name, status: attendanceStatus, time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) };
 }

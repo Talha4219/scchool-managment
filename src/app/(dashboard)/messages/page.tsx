@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { usePermission } from "@/hooks/use-permission";
+import { Unauthorized } from "@/components/unauthorized";
 import { Search, Send, Plus, MessageSquare } from "lucide-react";
 
 const POLL_MS = 20000;
@@ -25,6 +27,7 @@ function timeAgo(iso: string) {
 }
 
 export default function MessagesPage() {
+  const { can, loaded: permsLoaded } = usePermission();
   const [sessionUserId, setSessionUserId] = useState<number | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -111,6 +114,9 @@ export default function MessagesPage() {
   const activeName = pendingContact?.name
     ?? conversations.find(c => c.conversationId === selectedConversationId)?.otherUserName
     ?? null;
+
+  if (!permsLoaded) return null;
+  if (!can("messages.view")) return <Unauthorized />;
 
   return (
     <div className="h-[calc(100vh-140px)] flex gap-4">

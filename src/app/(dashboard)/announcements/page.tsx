@@ -31,7 +31,7 @@ export default function AnnouncementsPage() {
 
   // Real logged-in role — NOT the legacy `activeRole` demo role-switcher
   // (defaults to "ADMIN", never synced to the actual session).
-  const [activeRole, setSessionRole] = useState<"ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | null>(null);
+  const [activeRole, setSessionRole] = useState<"ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE" | null>(null);
   const [sessionUserId, setSessionUserId] = useState<number | null>(null);
   const [sessionName, setSessionName] = useState<string | null>(null);
   useEffect(() => {

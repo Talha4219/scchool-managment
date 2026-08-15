@@ -47,13 +47,13 @@ function ResetPasswordForm() {
           </div>
 
           {!token ? (
-            <div className="flex items-center gap-2.5 text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
+            <div role="alert" className="flex items-center gap-2.5 text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
               <ShieldCheck className="w-4 h-4 shrink-0 text-red-500" />
               This link is missing its reset token. Request a new link from the sign-in page.
             </div>
           ) : success ? (
             <div className="space-y-5">
-              <div className="flex items-start gap-2.5 text-green-700 bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm">
+              <div role="status" className="flex items-start gap-2.5 text-green-700 bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm">
                 <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-green-600" />
                 Your password has been updated. You can now sign in with your new password.
               </div>
@@ -104,7 +104,7 @@ function ResetPasswordForm() {
               </div>
 
               {error && (
-                <div className="flex items-center gap-2.5 text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
+                <div role="alert" className="flex items-center gap-2.5 text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
                   <ShieldCheck className="w-4 h-4 shrink-0 text-red-500" />
                   {error}
                 </div>

@@ -196,6 +196,11 @@ export default function ReportCardsPage() {
                   <p>Generated: {rc.generatedAt}</p>
                   {rc.remarks && <p className="italic text-slate-500 truncate">Remarks: {rc.remarks}</p>}
                 </div>
+                {rc.needsRegeneration && (
+                  <Badge variant="outline" className="mt-2 border-amber-400 text-amber-700 bg-amber-50 text-[10px] gap-1">
+                    <RefreshCw className="h-2.5 w-2.5" /> Stale — marks changed since generation
+                  </Badge>
+                )}
               </CardContent>
             </Card>
           ))}

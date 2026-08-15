@@ -12,20 +12,21 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 import {
-  fetchEmployeesDB, fetchSalaryStructuresDB, createSalaryStructureDB,
-  fetchPayslipsDB, generatePayslipDB,
+  fetchStaffDirectoryDB, fetchSalaryStructuresDB, createSalaryStructureDB, updateSalaryStructureDB,
+  fetchPayslipsDB, generatePayslipDB, bulkGeneratePayslipsDB, markPayslipPaidDB,
 } from "@/app/actions/features";
-import type { EmployeeRecord, SalaryStructure, Payslip, PayrollAllowance, PayrollDeduction } from "@/lib/types";
+import type { SalaryStructure, Payslip, PayrollAllowance, PayrollDeduction } from "@/lib/types";
 import {
-  Wallet, FileText, Clock, Plus, Search, DollarSign, PiggyBank,
-  Receipt, Banknote, Loader2, Lock, X, Eye, Download,
+  Wallet, FileText, Clock, Plus, Search, Receipt, Loader2, X, Eye, Download, Layers, CheckCircle2,
 } from "lucide-react";
 import { exportToCsv } from "@/lib/export-csv";
+
+type StaffOption = { userId: number; name: string; role: string; department: string; designation: string; payScaleId: string | null };
 
 const statusBadge: Record<string, string> = {
   Draft: "bg-gray-100 text-gray-800",
@@ -57,6 +58,20 @@ function StatCard({ label, value, icon: Icon, iconBg, iconColor }: {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function StaffPicker({ staff, value, onChange }: { staff: StaffOption[]; value: number; onChange: (s: StaffOption) => void }) {
+  return (
+    <Select value={value ? String(value) : ""} onValueChange={v => {
+      const s = staff.find(x => x.userId === Number(v));
+      if (s) onChange(s);
+    }}>
+      <SelectTrigger><SelectValue placeholder="Select staff member" /></SelectTrigger>
+      <SelectContent>
+        {staff.map(s => <SelectItem key={s.userId} value={String(s.userId)}>{s.name} — {s.department}</SelectItem>)}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -124,9 +139,10 @@ function DeductionRow({ item, index, onChange, onRemove }: {
   );
 }
 
-function SalaryStructureDialog({ open, onOpenChange, onSubmit }: {
+function SalaryStructureDialog({ open, onOpenChange, onSubmit, staff }: {
   open: boolean; onOpenChange: (v: boolean) => void;
   onSubmit: (data: Omit<SalaryStructure, "id">) => Promise<void>;
+  staff: StaffOption[];
 }) {
   const blank = {
     name: "", employeeId: 0, employeeName: "", basicSalary: 0,
@@ -134,9 +150,10 @@ function SalaryStructureDialog({ open, onOpenChange, onSubmit }: {
     totalSalary: 0, isActive: true,
   };
   const [form, setForm] = useState(blank);
+  const [selectedGrade, setSelectedGrade] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => { if (open) setForm(blank); }, [open]);
+  useEffect(() => { if (open) { setForm(blank); setSelectedGrade(null); } }, [open]);
 
   const calcTotal = (b: number, al: PayrollAllowance[], de: PayrollDeduction[]) => {
     const totalAll = al.reduce((s, a) => a.type === "Fixed" ? s + a.amount : s + (b * a.amount / 100), 0);
@@ -188,6 +205,7 @@ function SalaryStructureDialog({ open, onOpenChange, onSubmit }: {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!form.employeeId) return;
     setSaving(true);
     await onSubmit(form as Omit<SalaryStructure, "id">);
     setSaving(false);
@@ -201,17 +219,17 @@ function SalaryStructureDialog({ open, onOpenChange, onSubmit }: {
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2 col-span-2">
+              <Label>Staff Member</Label>
+              <StaffPicker staff={staff} value={form.employeeId} onChange={s => {
+                setForm(p => ({ ...p, employeeId: s.userId, employeeName: s.name }));
+                setSelectedGrade(s.payScaleId);
+              }} />
+              {selectedGrade && <p className="text-xs text-muted-foreground mt-1">BPS Grade: <span className="font-medium">{selectedGrade}</span> (reference only — enter basic salary below)</p>}
+            </div>
             <div className="space-y-2">
               <Label>Structure Name</Label>
               <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Employee Name</Label>
-              <Input value={form.employeeName} onChange={e => setForm(p => ({ ...p, employeeName: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Employee ID</Label>
-              <Input type="number" value={form.employeeId || ""} onChange={e => setForm(p => ({ ...p, employeeId: Number(e.target.value) }))} />
             </div>
             <div className="space-y-2">
               <Label>Basic Salary</Label>
@@ -256,7 +274,7 @@ function SalaryStructureDialog({ open, onOpenChange, onSubmit }: {
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={saving}>
+            <Button type="submit" disabled={saving || !form.employeeId}>
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Create
             </Button>
@@ -267,9 +285,11 @@ function SalaryStructureDialog({ open, onOpenChange, onSubmit }: {
   );
 }
 
-function GeneratePayslipDialog({ open, onOpenChange, onSubmit }: {
+function GeneratePayslipDialog({ open, onOpenChange, onSubmit, staff, structures }: {
   open: boolean; onOpenChange: (v: boolean) => void;
   onSubmit: (data: Omit<Payslip, "id">) => Promise<void>;
+  staff: StaffOption[];
+  structures: SalaryStructure[];
 }) {
   const [employeeName, setEmployeeName] = useState("");
   const [employeeId, setEmployeeId] = useState(0);
@@ -280,21 +300,27 @@ function GeneratePayslipDialog({ open, onOpenChange, onSubmit }: {
   const [deductions, setDeductions] = useState<PayrollDeduction[]>([]);
   const [taxAmount, setTaxAmount] = useState(0);
   const [overtimePay, setOvertimePay] = useState(0);
+  const [asDraft, setAsDraft] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (open) {
-      setEmployeeName("");
-      setEmployeeId(0);
-      setMonth(MONTHS[new Date().getMonth()]);
-      setYear(new Date().getFullYear());
-      setBasicSalary(0);
-      setAllowances([]);
-      setDeductions([]);
-      setTaxAmount(0);
-      setOvertimePay(0);
+      setEmployeeName(""); setEmployeeId(0);
+      setMonth(MONTHS[new Date().getMonth()]); setYear(new Date().getFullYear());
+      setBasicSalary(0); setAllowances([]); setDeductions([]);
+      setTaxAmount(0); setOvertimePay(0); setAsDraft(false);
     }
   }, [open]);
+
+  const selectStaff = (s: StaffOption) => {
+    setEmployeeId(s.userId); setEmployeeName(s.name);
+    const structure = structures.find(st => st.employeeId === s.userId && st.isActive);
+    if (structure) {
+      setBasicSalary(structure.basicSalary);
+      setAllowances(structure.allowances);
+      setDeductions(structure.deductions);
+    }
+  };
 
   const totalAllowances = allowances.reduce((s, a) => a.type === "Fixed" ? s + a.amount : s + (basicSalary * a.amount / 100), 0);
   const totalDeductions = deductions.reduce((s, d) => d.type === "Fixed" ? s + d.amount : s + (basicSalary * d.amount / 100), 0);
@@ -303,11 +329,12 @@ function GeneratePayslipDialog({ open, onOpenChange, onSubmit }: {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!employeeId) return;
     setSaving(true);
     await onSubmit({
       employeeId, employeeName, month, year, basicSalary, allowances, deductions,
       grossPay, totalDeductions, netPay, taxAmount, overtimePay,
-      status: "Generated", generatedAt: new Date().toISOString().split("T")[0],
+      status: asDraft ? "Draft" : "Generated", generatedAt: new Date().toISOString().split("T")[0],
     });
     setSaving(false);
   };
@@ -320,13 +347,12 @@ function GeneratePayslipDialog({ open, onOpenChange, onSubmit }: {
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Employee Name</Label>
-              <Input value={employeeName} onChange={e => setEmployeeName(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label>Employee ID</Label>
-              <Input type="number" value={employeeId || ""} onChange={e => setEmployeeId(Number(e.target.value))} />
+            <div className="space-y-2 col-span-2">
+              <Label>Staff Member</Label>
+              <StaffPicker staff={staff} value={employeeId} onChange={selectStaff} />
+              {structures.some(st => st.employeeId === employeeId && st.isActive) && (
+                <p className="text-xs text-muted-foreground mt-1">Prefilled from their active salary structure — still editable below.</p>
+              )}
             </div>
             <div className="space-y-2">
               <Label>Month</Label>
@@ -443,11 +469,63 @@ function GeneratePayslipDialog({ open, onOpenChange, onSubmit }: {
             </div>
           </div>
 
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={asDraft} onChange={e => setAsDraft(e.target.checked)} />
+            Save as Draft (not yet finalized)
+          </label>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" disabled={saving || !employeeId}>
+              {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {asDraft ? "Save Draft" : "Generate"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function BulkGenerateDialog({ open, onOpenChange, onSubmit }: {
+  open: boolean; onOpenChange: (v: boolean) => void;
+  onSubmit: (month: string, year: number) => Promise<void>;
+}) {
+  const [month, setMonth] = useState(MONTHS[new Date().getMonth()]);
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    await onSubmit(month, year);
+    setSaving(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Bulk Generate Payslips</DialogTitle></DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <p className="text-sm text-muted-foreground">Generates one payslip per active staff member with an active salary structure, for the selected month. Anyone already having a payslip for that month, or with no salary structure, is skipped.</p>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Month</Label>
+              <Select value={month} onValueChange={setMonth}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{MONTHS.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Year</Label>
+              <Input type="number" value={year} onChange={e => setYear(Number(e.target.value))} />
+            </div>
+          </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button type="submit" disabled={saving}>
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Generate
+              Generate for All
             </Button>
           </DialogFooter>
         </form>
@@ -530,22 +608,26 @@ function PayslipDetailsDialog({ payslip, open, onOpenChange }: {
 export default function PayrollPage() {
   const { activeRole } = useAppState();
   const { toast } = useToast();
+  const confirm = useConfirm();
   const { can, loaded: permsLoaded } = usePermission();
 
+  const [staff, setStaff] = useState<StaffOption[]>([]);
   const [structures, setStructures] = useState<SalaryStructure[]>([]);
   const [payslips, setPayslips] = useState<Payslip[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [structureDialogOpen, setStructureDialogOpen] = useState(false);
   const [generateDialogOpen, setGenerateDialogOpen] = useState(false);
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const [viewPayslip, setViewPayslip] = useState<Payslip | null>(null);
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [strs, pslips] = await Promise.all([fetchSalaryStructuresDB(), fetchPayslipsDB()]);
+    const [strs, pslips, staffList] = await Promise.all([fetchSalaryStructuresDB(), fetchPayslipsDB(), fetchStaffDirectoryDB()]);
     setStructures(strs);
     setPayslips(pslips);
+    setStaff(staffList);
     setLoading(false);
   }, []);
 
@@ -559,11 +641,34 @@ export default function PayrollPage() {
     load();
   };
 
+  const handleToggleStructure = async (st: SalaryStructure) => {
+    const ok = await confirm({ title: st.isActive ? "Deactivate structure?" : "Reactivate structure?", description: `This ${st.isActive ? "stops" : "resumes"} ${st.employeeName}'s salary structure from being used for payslip generation.` });
+    if (!ok) return;
+    const res = await updateSalaryStructureDB(st.id, { isActive: !st.isActive });
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    load();
+  };
+
   const handleGeneratePayslip = async (data: Omit<Payslip, "id">) => {
     const res = await generatePayslipDB(data);
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
     toast({ title: "Payslip generated." });
     setGenerateDialogOpen(false);
+    load();
+  };
+
+  const handleBulkGenerate = async (month: string, year: number) => {
+    const res = await bulkGeneratePayslipsDB(month, year);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: `Generated ${res.generated} payslip(s), skipped ${res.skipped}.` });
+    setBulkDialogOpen(false);
+    load();
+  };
+
+  const handleMarkPaid = async (id: string) => {
+    const res = await markPayslipPaidDB(id);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Marked as paid." });
     load();
   };
 
@@ -617,16 +722,13 @@ export default function PayrollPage() {
                 onChange={e => setSearch(e.target.value)}
               />
             </div>
-            <Dialog open={structureDialogOpen} onOpenChange={setStructureDialogOpen}>
-              <DialogTrigger asChild>
-                <Button><Plus className="mr-2 h-4 w-4" />Create Structure</Button>
-              </DialogTrigger>
-              <SalaryStructureDialog
-                open={structureDialogOpen}
-                onOpenChange={setStructureDialogOpen}
-                onSubmit={handleCreateStructure}
-              />
-            </Dialog>
+            <Button onClick={() => setStructureDialogOpen(true)}><Plus className="mr-2 h-4 w-4" />Create Structure</Button>
+            <SalaryStructureDialog
+              open={structureDialogOpen}
+              onOpenChange={setStructureDialogOpen}
+              onSubmit={handleCreateStructure}
+              staff={staff}
+            />
           </div>
 
           <Card className="border-none shadow-sm">
@@ -640,12 +742,13 @@ export default function PayrollPage() {
                     <TableHead>Deductions</TableHead>
                     <TableHead>Total</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredStructures.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                      <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                         {loading ? <><Skeleton className="h-4 w-24 mx-auto" /><Skeleton className="h-3 w-16 mx-auto mt-1" /></> : "No salary structures found."}
                       </TableCell>
                     </TableRow>
@@ -671,6 +774,11 @@ export default function PayrollPage() {
                         <Badge className={statusBadge[st.isActive ? "Active" : "Inactive"]}>
                           {st.isActive ? "Active" : "Inactive"}
                         </Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button size="sm" variant="ghost" onClick={() => handleToggleStructure(st)}>
+                          {st.isActive ? "Deactivate" : "Reactivate"}
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -698,16 +806,18 @@ export default function PayrollPage() {
               }}>
                 <Download className="mr-2 h-4 w-4" />Export
               </Button>
-              <Dialog open={generateDialogOpen} onOpenChange={setGenerateDialogOpen}>
-                <DialogTrigger asChild>
-                  <Button><Plus className="mr-2 h-4 w-4" />Generate Payslip</Button>
-                </DialogTrigger>
-                <GeneratePayslipDialog
-                  open={generateDialogOpen}
-                  onOpenChange={setGenerateDialogOpen}
-                  onSubmit={handleGeneratePayslip}
-                />
-              </Dialog>
+              <Button variant="outline" onClick={() => setBulkDialogOpen(true)}>
+                <Layers className="mr-2 h-4 w-4" />Bulk Generate
+              </Button>
+              <Button onClick={() => setGenerateDialogOpen(true)}><Plus className="mr-2 h-4 w-4" />Generate Payslip</Button>
+              <GeneratePayslipDialog
+                open={generateDialogOpen}
+                onOpenChange={setGenerateDialogOpen}
+                onSubmit={handleGeneratePayslip}
+                staff={staff}
+                structures={structures}
+              />
+              <BulkGenerateDialog open={bulkDialogOpen} onOpenChange={setBulkDialogOpen} onSubmit={handleBulkGenerate} />
             </div>
           </div>
 
@@ -748,9 +858,16 @@ export default function PayrollPage() {
                         <Badge className={statusBadge[ps.status]}>{ps.status}</Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button size="sm" variant="ghost" onClick={() => { setViewPayslip(ps); setViewDialogOpen(true); }}>
-                          <Eye className="h-4 w-4" />
-                        </Button>
+                        <div className="flex justify-end gap-1">
+                          {ps.status === "Generated" && (
+                            <Button size="sm" variant="ghost" className="text-green-600" onClick={() => handleMarkPaid(ps.id)}>
+                              <CheckCircle2 className="h-4 w-4" />
+                            </Button>
+                          )}
+                          <Button size="sm" variant="ghost" onClick={() => { setViewPayslip(ps); setViewDialogOpen(true); }}>
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}

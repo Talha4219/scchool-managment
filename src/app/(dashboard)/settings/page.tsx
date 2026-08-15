@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { useAppState } from "@/lib/state-context";
 import { Subject, FeeCategory, AcademicTerm, Section, GradeScaleItem } from "@/lib/types";
 import { fetchAllSectionsDB, createSectionDB, updateSectionDB, deleteSectionDB } from "@/app/actions/academic-core";
-import { fetchUsersDB, fetchAllRolePermissionsDB, bulkUpdateRolePermissionsDB, updateRolePermissionDB, updateUserDB } from "@/app/actions/features";
+import { fetchUsersDB } from "@/app/actions/features";
 import { fetchGradeScalesDB, updateGradeScaleDB } from "@/app/actions/academic-core";
 import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -19,14 +20,25 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Building2, CalendarDays, Layers, BookOpen, DollarSign, Percent, Settings2, ChevronRight, Zap,
-  Search, Check, Save, Plus, Users, UserCog, CreditCard, ShieldCheck, XCircle, ScanLine,
+  Search, Check, Save, Plus, Users, UserCog, CreditCard, ShieldCheck, XCircle, ScanLine, AlertOctagon,
+  MessageSquare, Mail, ArrowRight,
 } from "lucide-react";
-import { fetchGatewayAvailabilityAction } from "@/app/actions/payments";
+import { fetchGatewayAvailabilityAction, fetchNotificationChannelsStatusAction } from "@/app/actions/payments";
+import { fetchWhatsAppStatusAction, sendWhatsAppTestMessageAction, fetchRecentWhatsAppNotificationsAction } from "@/app/actions/whatsapp-admin";
+import type { WhatsAppNotificationRecord } from "@/lib/whatsapp/notification-store";
 import {
   fetchDeviceKeysAction, generateDeviceKeyAction, revokeDeviceKeyAction,
   fetchStudentCardsAction, assignStudentCardAction, removeStudentCardAction,
   type DeviceKeyRecord, type StudentCardRecord,
 } from "@/app/actions/attendance-devices";
+import {
+  fetchStaffCardsAction, enrollStaffCardDB, removeStaffCardDB, type StaffCardRecord,
+} from "@/app/actions/staff-attendance";
+import { fetchStaffDirectoryDB } from "@/app/actions/features";
+import {
+  fetchErrorLogAction, resolveErrorLogEntryAction, clearResolvedErrorLogAction,
+  type ErrorLogEntry,
+} from "@/app/actions/error-log-admin";
 
 const GRADE_LEVELS = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
 
@@ -363,179 +375,32 @@ function FeeCategoriesTab() {
   );
 }
 
-// ─── TAB 6 – Users ─────────────────────────────────────────────────────────
+// ─── TAB ─ Users & Permissions (pointer) ─────────────────────────────────────
 
-const ROLES = ['ADMIN', 'TEACHER', 'STUDENT', 'PARENT'] as const;
-
-const ROLE_BADGE: Record<string, string> = {
-  ADMIN: 'bg-primary/10 text-primary',
-  TEACHER: 'bg-success/15 text-success',
-  STUDENT: 'bg-warning/15 text-warning',
-  PARENT: 'bg-purple-100 text-purple-700',
-};
-
-function UsersTab() {
-  const [users, setUsers] = useState<{ id: number; name: string; email: string; role: string; status: string }[]>([]);
-  const [editingUser, setEditingUser] = useState<{ id: number; name: string; role: string } | null>(null);
-  const [search, setSearch] = useState("");
-  const [roleFilter, setRoleFilter] = useState("ALL");
-
-  useEffect(() => { fetchUsersDB().then(setUsers); }, []);
-
-  const filteredUsers = users.filter(u => {
-    const ms = u.name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase());
-    return ms && (roleFilter === "ALL" || u.role === roleFilter);
-  });
-
-  const roleCounts = { ALL: users.length, ADMIN: users.filter(u => u.role === "ADMIN").length, TEACHER: users.filter(u => u.role === "TEACHER").length, STUDENT: users.filter(u => u.role === "STUDENT").length, PARENT: users.filter(u => u.role === "PARENT").length };
-
+function AccessPointerTab() {
   return (
-    <SoftCard icon={Users} title="Users" sub="Manage user accounts and roles">
-      <div className="flex flex-col sm:flex-row gap-3 mb-4">
-        <div className="relative flex-1"><Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" /><Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or email..." className="pl-8" /></div>
-        <div className="flex gap-1 flex-wrap">
-          {(["ALL", "ADMIN", "TEACHER", "STUDENT", "PARENT"] as const).map(r => (
-            <button key={r} onClick={() => setRoleFilter(r)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${roleFilter === r ? "bg-primary text-primary-foreground border-primary" : "bg-card text-muted-foreground border-border hover:bg-secondary/50"}`}>
-              {r === "ALL" ? "All" : r} ({roleCounts[r]})
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className={tableWrapCls}>
-        <table className="w-full text-sm">
-          <thead className={theadCls}>
-            <tr><th className="px-4 py-3 text-left">Name</th><th className="px-4 py-3 text-left">Email</th><th className="px-4 py-3 text-left">Role</th><th className="px-4 py-3 text-left">Status</th><th className="px-4 py-3 text-right">Actions</th></tr>
-          </thead>
-          <tbody className={tbodyDivideCls}>
-            {filteredUsers.map(u => (
-              <tr key={u.id} className="hover:bg-secondary/30 transition-colors">
-                <td className="py-2.5 px-3 font-medium text-foreground">{u.name}</td>
-                <td className="py-2.5 px-3 text-muted-foreground">{u.email}</td>
-                <td className="py-2.5 px-3">
-                  {editingUser?.id === u.id ? (
-                    <select value={editingUser.role} onChange={e => { updateUserDB(u.id, { role: e.target.value as any }); setUsers(prev => prev.map(x => x.id === u.id ? { ...x, role: e.target.value } : x)); setEditingUser(null); }}
-                      className="rounded-lg border border-border bg-card px-2 py-1 text-xs focus:ring-2 focus:ring-ring">
-                      {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-                    </select>
-                  ) : (
-                    <Badge className={ROLE_BADGE[u.role] || "bg-secondary text-muted-foreground"}>{u.role}</Badge>
-                  )}
-                </td>
-                <td className="py-2.5 px-3"><Badge className={u.status === "ACTIVE" ? "bg-success/15 text-success" : "bg-warning/15 text-warning"}>{u.status}</Badge></td>
-                <td className="py-2.5 px-3 text-right">
-                  {editingUser?.id === u.id ? (
-                    <span className="text-xs text-muted-foreground">Select role from dropdown</span>
-                  ) : (
-                    <button className="text-xs font-medium text-primary hover:opacity-80" onClick={() => setEditingUser({ id: u.id, name: u.name, role: u.role })}>Edit Role</button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </SoftCard>
-  );
-}
-
-// ─── TAB 7 – Permissions ────────────────────────────────────────────────────
-
-const PERMISSION_GROUPS: Record<string, { icon: string; perms: string[] }> = {
-  Students: { icon: "👨‍🎓", perms: ['students.view', 'students.create', 'students.edit', 'students.delete'] },
-  Teachers: { icon: "👨‍🏫", perms: ['teachers.view', 'teachers.create', 'teachers.edit', 'teachers.delete'] },
-  Admissions: { icon: "📋", perms: ['admissions.view', 'admissions.create', 'admissions.edit', 'admissions.delete', 'admissions.approve', 'admissions.reject'] },
-  Classes: { icon: "🏛️", perms: ['classes.view', 'classes.create', 'classes.edit', 'classes.delete', 'classes.grades', 'classes.students'] },
-  Attendance: { icon: "✅", perms: ['attendance.view', 'attendance.mark'] },
-  Exams: { icon: "📝", perms: ['exams.view', 'exams.create', 'exams.edit', 'exams.delete', 'exams.dashboard', 'exams.manage', 'exams.marks', 'exams.results', 'exams.report-cards', 'exams.analytics', 'exams.settings'] },
-  Results: { icon: "📊", perms: ['results.view', 'results.enter', 'results.approve', 'results.publish'] },
-  Fees: { icon: "💰", perms: ['fees.view', 'fees.create', 'fees.edit', 'fees.delete'] },
-  Timetable: { icon: "📅", perms: ['timetable.view', 'timetable.create', 'timetable.edit', 'timetable.delete'] },
-  Announcements: { icon: "📢", perms: ['announcements.view', 'announcements.create', 'announcements.edit', 'announcements.delete'] },
-  Library: { icon: "📚", perms: ['library.view', 'library.create', 'library.edit', 'library.delete'] },
-  Accounting: { icon: "💵", perms: ['accounting.view', 'accounting.create', 'accounting.edit'] },
-  HR: { icon: "💼", perms: ['hr.view', 'hr.create', 'hr.edit'] },
-  Payroll: { icon: "💼", perms: ['payroll.view', 'payroll.create', 'payroll.edit'] },
-  Inventory: { icon: "📦", perms: ['inventory.view', 'inventory.create', 'inventory.edit'] },
-  Procurement: { icon: "📦", perms: ['procurement.view', 'procurement.create', 'procurement.edit'] },
-  Hostel: { icon: "📦", perms: ['hostel.view', 'hostel.create', 'hostel.edit'] },
-  Discipline: { icon: "🏅", perms: ['discipline.view', 'discipline.create', 'discipline.edit'] },
-  Scholarships: { icon: "🏅", perms: ['scholarships.view', 'scholarships.create', 'scholarships.edit'] },
-  Alumni: { icon: "🏅", perms: ['alumni.view', 'alumni.create', 'alumni.edit'] },
-  Events: { icon: "🏅", perms: ['events.view', 'events.create', 'events.edit'] },
-  Communications: { icon: "📡", perms: ['communications.view', 'communications.create'] },
-  LMS: { icon: "🖥️", perms: ['lms.view', 'lms.create', 'lms.edit'] },
-  Parents: { icon: "🤝", perms: ['parents.view', 'parents.create', 'parents.edit'] },
-  Settings: { icon: "⚙️", perms: ['settings.view', 'settings.edit'] },
-  Users: { icon: "🔐", perms: ['users.view', 'users.create', 'users.edit', 'users.delete'] },
-};
-
-function PermissionsTab() {
-  const [allPerms, setAllPerms] = useState<Record<string, Record<string, boolean>>>({});
-  const [activeRoleTab, setActiveRoleTab] = useState<string>("ADMIN");
-  const [permSearch, setPermSearch] = useState("");
-
-  useEffect(() => { fetchAllRolePermissionsDB().then(setAllPerms); }, []);
-
-  const filteredGroups = Object.entries(PERMISSION_GROUPS).filter(([group, { perms }]) =>
-    group.toLowerCase().includes(permSearch.toLowerCase()) ||
-    perms.some(p => p.toLowerCase().includes(permSearch.toLowerCase()))
-  );
-
-  return (
-    <SoftCard icon={UserCog} title="Role Permissions" sub="Control access for all modules across the system">
-      <div className="flex flex-col sm:flex-row gap-3 mb-4">
-        <div className="flex gap-1 flex-wrap">
-          {ROLES.map(r => (
-            <button key={r} onClick={() => setActiveRoleTab(r)}
-              className={`px-4 py-2 rounded-xl text-sm font-medium border transition-colors ${activeRoleTab === r ? "bg-primary text-primary-foreground border-primary shadow-sm" : "bg-card text-muted-foreground border-border hover:bg-secondary/50"}`}>
-              {r}
-            </button>
-          ))}
-        </div>
-        <div className="relative ml-auto">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input value={permSearch} onChange={e => setPermSearch(e.target.value)} placeholder="Search modules..." className="w-48 pl-8 py-1.5" />
-        </div>
-      </div>
-      <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
-        {filteredGroups.map(([group, { icon, perms }]) => {
-          const rolePerms = allPerms[activeRoleTab] || {};
-          const allEnabled = perms.every(p => rolePerms[p]);
-          const someEnabled = perms.some(p => rolePerms[p]);
-          return (
-            <div key={group} className="rounded-2xl border border-border bg-secondary/30 p-3">
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="text-sm font-bold text-foreground flex items-center gap-2">
-                  <span>{icon}</span> {group}
-                </h4>
-                <button onClick={() => { bulkUpdateRolePermissionsDB(activeRoleTab, Object.fromEntries(perms.map(p => [p, !allEnabled]))).then(() => { fetchAllRolePermissionsDB().then(setAllPerms); }); }}
-                  className={`text-xs font-medium px-2.5 py-1 rounded-lg border transition-colors ${allEnabled ? "bg-primary/10 text-primary border-primary/20" : someEnabled ? "bg-warning/15 text-warning border-warning/30" : "bg-secondary text-muted-foreground border-border"}`}>
-                  {allEnabled ? "All On" : someEnabled ? "Partial" : "All Off"}
-                </button>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-1.5">
-                {perms.map(p => {
-                  const enabled = rolePerms[p] ?? false;
-                  const label = p.split(".")[1].replace(/-/g, " ");
-                  return (
-                    <button key={p} onClick={async () => {
-                      const newval = !enabled;
-                      await updateRolePermissionDB(activeRoleTab, p, newval);
-                      setAllPerms(prev => ({ ...prev, [activeRoleTab]: { ...prev[activeRoleTab], [p]: newval } }));
-                    }}
-                      className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors capitalize ${enabled ? "bg-primary/10 text-primary border-primary/20" : "bg-card text-muted-foreground border-border hover:border-foreground/20"}`}>
-                      <div className={`w-3 h-3 rounded-sm border flex items-center justify-center ${enabled ? "bg-primary border-primary" : "border-border"}`}>
-                        {enabled && <Check className="h-2.5 w-2.5 text-primary-foreground" />}
-                      </div>
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
+    <SoftCard icon={Users} title="Users & Permissions" sub="Account and access management now live on their own pages">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Link href="/users" className="flex items-center justify-between p-5 rounded-2xl border border-border hover:border-primary/40 hover:bg-secondary/30 transition-colors group">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10"><Users className="h-5 w-5 text-primary" /></div>
+            <div>
+              <p className="text-sm font-semibold text-foreground">Manage Users</p>
+              <p className="text-xs text-muted-foreground">Create accounts, assign roles, approve pending signups</p>
             </div>
-          );
-        })}
+          </div>
+          <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
+        </Link>
+        <Link href="/permissions" className="flex items-center justify-between p-5 rounded-2xl border border-border hover:border-primary/40 hover:bg-secondary/30 transition-colors group">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10"><UserCog className="h-5 w-5 text-primary" /></div>
+            <div>
+              <p className="text-sm font-semibold text-foreground">Manage Permissions</p>
+              <p className="text-xs text-muted-foreground">Per-module access control and custom roles</p>
+            </div>
+          </div>
+          <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
+        </Link>
       </div>
     </SoftCard>
   );
@@ -637,6 +502,167 @@ function PaymentGatewaysTab() {
   );
 }
 
+function NotificationChannelsTab() {
+  const { toast } = useToast();
+  const [status, setStatus] = useState<{ email: boolean }>({ email: false });
+  const [loading, setLoading] = useState(true);
+  const [waConfigured, setWaConfigured] = useState(false);
+  const [testPhone, setTestPhone] = useState("");
+  const [testTemplate, setTestTemplate] = useState("hello_world");
+  const [testSending, setTestSending] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [recent, setRecent] = useState<WhatsAppNotificationRecord[]>([]);
+
+  const loadRecent = () => { fetchRecentWhatsAppNotificationsAction().then(setRecent); };
+
+  useEffect(() => {
+    fetchNotificationChannelsStatusAction().then(s => { setStatus(s); setLoading(false); });
+    fetchWhatsAppStatusAction().then(s => setWaConfigured(s.configured));
+    loadRecent();
+  }, []);
+
+  const handleSendTest = async () => {
+    setTestSending(true);
+    setTestResult(null);
+    const res = await sendWhatsAppTestMessageAction(testPhone, testTemplate);
+    setTestSending(false);
+    if (res.error) {
+      setTestResult({ ok: false, message: res.error });
+      toast({ title: "Test message failed", description: res.error, variant: "destructive" });
+    } else {
+      setTestResult({ ok: true, message: `Sent — Meta message ID ${res.metaMessageId}` });
+      toast({ title: "WhatsApp test message sent" });
+    }
+    loadRecent();
+  };
+
+  const statusColor: Record<string, string> = {
+    QUEUED: "bg-gray-100 text-gray-600", PROCESSING: "bg-blue-100 text-blue-700",
+    SENT: "bg-indigo-100 text-indigo-700", DELIVERED: "bg-teal-100 text-teal-700",
+    READ: "bg-green-100 text-green-700", FAILED: "bg-red-100 text-red-700", CANCELLED: "bg-gray-100 text-gray-500",
+  };
+
+  const channels = [
+    {
+      key: "email", name: "Email (SMTP)", icon: Mail, color: "bg-purple-50 text-purple-600", configured: status.email,
+      envVars: ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM (optional)"],
+      desc: "Sends password-reset links directly to the user's email instead of only generating a link an admin has to relay.",
+    },
+  ];
+
+  return (
+    <div className="space-y-5">
+      <SoftCard icon={MessageSquare} title="Notification Channels" sub="WhatsApp (Meta Cloud API) for attendance & fee alerts, and email delivery for password resets">
+        <div className="space-y-4">
+          {!loading && channels.map(c => (
+            <div key={c.key} className="rounded-2xl border border-border p-4 flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className={`h-10 w-10 rounded-xl ${c.color} flex items-center justify-center shrink-0`}>
+                  <c.icon className="h-5 w-5" />
+                </div>
+                <div>
+                  <p className="font-semibold text-foreground">{c.name}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5 max-w-md">{c.desc}</p>
+                  <ul className="mt-1.5 space-y-0.5">
+                    {c.envVars.map(v => <li key={v} className="text-[11px] font-mono text-muted-foreground">{v}</li>)}
+                  </ul>
+                </div>
+              </div>
+              <Badge className={`shrink-0 border-0 gap-1 ${c.configured ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+                {c.configured ? <ShieldCheck className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+                {c.configured ? "Configured" : "Not configured"}
+              </Badge>
+            </div>
+          ))}
+        </div>
+      </SoftCard>
+
+      <SoftCard icon={MessageSquare} title="WhatsApp Cloud API (Meta)" sub="Official Meta WhatsApp Business Platform — attendance-absence alerts and fee reminders/overdue notices">
+        <div className="rounded-2xl border border-border p-4 flex items-start justify-between gap-4 mb-4">
+          <div className="flex items-start gap-3">
+            <div className="h-10 w-10 rounded-xl bg-green-50 text-green-600 flex items-center justify-center shrink-0">
+              <MessageSquare className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="font-semibold text-foreground">Meta Business Platform</p>
+              <p className="text-xs text-muted-foreground mt-0.5 max-w-md">
+                Sends approved-template WhatsApp messages via Meta's Graph API. Server-only credentials, never exposed to the browser.
+              </p>
+              <ul className="mt-1.5 space-y-0.5">
+                {["WHATSAPP_BUSINESS_ACCOUNT_ID", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_API_VERSION"].map(v => (
+                  <li key={v} className="text-[11px] font-mono text-muted-foreground">{v}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          <Badge className={`shrink-0 border-0 gap-1 ${waConfigured ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+            {waConfigured ? <ShieldCheck className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+            {waConfigured ? "Configured" : "Not configured"}
+          </Badge>
+        </div>
+
+        <div className="rounded-2xl bg-secondary/30 p-4">
+          <p className="text-sm font-semibold text-foreground mb-3">Send Test Message</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+            <div>
+              <Label className="text-xs">Phone Number</Label>
+              <Input value={testPhone} onChange={e => setTestPhone(e.target.value)} placeholder="03001234567" />
+            </div>
+            <div>
+              <Label className="text-xs">Template Name</Label>
+              <Input value={testTemplate} onChange={e => setTestTemplate(e.target.value)} placeholder="hello_world" />
+            </div>
+            <Button onClick={handleSendTest} disabled={testSending || !waConfigured}>
+              {testSending ? "Sending..." : "Send Test"}
+            </Button>
+          </div>
+          {!waConfigured && <p className="text-xs text-muted-foreground mt-2">Set the WHATSAPP_* environment variables and restart the app to enable this.</p>}
+          {testResult && (
+            <p className={`text-xs mt-3 rounded-lg p-2.5 ${testResult.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
+              {testResult.message}
+            </p>
+          )}
+        </div>
+
+        <div className="mt-4">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-semibold text-foreground">Recent Notifications</p>
+            <Button size="sm" variant="outline" onClick={loadRecent}>Refresh</Button>
+          </div>
+          <div className={tableWrapCls}>
+            <table className="w-full text-sm">
+              <thead className={theadCls}>
+                <tr>
+                  <th className="text-left px-4 py-2">Phone</th>
+                  <th className="text-left px-4 py-2">Template</th>
+                  <th className="text-left px-4 py-2">Status</th>
+                  <th className="text-left px-4 py-2">Meta Message ID</th>
+                  <th className="text-left px-4 py-2">Created</th>
+                </tr>
+              </thead>
+              <tbody className={tbodyDivideCls}>
+                {recent.map(n => (
+                  <tr key={n.id}>
+                    <td className="px-4 py-2.5 font-mono text-xs">{n.phoneNumber || "—"}</td>
+                    <td className="px-4 py-2.5 text-xs">{n.templateName || "—"}</td>
+                    <td className="px-4 py-2.5">
+                      <Badge className={`border-0 ${statusColor[n.status] || "bg-gray-100 text-gray-600"}`}>{n.status}</Badge>
+                      {n.errorMessage && <p className="text-[10px] text-red-600 mt-0.5 max-w-xs truncate" title={n.errorMessage}>{n.errorMessage}</p>}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-[10px] text-muted-foreground max-w-[160px] truncate">{n.metaMessageId || "—"}</td>
+                    <td className="px-4 py-2.5 text-muted-foreground text-xs">{new Date(n.createdAt).toLocaleString()}</td>
+                  </tr>
+                ))}
+                {recent.length === 0 && <tr><td colSpan={5} className="text-center py-8 text-muted-foreground text-sm">No WhatsApp notifications sent yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </SoftCard>
+    </div>
+  );
+}
+
 // ─── TAB 10 – Attendance Devices (biometric/RFID) ──────────────────────────
 
 function AttendanceDevicesTab() {
@@ -654,11 +680,36 @@ function AttendanceDevicesTab() {
   const [cardUid, setCardUid] = useState("");
   const [cardLabel, setCardLabel] = useState("");
 
+  const [staffCards, setStaffCards] = useState<StaffCardRecord[]>([]);
+  const [staffOptions, setStaffOptions] = useState<{ userId: number; name: string; department: string }[]>([]);
+  const [staffCardUserId, setStaffCardUserId] = useState("");
+  const [staffCardUid, setStaffCardUid] = useState("");
+  const [staffCardLabel, setStaffCardLabel] = useState("");
+
   const load = () => {
     fetchDeviceKeysAction().then(setKeys);
     fetchStudentCardsAction().then(setCards);
+    fetchStaffCardsAction().then(setStaffCards);
+    fetchStaffDirectoryDB().then(setStaffOptions);
   };
   useEffect(() => { load(); }, []);
+
+  const handleAssignStaffCard = async () => {
+    if (!staffCardUserId || !staffCardUid.trim()) { toast({ title: "Select a staff member and enter a card ID.", variant: "destructive" }); return; }
+    const res = await enrollStaffCardDB(Number(staffCardUserId), staffCardUid, staffCardLabel || undefined);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Card assigned" });
+    setStaffCardUserId(""); setStaffCardUid(""); setStaffCardLabel("");
+    load();
+  };
+
+  const handleRemoveStaffCard = async (id: string, name: string) => {
+    const ok = await confirm({ title: `Unassign card from ${name}?`, description: "They'll need a new card enrolled before device/kiosk check-in will recognize them again." });
+    if (!ok) return;
+    await removeStaffCardDB(id);
+    toast({ title: "Card unassigned" });
+    load();
+  };
 
   const handleGenerateKey = async () => {
     if (!newDeviceName.trim()) return;
@@ -779,6 +830,138 @@ function AttendanceDevicesTab() {
           </table>
         </div>
       </SoftCard>
+
+      <SoftCard icon={CreditCard} title="Staff ID Cards" sub="Assign a card/badge UID to each teacher or employee — the same device/kiosk that checks students in also recognizes staff badges">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-4">
+          <Select value={staffCardUserId} onValueChange={setStaffCardUserId}>
+            <SelectTrigger><SelectValue placeholder="Select staff member" /></SelectTrigger>
+            <SelectContent>{staffOptions.map(s => <SelectItem key={s.userId} value={String(s.userId)}>{s.name} — {s.department}</SelectItem>)}</SelectContent>
+          </Select>
+          <Input value={staffCardUid} onChange={e => setStaffCardUid(e.target.value)} placeholder="Card UID (scan or type)" className="font-mono" />
+          <Input value={staffCardLabel} onChange={e => setStaffCardLabel(e.target.value)} placeholder="Label (optional)" />
+          <Button onClick={handleAssignStaffCard}><Plus className="h-4 w-4 mr-1" /> Assign Card</Button>
+        </div>
+
+        <div className={tableWrapCls}>
+          <table className="w-full text-sm">
+            <thead className={theadCls}><tr><th className="text-left px-4 py-2">Staff Member</th><th className="text-left px-4 py-2">Card UID</th><th className="text-left px-4 py-2">Label</th><th className="px-4 py-2"></th></tr></thead>
+            <tbody className={tbodyDivideCls}>
+              {staffCards.map(c => (
+                <tr key={c.id}>
+                  <td className="px-4 py-2.5 font-medium">{c.userName}</td>
+                  <td className="px-4 py-2.5 font-mono text-xs">{c.cardUid}</td>
+                  <td className="px-4 py-2.5 text-muted-foreground text-xs">{c.label || "—"}</td>
+                  <td className="px-4 py-2.5 text-right">
+                    <button className="text-xs font-medium text-destructive" onClick={() => handleRemoveStaffCard(c.id, c.userName)}>Remove</button>
+                  </td>
+                </tr>
+              ))}
+              {staffCards.length === 0 && <tr><td colSpan={4} className="text-center py-8 text-muted-foreground text-sm">No staff cards enrolled yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </SoftCard>
+    </div>
+  );
+}
+
+function ErrorLogTab() {
+  const { toast } = useToast();
+  const confirm = useConfirm();
+  const [entries, setEntries] = useState<ErrorLogEntry[]>([]);
+  const [filter, setFilter] = useState<"unresolved" | "all">("unresolved");
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const load = () => {
+    fetchErrorLogAction(filter === "unresolved" ? { onlyUnresolved: true } : undefined).then(setEntries);
+  };
+  useEffect(() => { load(); }, [filter]);
+
+  const handleResolve = async (id: string) => {
+    await resolveErrorLogEntryAction(id);
+    toast({ title: "Marked as resolved" });
+    load();
+  };
+
+  const handleClearResolved = async () => {
+    const ok = await confirm({ title: "Clear resolved errors?", description: "Permanently deletes every resolved entry from the error log. Unresolved entries are kept." });
+    if (!ok) return;
+    await clearResolvedErrorLogAction();
+    toast({ title: "Resolved errors cleared" });
+    load();
+  };
+
+  const unresolvedCount = entries.filter(e => !e.resolved).length;
+
+  return (
+    <div className="space-y-5">
+      <SoftCard
+        icon={AlertOctagon}
+        title="Error Log"
+        sub="Every server-action failure is recorded here — not just printed to a console nobody reads — so a silently failing write in production surfaces to an admin."
+        action={
+          <div className="flex items-center gap-2">
+            <div className="flex gap-1 bg-secondary/60 rounded-xl p-1">
+              <button onClick={() => setFilter("unresolved")} className={`px-3 py-1 text-[11px] font-semibold rounded-lg transition-colors ${filter === "unresolved" ? "bg-card shadow-sm text-foreground" : "text-muted-foreground"}`}>
+                Unresolved {unresolvedCount > 0 && `(${unresolvedCount})`}
+              </button>
+              <button onClick={() => setFilter("all")} className={`px-3 py-1 text-[11px] font-semibold rounded-lg transition-colors ${filter === "all" ? "bg-card shadow-sm text-foreground" : "text-muted-foreground"}`}>
+                All
+              </button>
+            </div>
+            <Button size="sm" variant="outline" onClick={handleClearResolved}>Clear Resolved</Button>
+          </div>
+        }
+      >
+        <div className={tableWrapCls}>
+          <table className="w-full text-sm">
+            <thead className={theadCls}>
+              <tr>
+                <th className="text-left px-4 py-2">Source</th>
+                <th className="text-left px-4 py-2">Message</th>
+                <th className="text-left px-4 py-2">When</th>
+                <th className="text-left px-4 py-2">Status</th>
+                <th className="px-4 py-2"></th>
+              </tr>
+            </thead>
+            <tbody className={tbodyDivideCls}>
+              {entries.map(e => (
+                <React.Fragment key={e.id}>
+                  <tr className="cursor-pointer hover:bg-secondary/20" onClick={() => setExpanded(expanded === e.id ? null : e.id)}>
+                    <td className="px-4 py-2.5"><Badge variant="outline" className="text-[10px] font-mono">{e.source}</Badge></td>
+                    <td className="px-4 py-2.5 max-w-md truncate">{e.message}</td>
+                    <td className="px-4 py-2.5 text-muted-foreground text-xs">{new Date(e.createdAt).toLocaleString()}</td>
+                    <td className="px-4 py-2.5">
+                      {e.resolved
+                        ? <Badge className="border-0 bg-green-100 text-green-700">Resolved</Badge>
+                        : <Badge className="border-0 bg-red-100 text-red-700">Unresolved</Badge>}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      {!e.resolved && (
+                        <button className="text-xs font-medium text-primary" onClick={(evt) => { evt.stopPropagation(); handleResolve(e.id); }}>
+                          Mark Resolved
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {expanded === e.id && e.stack && (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-3 bg-secondary/10">
+                        <pre className="text-[11px] text-muted-foreground whitespace-pre-wrap font-mono max-h-64 overflow-y-auto">{e.stack}</pre>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              ))}
+              {entries.length === 0 && (
+                <tr><td colSpan={5} className="text-center py-8 text-muted-foreground text-sm">
+                  {filter === "unresolved" ? "No unresolved errors. All clear." : "No errors recorded yet."}
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </SoftCard>
     </div>
   );
 }
@@ -792,9 +975,10 @@ const NAV_ITEMS = [
   { key: "subjects", icon: BookOpen, label: "Subjects" },
   { key: "fees", icon: DollarSign, label: "Fee Categories" },
   { key: "payments", icon: CreditCard, label: "Payment Gateways" },
+  { key: "notifications", icon: MessageSquare, label: "Notification Channels" },
   { key: "devices", icon: ScanLine, label: "Attendance Devices" },
-  { key: "users", icon: Users, label: "Users" },
-  { key: "perms", icon: UserCog, label: "Permissions" },
+  { key: "errors", icon: AlertOctagon, label: "Error Log" },
+  { key: "access", icon: UserCog, label: "Users & Permissions" },
   { key: "grades", icon: Percent, label: "Grade Scale" },
 ];
 
@@ -805,9 +989,10 @@ const TAB_COMPONENTS: Record<string, React.FC> = {
   subjects: SubjectsTab,
   fees: FeeCategoriesTab,
   payments: PaymentGatewaysTab,
+  notifications: NotificationChannelsTab,
   devices: AttendanceDevicesTab,
-  users: UsersTab,
-  perms: PermissionsTab,
+  errors: ErrorLogTab,
+  access: AccessPointerTab,
   grades: GradeScaleTab,
 };
 

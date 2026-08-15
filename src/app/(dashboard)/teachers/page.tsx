@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { useAppState } from "@/lib/state-context";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,26 +15,22 @@ import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
-import { Plus, Search, Users, BookOpen, UserCheck, GraduationCap, Trash2, X, ShieldAlert, AlertTriangle, Download } from "lucide-react";
+import { Plus, Search, Users, BookOpen, UserCheck, GraduationCap, X, ShieldAlert, AlertTriangle, Download } from "lucide-react";
 import { exportToCsv } from "@/lib/export-csv";
 import {
   fetchAcademicYearsDB, fetchClassesDB, fetchAllSectionsDB, fetchSectionsByClassDB,
-  fetchTeacherAssignmentsDB, createTeacherAssignmentDB, deleteTeacherAssignmentDB,
+  fetchTeacherAssignmentsDB, createTeacherAssignmentDB,
 } from "@/app/actions/academic-core";
 import {
-  fetchUsersDB, createTeacherWithProfileDB, fetchAllTeacherProfilesDB, updateTeacherStatusDB,
-  fetchPayScalesDB, createPayScaleDB,
-  fetchTeacherQualificationsDB, addTeacherQualificationDB, deleteTeacherQualificationDB,
-  fetchTeacherCompetenciesDB, addTeacherCompetencyDB, deleteTeacherCompetencyDB,
-  type TeacherProfile, type PayScale, type TeacherQualification, type TeacherSubjectCompetency,
+  fetchUsersDB, createTeacherWithProfileDB, fetchAllTeacherProfilesDB,
+  fetchPayScalesDB, fetchTeacherCompetenciesDB,
+  type TeacherProfile, type PayScale, type TeacherSubjectCompetency,
 } from "@/app/actions/features";
 import type { AcademicYear, ClassItem, SectionItem, TeacherClassSubject, TeacherRecord } from "@/lib/types";
 
-type DraftQualification = { degreeTitle: string; institution: string; yearCompleted: string; specialization: string };
-type DraftCompetency = { subjectId: string; classId: string };
-
 export default function TeachersPage() {
   const { toast } = useToast();
+  const router = useRouter();
   const confirm = useConfirm();
   const { can, loaded: permsLoaded } = usePermission();
   const { subjects } = useAppState();
@@ -53,25 +50,21 @@ export default function TeachersPage() {
   const [classFilter, setClassFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
 
-  // Add Teacher dialog
+  // Add Teacher dialog — deliberately minimal (name/email/password/contact/
+  // employment basics only). Qualifications, competencies, photos, and every
+  // other detail are filled in on the teacher's profile page right after
+  // creation — real onboarding fills in a staff file over days, not upfront.
   const [addOpen, setAddOpen] = useState(false);
-  const [addStep, setAddStep] = useState<"profile" | "qualifications" | "competency">("profile");
   const [addForm, setAddForm] = useState({
-    name: "", email: "", password: "", phone: "", cnic: "",
-    employeeId: "", employmentType: "fulltime", designation: "", payScaleId: "",
-    specialization: "", qualification: "", experienceYears: "", joiningDate: "", address: "",
+    name: "", email: "", password: "", phone: "",
+    employeeId: "", employmentType: "fulltime", joiningDate: "",
   });
-  const [draftQualifications, setDraftQualifications] = useState<DraftQualification[]>([{ degreeTitle: "", institution: "", yearCompleted: "", specialization: "" }]);
-  const [draftCompetencies, setDraftCompetencies] = useState<DraftCompetency[]>([{ subjectId: "", classId: "" }]);
   const [adding, setAdding] = useState(false);
 
   // Assign dialog
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignForm, setAssignForm] = useState({ teacherId: "", classId: "", sectionId: "", subjectId: "" });
   const [confirmOverride, setConfirmOverride] = useState<null | { teacherId: number; classId: string; sectionId: string; subjectId: string }>(null);
-
-  // New pay scale inline
-  const [newScaleLabel, setNewScaleLabel] = useState("");
 
   const loadContext = useCallback(async () => {
     setLoading(true);
@@ -115,44 +108,27 @@ export default function TeachersPage() {
   }, [assignForm.classId]);
 
   const resetAddForm = () => {
-    setAddForm({ name: "", email: "", password: "", phone: "", cnic: "", employeeId: "", employmentType: "fulltime", designation: "", payScaleId: "", specialization: "", qualification: "", experienceYears: "", joiningDate: "", address: "" });
-    setDraftQualifications([{ degreeTitle: "", institution: "", yearCompleted: "", specialization: "" }]);
-    setDraftCompetencies([{ subjectId: "", classId: "" }]);
-    setAddStep("profile");
+    setAddForm({ name: "", email: "", password: "", phone: "", employeeId: "", employmentType: "fulltime", joiningDate: "" });
   };
 
   const handleAddTeacher = async () => {
     if (!addForm.name || !addForm.email || !addForm.password) {
       toast({ title: "Name, email and password are required", variant: "destructive" }); return;
     }
-    const validQualifications = draftQualifications.filter(q => q.degreeTitle.trim());
-    if (validQualifications.length === 0) {
-      toast({ title: "At least one qualification is required", variant: "destructive" });
-      setAddStep("qualifications");
-      return;
-    }
     setAdding(true);
     const res = await createTeacherWithProfileDB(addForm.name, addForm.email, addForm.password, {
-      phone: addForm.phone, cnic: addForm.cnic, specialization: addForm.specialization,
-      qualification: addForm.qualification, experienceYears: parseInt(addForm.experienceYears) || 0,
-      joiningDate: addForm.joiningDate, address: addForm.address, profilePhoto: null, degreePhoto: null,
+      phone: addForm.phone, cnic: "", specialization: "", qualification: "", experienceYears: 0,
+      joiningDate: addForm.joiningDate, address: "", profilePhoto: null, degreePhoto: null,
       employeeId: addForm.employeeId || null, employmentType: addForm.employmentType as any,
-      status: "active", payScaleId: addForm.payScaleId || null, designation: addForm.designation || null,
+      status: "active", payScaleId: null, designation: null,
     });
-    if (res.error || !res.userId) { setAdding(false); toast({ title: res.error || "Failed to create teacher", variant: "destructive" }); return; }
-
-    await Promise.all(validQualifications.map(q => addTeacherQualificationDB({
-      teacherId: res.userId!, degreeTitle: q.degreeTitle, institution: q.institution,
-      yearCompleted: parseInt(q.yearCompleted) || null, specialization: q.specialization || null, certificateFilePath: null,
-    })));
-    const validCompetencies = draftCompetencies.filter(c => c.subjectId && c.classId);
-    await Promise.all(validCompetencies.map(c => addTeacherCompetencyDB(res.userId!, c.subjectId, c.classId)));
-
     setAdding(false);
+    if (res.error || !res.userId) { toast({ title: res.error || "Failed to create teacher", variant: "destructive" }); return; }
+
     setAddOpen(false);
     resetAddForm();
-    loadContext();
-    toast({ title: "Teacher added" });
+    toast({ title: "Teacher added — complete their profile next." });
+    router.push(`/teachers/${res.userId}`);
   };
 
   const handleAssign = async (override = false) => {
@@ -189,49 +165,6 @@ export default function TeachersPage() {
     setAssignForm({ teacherId: "", classId: "", sectionId: "", subjectId: "" });
     loadAssignments();
     toast({ title: "Teacher assigned (competency override logged)" });
-  };
-
-  const handleUnassign = async (id: string) => {
-    const ok = await confirm({
-      title: "Remove this assignment?",
-      description: "The teacher will no longer be assigned to this class/subject. This can be re-added later, but any related timetable entries will need to be reassigned.",
-    });
-    if (!ok) return;
-    await deleteTeacherAssignmentDB(id);
-    loadAssignments();
-    toast({ title: "Assignment removed" });
-  };
-
-  const handleDeactivate = async (teacherId: number, teacherName: string) => {
-    const ok = await confirm({
-      title: `Deactivate ${teacherName}?`,
-      description: "They will immediately lose portal access. Their class assignments and records are kept and can be restored by reactivating them.",
-      confirmLabel: "Deactivate",
-    });
-    if (!ok) return;
-    const res = await updateTeacherStatusDB(teacherId, "inactive");
-    if (res.error) {
-      toast({ title: res.error, variant: "destructive" });
-      return;
-    }
-    loadContext();
-    toast({ title: "Teacher deactivated" });
-  };
-
-  const handleReactivate = async (teacherId: number) => {
-    await updateTeacherStatusDB(teacherId, "active");
-    loadContext();
-    toast({ title: "Teacher reactivated" });
-  };
-
-  const handleAddPayScale = async () => {
-    if (!newScaleLabel.trim()) return;
-    const res = await createPayScaleDB(newScaleLabel.trim(), payScales.length);
-    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
-    setNewScaleLabel("");
-    const scales = await fetchPayScalesDB();
-    setPayScales(scales);
-    if (res.id) setAddForm(f => ({ ...f, payScaleId: res.id! }));
   };
 
   const payScaleLabel = (id: string | null) => payScales.find(p => p.id === id)?.label || null;
@@ -374,17 +307,26 @@ export default function TeachersPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map(t => {
             const status = t.profile?.status || "active";
+            const clickable = t.id > 0;
             return (
-              <Card key={t.id} className="border-border">
+              <Card
+                key={t.id}
+                className={`border-border transition-colors ${clickable ? "cursor-pointer hover:border-primary/40 hover:shadow-sm" : ""}`}
+                onClick={() => clickable && router.push(`/teachers/${t.id}`)}
+              >
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-3">
-                      <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                        <span className="font-semibold text-primary text-sm">{t.name.charAt(0)}</span>
-                      </div>
-                      <div>
-                        <h3 className="font-medium text-foreground">{t.name}</h3>
-                        <p className="text-xs text-muted-foreground">{t.email}</p>
+                    <div className="flex items-center gap-3 min-w-0">
+                      {t.profile?.profilePhoto ? (
+                        <img src={t.profile.profilePhoto} alt={t.name} className="h-10 w-10 rounded-full object-cover shrink-0" />
+                      ) : (
+                        <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                          <span className="font-semibold text-primary text-sm">{t.name.charAt(0)}</span>
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <h3 className="font-medium text-foreground truncate">{t.name}</h3>
+                        <p className="text-xs text-muted-foreground truncate">{t.email}</p>
                         {t.profile?.employeeId && <p className="text-[10px] text-muted-foreground font-mono">ID: {t.profile.employeeId}</p>}
                       </div>
                     </div>
@@ -394,58 +336,21 @@ export default function TeachersPage() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="flex flex-wrap gap-1.5 mb-2">
+                  <div className="flex flex-wrap gap-1.5 mb-3">
                     {t.profile?.designation && <Badge variant="secondary" className="text-xs">{t.profile.designation}</Badge>}
                     {payScaleLabel(t.profile?.payScaleId || null) && <Badge variant="outline" className="text-xs">{payScaleLabel(t.profile?.payScaleId || null)}</Badge>}
+                    {!!t.profile?.experienceYears && (
+                      <Badge variant="outline" className="text-xs">{t.profile.experienceYears} yr{t.profile.experienceYears !== 1 ? "s" : ""} exp.</Badge>
+                    )}
                   </div>
-
-                  {t.competent.length > 0 && (
-                    <div className="mb-2">
-                      <p className="text-[10px] text-muted-foreground font-medium mb-1">Qualified to teach</p>
-                      <div className="flex flex-wrap gap-1">
-                        {t.competent.slice(0, 4).map(c => (
-                          <span key={c.id} className="text-[10px] bg-secondary/70 text-secondary-foreground rounded-full px-2 py-0.5">
-                            {c.subjectName} · {c.className}
-                          </span>
-                        ))}
-                        {t.competent.length > 4 && <span className="text-[10px] text-muted-foreground">+{t.competent.length - 4} more</span>}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-1 mb-2">
-                    <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span className="text-xs text-muted-foreground">{t.subjects.length} assignment{t.subjects.length !== 1 ? "s" : ""}</span>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1"><BookOpen className="h-3.5 w-3.5" /> {t.subjects.length} class assignment{t.subjects.length !== 1 ? "s" : ""}</span>
+                    <span className="flex items-center gap-1"><GraduationCap className="h-3.5 w-3.5" /> {t.competent.length} competenc{t.competent.length !== 1 ? "ies" : "y"}</span>
                   </div>
-                  {t.subjects.length > 0 ? (
-                    <div className="space-y-1">
-                      {t.subjects.map(a => (
-                        <div key={a.id} className="flex items-center justify-between bg-secondary/50 rounded px-2 py-1.5 text-xs">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <GraduationCap className="h-3 w-3 text-primary shrink-0" />
-                            <span className="font-medium truncate">{a.subjectName}</span>
-                            <span className="text-muted-foreground truncate">— {a.className} / {a.sectionName}</span>
-                          </div>
-                          <button onClick={() => handleUnassign(a.id)} className="text-destructive/70 hover:text-destructive ml-1 shrink-0">
-                            <X className="h-3 w-3" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">No assignments yet</p>
-                  )}
-
-                  {t.id > 0 && (
-                    <div className="mt-3 pt-3 border-t border-border">
-                      {status === "inactive" ? (
-                        <Button size="sm" variant="outline" className="h-7 text-xs w-full" onClick={() => handleReactivate(t.id)}>Reactivate</Button>
-                      ) : (
-                        <Button size="sm" variant="outline" className="h-7 text-xs w-full text-destructive hover:text-destructive" onClick={() => handleDeactivate(t.id, t.name)}>
-                          Deactivate
-                        </Button>
-                      )}
-                    </div>
+                  {clickable && (
+                    <Button size="sm" variant="outline" className="h-7 text-xs w-full mt-3" onClick={e => { e.stopPropagation(); router.push(`/teachers/${t.id}`); }}>
+                      View Profile
+                    </Button>
                   )}
                 </CardContent>
               </Card>
@@ -454,126 +359,39 @@ export default function TeachersPage() {
         </div>
       )}
 
-      {/* Add Teacher Dialog */}
+      {/* Add Teacher Dialog — deliberately just the essentials; everything
+          else (qualifications, competencies, photo, address, designation,
+          pay scale) is filled in on the teacher's profile page right after. */}
       <Dialog open={addOpen} onOpenChange={(o) => { setAddOpen(o); if (!o) resetAddForm(); }}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Add New Teacher</DialogTitle></DialogHeader>
-
-          <div className="flex gap-1 bg-secondary/50 rounded-lg p-1 mb-1">
-            {(["profile", "qualifications", "competency"] as const).map(step => (
-              <button key={step} onClick={() => setAddStep(step)}
-                className={`flex-1 text-xs font-semibold rounded-md py-1.5 capitalize transition-colors ${addStep === step ? "bg-card shadow-sm text-foreground" : "text-muted-foreground"}`}>
-                {step === "profile" ? "1. Profile" : step === "qualifications" ? "2. Qualifications" : "3. Competency"}
-              </button>
-            ))}
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Name *</Label><Input value={addForm.name} onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))} /></div>
+              <div><Label>Employee ID</Label><Input value={addForm.employeeId} onChange={e => setAddForm(f => ({ ...f, employeeId: e.target.value }))} placeholder="Optional" /></div>
+            </div>
+            <div><Label>Email *</Label><Input type="email" value={addForm.email} onChange={e => setAddForm(f => ({ ...f, email: e.target.value }))} /></div>
+            <div><Label>Password *</Label><Input type="password" value={addForm.password} onChange={e => setAddForm(f => ({ ...f, password: e.target.value }))} /></div>
+            <div><Label>Phone</Label><Input value={addForm.phone} onChange={e => setAddForm(f => ({ ...f, phone: e.target.value }))} /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Employment Type</Label>
+                <Select value={addForm.employmentType} onValueChange={v => setAddForm(f => ({ ...f, employmentType: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="fulltime">Full-time</SelectItem>
+                    <SelectItem value="parttime">Part-time</SelectItem>
+                    <SelectItem value="visiting">Visiting</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div><Label>Joining Date</Label><Input type="date" value={addForm.joiningDate} onChange={e => setAddForm(f => ({ ...f, joiningDate: e.target.value }))} /></div>
+            </div>
+            <p className="text-xs text-muted-foreground">Qualifications, subject competency, designation, pay scale, and photo are added on their profile page next.</p>
           </div>
-
-          {addStep === "profile" && (
-            <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
-              <div className="grid grid-cols-2 gap-3">
-                <div><Label>Name *</Label><Input value={addForm.name} onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))} /></div>
-                <div><Label>Employee ID</Label><Input value={addForm.employeeId} onChange={e => setAddForm(f => ({ ...f, employeeId: e.target.value }))} placeholder="Auto-suggested if blank" /></div>
-              </div>
-              <div><Label>Email *</Label><Input type="email" value={addForm.email} onChange={e => setAddForm(f => ({ ...f, email: e.target.value }))} /></div>
-              <div><Label>Password *</Label><Input type="password" value={addForm.password} onChange={e => setAddForm(f => ({ ...f, password: e.target.value }))} /></div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><Label>Phone</Label><Input value={addForm.phone} onChange={e => setAddForm(f => ({ ...f, phone: e.target.value }))} /></div>
-                <div><Label>CNIC</Label><Input value={addForm.cnic} onChange={e => setAddForm(f => ({ ...f, cnic: e.target.value }))} /></div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><Label>Employment Type</Label>
-                  <Select value={addForm.employmentType} onValueChange={v => setAddForm(f => ({ ...f, employmentType: v }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="fulltime">Full-time</SelectItem>
-                      <SelectItem value="parttime">Part-time</SelectItem>
-                      <SelectItem value="visiting">Visiting</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div><Label>Joining Date</Label><Input type="date" value={addForm.joiningDate} onChange={e => setAddForm(f => ({ ...f, joiningDate: e.target.value }))} /></div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><Label>Designation</Label><Input value={addForm.designation} onChange={e => setAddForm(f => ({ ...f, designation: e.target.value }))} placeholder="e.g. Senior Physics Teacher" /></div>
-                <div>
-                  <Label>Pay Scale</Label>
-                  <Select value={addForm.payScaleId} onValueChange={v => setAddForm(f => ({ ...f, payScaleId: v }))}>
-                    <SelectTrigger><SelectValue placeholder="Select scale" /></SelectTrigger>
-                    <SelectContent>
-                      {payScales.map(p => <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>)}
-                      <div className="flex items-center gap-1 p-1.5 border-t border-border mt-1">
-                        <Input value={newScaleLabel} onChange={e => setNewScaleLabel(e.target.value)} placeholder="New scale e.g. BPS-17" className="h-7 text-xs" onClick={e => e.stopPropagation()} />
-                        <Button type="button" size="sm" className="h-7 px-2" onClick={(e) => { e.stopPropagation(); handleAddPayScale(); }}>Add</Button>
-                      </div>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <div><Label>Address</Label><Input value={addForm.address} onChange={e => setAddForm(f => ({ ...f, address: e.target.value }))} /></div>
-              <div className="flex justify-end"><Button size="sm" onClick={() => setAddStep("qualifications")}>Next: Qualifications</Button></div>
-            </div>
-          )}
-
-          {addStep === "qualifications" && (
-            <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
-              <p className="text-xs text-muted-foreground">At least one qualification is required.</p>
-              {draftQualifications.map((q, i) => (
-                <div key={i} className="rounded-lg border border-border p-3 space-y-2 relative">
-                  {draftQualifications.length > 1 && (
-                    <button className="absolute top-2 right-2 text-muted-foreground hover:text-destructive"
-                      onClick={() => setDraftQualifications(list => list.filter((_, idx) => idx !== i))}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                  <div className="grid grid-cols-2 gap-2">
-                    <div><Label className="text-xs">Degree Title *</Label><Input className="h-8 text-sm" value={q.degreeTitle} placeholder="e.g. B.Ed" onChange={e => setDraftQualifications(list => list.map((x, idx) => idx === i ? { ...x, degreeTitle: e.target.value } : x))} /></div>
-                    <div><Label className="text-xs">Institution</Label><Input className="h-8 text-sm" value={q.institution} onChange={e => setDraftQualifications(list => list.map((x, idx) => idx === i ? { ...x, institution: e.target.value } : x))} /></div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div><Label className="text-xs">Year Completed</Label><Input className="h-8 text-sm" type="number" value={q.yearCompleted} onChange={e => setDraftQualifications(list => list.map((x, idx) => idx === i ? { ...x, yearCompleted: e.target.value } : x))} /></div>
-                    <div><Label className="text-xs">Specialization</Label><Input className="h-8 text-sm" value={q.specialization} onChange={e => setDraftQualifications(list => list.map((x, idx) => idx === i ? { ...x, specialization: e.target.value } : x))} /></div>
-                  </div>
-                </div>
-              ))}
-              <Button variant="outline" size="sm" onClick={() => setDraftQualifications(list => [...list, { degreeTitle: "", institution: "", yearCompleted: "", specialization: "" }])}>
-                <Plus className="h-3.5 w-3.5 mr-1" /> Add Qualification
-              </Button>
-              <div className="flex justify-between">
-                <Button variant="ghost" size="sm" onClick={() => setAddStep("profile")}>Back</Button>
-                <Button size="sm" onClick={() => setAddStep("competency")}>Next: Competency</Button>
-              </div>
-            </div>
-          )}
-
-          {addStep === "competency" && (
-            <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
-              <p className="text-xs text-muted-foreground">Subjects &amp; grade levels this teacher is qualified to teach — independent of this year's actual assignment.</p>
-              {draftCompetencies.map((c, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <Select value={c.subjectId} onValueChange={v => setDraftCompetencies(list => list.map((x, idx) => idx === i ? { ...x, subjectId: v } : x))}>
-                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Subject" /></SelectTrigger>
-                    <SelectContent>{subjects.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
-                  </Select>
-                  <Select value={c.classId} onValueChange={v => setDraftCompetencies(list => list.map((x, idx) => idx === i ? { ...x, classId: v } : x))}>
-                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Grade" /></SelectTrigger>
-                    <SelectContent>{classes.map(cl => <SelectItem key={cl.id} value={cl.id}>{cl.name}</SelectItem>)}</SelectContent>
-                  </Select>
-                  {draftCompetencies.length > 1 && (
-                    <button className="text-muted-foreground hover:text-destructive shrink-0" onClick={() => setDraftCompetencies(list => list.filter((_, idx) => idx !== i))}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-              ))}
-              <Button variant="outline" size="sm" onClick={() => setDraftCompetencies(list => [...list, { subjectId: "", classId: "" }])}>
-                <Plus className="h-3.5 w-3.5 mr-1" /> Add Row
-              </Button>
-              <div className="flex justify-between pt-1">
-                <Button variant="ghost" size="sm" onClick={() => setAddStep("qualifications")}>Back</Button>
-                <Button onClick={handleAddTeacher} disabled={adding}>{adding ? "Adding..." : "Save Teacher"}</Button>
-              </div>
-            </div>
-          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
+            <Button onClick={handleAddTeacher} disabled={adding}>{adding ? "Adding..." : "Add Teacher"}</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

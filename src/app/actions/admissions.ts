@@ -7,6 +7,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../../lib/prisma';
 import { checkSectionCapacityDB } from './academic-core';
 import { getSession } from './auth';
+import { logServerError } from '../../lib/error-log';
 
 export async function getSchoolInfoAction(): Promise<{ name: string; academicYear: string }> {
   try {
@@ -59,7 +60,7 @@ export async function submitAdmissionApplicationAction(
       );
     }
   } catch (err) {
-    console.error("Failed to save application to DB", err);
+    logServerError("admissions", "Failed to save application to DB", err);
   }
 
   return { applicationId, submittedAt };
@@ -206,7 +207,7 @@ export async function approveAdmissionWithAccountsDB(
       },
     };
   } catch (err) {
-    console.error('approveAdmissionWithAccountsDB error', err);
+    logServerError("admissions", 'approveAdmissionWithAccountsDB error', err);
     return { error: 'Failed to approve admission' };
   }
 }

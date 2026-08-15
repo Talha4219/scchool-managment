@@ -14,22 +14,26 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 import {
-  fetchEmployeesDB, createEmployeeDB,
+  fetchEmployeesDB, createStaffEmployeeDB, updateEmployeeDB, deleteEmployeeDB, fetchStaffDirectoryDB,
   fetchLeaveRequestsDB, createLeaveRequestDB, approveLeaveDB, rejectLeaveDB,
+  fetchPerformanceEvaluationsDB, createPerformanceEvaluationDB,
 } from "@/app/actions/features";
 import type { EmployeeRecord, LeaveRequest, PerformanceEvaluation } from "@/lib/types";
 import {
   Users, Briefcase, CalendarCheck, Clock, Plus, Search, CheckCircle2, XCircle,
-  Lock, Mail, Phone, Building, UserCircle, BadgeCheck, Loader2, Star, FileText, Download,
+  Lock, Mail, Phone, Building, UserCircle, BadgeCheck, Loader2, Star, FileText, Download, Pencil, Trash2,
 } from "lucide-react";
 import { exportToCsv } from "@/lib/export-csv";
 
 const LEAVE_TYPES = ["Sick", "Casual", "Annual", "Maternity", "Paternity", "Unpaid"] as const;
 const EMPLOYMENT_TYPES = ["Permanent", "Contract", "Probation", "Intern"] as const;
 const STATUS_OPTIONS = ["Active", "Inactive", "Resigned", "Terminated"] as const;
+
+type StaffOption = { userId: number; name: string; role: string; department: string; designation: string; payScaleId: string | null };
 
 const statusBadge: Record<string, string> = {
   Active: "bg-green-100 text-green-800",
@@ -74,20 +78,20 @@ function EmployeeDialog({
   open, onOpenChange, onSubmit, initial,
 }: {
   open: boolean; onOpenChange: (v: boolean) => void;
-  onSubmit: (data: Omit<EmployeeRecord, "id">) => Promise<void>;
+  onSubmit: (data: { name: string; email: string; password: string } & Omit<EmployeeRecord, "id" | "userId" | "name" | "email">) => Promise<void>;
   initial?: EmployeeRecord;
 }) {
   const blank = {
-    userId: 0, name: "", email: "", phone: "", department: "", designation: "",
+    name: "", email: "", password: "", phone: "", department: "", designation: "",
     employmentType: "Permanent" as const, joiningDate: "", cnic: "", address: "",
     emergencyContact: "", emergencyPhone: "", qualification: "", experience: 0,
-    status: "Active" as const, bankName: "", bankAccount: "", profilePhoto: "",
+    status: "Active" as const, bankName: "", bankAccount: "", profilePhoto: "", payScaleId: null as string | null,
   };
-  const [form, setForm] = useState(initial ?? blank);
+  const [form, setForm] = useState(blank);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) setForm(initial ?? blank);
+    if (open) setForm(initial ? ({ ...initial, password: "" } as typeof blank) : blank);
   }, [open, initial]);
 
   const set = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }));
@@ -95,13 +99,14 @@ function EmployeeDialog({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    await onSubmit(form as Omit<EmployeeRecord, "id">);
+    await onSubmit(form as any);
     setSaving(false);
   };
 
   const fields = [
-    { col: "col-span-2", label: "Full Name", key: "name", type: "text" },
-    { col: "", label: "Email", key: "email", type: "email" },
+    { col: "col-span-2", label: "Full Name", key: "name", type: "text", disabled: !!initial },
+    { col: "", label: "Email", key: "email", type: "email", disabled: !!initial },
+    ...(!initial ? [{ col: "", label: "Password", key: "password", type: "password" }] : []),
     { col: "", label: "Phone", key: "phone", type: "text" },
     { col: "", label: "Department", key: "department", type: "text" },
     { col: "", label: "Designation", key: "designation", type: "text" },
@@ -139,6 +144,7 @@ function EmployeeDialog({
                 ) : (
                   <Input
                     type={f.type}
+                    disabled={(f as any).disabled}
                     value={form[f.key as keyof typeof form] as string | number}
                     onChange={e => set(f.key, f.type === "number" ? Number(e.target.value) : e.target.value)}
                   />
@@ -146,6 +152,7 @@ function EmployeeDialog({
               </div>
             ))}
           </div>
+          {!initial && <p className="text-xs text-muted-foreground">This creates a real login account for this staff member.</p>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button type="submit" disabled={saving}>
@@ -159,9 +166,10 @@ function EmployeeDialog({
   );
 }
 
-function LeaveRequestDialog({ open, onOpenChange, onSubmit }: {
+function LeaveRequestDialog({ open, onOpenChange, onSubmit, staff }: {
   open: boolean; onOpenChange: (v: boolean) => void;
   onSubmit: (data: Omit<LeaveRequest, "id">) => Promise<void>;
+  staff: StaffOption[];
 }) {
   const blank = {
     employeeId: 0, employeeName: "", leaveType: "Sick" as const,
@@ -177,6 +185,7 @@ function LeaveRequestDialog({ open, onOpenChange, onSubmit }: {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!form.employeeId) return;
     setSaving(true);
     await onSubmit(form as Omit<LeaveRequest, "id">);
     setSaving(false);
@@ -190,8 +199,16 @@ function LeaveRequestDialog({ open, onOpenChange, onSubmit }: {
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <Label>Employee Name</Label>
-            <Input value={form.employeeName} onChange={e => set("employeeName", e.target.value)} />
+            <Label>Staff Member</Label>
+            <Select value={form.employeeId ? String(form.employeeId) : ""} onValueChange={v => {
+              const s = staff.find(x => x.userId === Number(v));
+              set("employeeId", Number(v)); set("employeeName", s?.name || "");
+            }}>
+              <SelectTrigger><SelectValue placeholder="Select staff member" /></SelectTrigger>
+              <SelectContent>
+                {staff.map(s => <SelectItem key={s.userId} value={String(s.userId)}>{s.name} — {s.department}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-2">
             <Label>Leave Type</Label>
@@ -222,9 +239,88 @@ function LeaveRequestDialog({ open, onOpenChange, onSubmit }: {
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={saving}>
+            <Button type="submit" disabled={saving || !form.employeeId}>
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Submit
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EvaluationDialog({ open, onOpenChange, onSubmit, staff }: {
+  open: boolean; onOpenChange: (v: boolean) => void;
+  onSubmit: (data: Omit<PerformanceEvaluation, "id">) => Promise<void>;
+  staff: StaffOption[];
+}) {
+  const blank = {
+    employeeId: 0, employeeName: "", evaluatorName: "", evaluationDate: new Date().toISOString().split("T")[0],
+    rating: 3, feedback: "", goals: "", overallScore: 0,
+  };
+  const [form, setForm] = useState(blank);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { if (open) setForm(blank); }, [open]);
+  const set = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }));
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.employeeId) return;
+    setSaving(true);
+    await onSubmit(form as Omit<PerformanceEvaluation, "id">);
+    setSaving(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Record Performance Evaluation</DialogTitle></DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label>Staff Member</Label>
+            <Select value={form.employeeId ? String(form.employeeId) : ""} onValueChange={v => {
+              const s = staff.find(x => x.userId === Number(v));
+              set("employeeId", Number(v)); set("employeeName", s?.name || "");
+            }}>
+              <SelectTrigger><SelectValue placeholder="Select staff member" /></SelectTrigger>
+              <SelectContent>
+                {staff.map(s => <SelectItem key={s.userId} value={String(s.userId)}>{s.name} — {s.department}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Evaluator Name</Label>
+            <Input value={form.evaluatorName} onChange={e => set("evaluatorName", e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Evaluation Date</Label>
+              <Input type="date" value={form.evaluationDate} onChange={e => set("evaluationDate", e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Rating (1-5)</Label>
+              <Input type="number" min={1} max={5} value={form.rating} onChange={e => set("rating", Number(e.target.value))} />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Overall Score (%)</Label>
+            <Input type="number" min={0} max={100} value={form.overallScore} onChange={e => set("overallScore", Number(e.target.value))} />
+          </div>
+          <div className="space-y-2">
+            <Label>Feedback</Label>
+            <Textarea value={form.feedback} onChange={e => set("feedback", e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label>Goals</Label>
+            <Textarea value={form.goals} onChange={e => set("goals", e.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" disabled={saving || !form.employeeId}>
+              {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save
             </Button>
           </DialogFooter>
         </form>
@@ -261,31 +357,60 @@ function PerformanceCard({ ev: evData }: { ev: PerformanceEvaluation }) {
 export default function HRPage() {
   const { activeRole } = useAppState();
   const { toast } = useToast();
+  const confirm = useConfirm();
   const { can, loaded: permsLoaded } = usePermission();
 
   const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
+  const [staff, setStaff] = useState<StaffOption[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
-  const [evaluations] = useState<PerformanceEvaluation[]>([]);
+  const [evaluations, setEvaluations] = useState<PerformanceEvaluation[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [employeeDialogOpen, setEmployeeDialogOpen] = useState(false);
+  const [editingEmployee, setEditingEmployee] = useState<EmployeeRecord | undefined>(undefined);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [evalDialogOpen, setEvalDialogOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [emps, leaves] = await Promise.all([fetchEmployeesDB(), fetchLeaveRequestsDB()]);
+    const [emps, leaves, evals, staffList] = await Promise.all([
+      fetchEmployeesDB(), fetchLeaveRequestsDB(), fetchPerformanceEvaluationsDB(), fetchStaffDirectoryDB(),
+    ]);
     setEmployees(emps);
     setLeaveRequests(leaves);
+    setEvaluations(evals);
+    setStaff(staffList);
     setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  const handleCreateEmployee = async (data: Omit<EmployeeRecord, "id">) => {
-    const res = await createEmployeeDB(data);
+  const handleCreateEmployee = async (data: { name: string; email: string; password: string } & Omit<EmployeeRecord, "id" | "userId" | "name" | "email">) => {
+    const { name, email, password, ...rest } = data;
+    const res = await createStaffEmployeeDB(name, email, password, rest);
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
     toast({ title: "Employee created." });
     setEmployeeDialogOpen(false);
+    load();
+  };
+
+  const handleUpdateEmployee = async (data: { name: string; email: string; password: string } & Omit<EmployeeRecord, "id" | "userId" | "name" | "email">) => {
+    if (!editingEmployee) return;
+    const { name, email, password, ...rest } = data;
+    const res = await updateEmployeeDB(editingEmployee.userId, rest);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Employee updated." });
+    setEmployeeDialogOpen(false);
+    setEditingEmployee(undefined);
+    load();
+  };
+
+  const handleDeleteEmployee = async (emp: EmployeeRecord) => {
+    const ok = await confirm({ title: "Remove staff member?", description: `This removes ${emp.name}'s HR record. Their login and any teaching profile are not affected.` });
+    if (!ok) return;
+    const res = await deleteEmployeeDB(emp.userId);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Staff member removed." });
     load();
   };
 
@@ -308,6 +433,14 @@ export default function HRPage() {
     const res = await rejectLeaveDB(id);
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
     toast({ title: "Leave rejected." });
+    load();
+  };
+
+  const handleAddEvaluation = async (data: Omit<PerformanceEvaluation, "id">) => {
+    const res = await createPerformanceEvaluationDB(data);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Evaluation recorded." });
+    setEvalDialogOpen(false);
     load();
   };
 
@@ -366,18 +499,19 @@ export default function HRPage() {
               }}>
                 <Download className="mr-2 h-4 w-4" />Export
               </Button>
-              <Dialog open={employeeDialogOpen} onOpenChange={setEmployeeDialogOpen}>
-                <DialogTrigger asChild>
-                  <Button><Plus className="mr-2 h-4 w-4" />Add Employee</Button>
-                </DialogTrigger>
-                <EmployeeDialog
-                  open={employeeDialogOpen}
-                  onOpenChange={setEmployeeDialogOpen}
-                  onSubmit={handleCreateEmployee}
-                />
-              </Dialog>
+              <Button onClick={() => { setEditingEmployee(undefined); setEmployeeDialogOpen(true); }}>
+                <Plus className="mr-2 h-4 w-4" />Add Employee
+              </Button>
+              <EmployeeDialog
+                open={employeeDialogOpen}
+                onOpenChange={(o) => { setEmployeeDialogOpen(o); if (!o) setEditingEmployee(undefined); }}
+                onSubmit={editingEmployee ? handleUpdateEmployee : handleCreateEmployee}
+                initial={editingEmployee}
+              />
             </div>
           </div>
+
+          <p className="text-xs text-muted-foreground">Teachers are added via the Teachers module and appear here automatically — no need to re-add them.</p>
 
           <Card className="border-none shadow-sm">
             <CardContent className="p-0">
@@ -392,12 +526,13 @@ export default function HRPage() {
                     <TableHead>Type</TableHead>
                     <TableHead>Joined</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredEmps.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                      <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
                         {loading ? <><Skeleton className="h-4 w-24 mx-auto" /><Skeleton className="h-3 w-16 mx-auto mt-1" /></> : "No employees found."}
                       </TableCell>
                     </TableRow>
@@ -422,6 +557,16 @@ export default function HRPage() {
                       <TableCell>
                         <Badge className={statusBadge[emp.status]}>{emp.status}</Badge>
                       </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button size="sm" variant="ghost" onClick={() => { setEditingEmployee(emp); setEmployeeDialogOpen(true); }}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button size="sm" variant="ghost" className="text-destructive" onClick={() => handleDeleteEmployee(emp)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -433,16 +578,13 @@ export default function HRPage() {
         <TabsContent value="leave" className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Leave Requests</h2>
-            <Dialog open={leaveDialogOpen} onOpenChange={setLeaveDialogOpen}>
-              <DialogTrigger asChild>
-                <Button><Plus className="mr-2 h-4 w-4" />Apply Leave</Button>
-              </DialogTrigger>
-              <LeaveRequestDialog
-                open={leaveDialogOpen}
-                onOpenChange={setLeaveDialogOpen}
-                onSubmit={handleApplyLeave}
-              />
-            </Dialog>
+            <Button onClick={() => setLeaveDialogOpen(true)}><Plus className="mr-2 h-4 w-4" />Apply Leave</Button>
+            <LeaveRequestDialog
+              open={leaveDialogOpen}
+              onOpenChange={setLeaveDialogOpen}
+              onSubmit={handleApplyLeave}
+              staff={staff}
+            />
           </div>
 
           <Card className="border-none shadow-sm">
@@ -502,6 +644,13 @@ export default function HRPage() {
         <TabsContent value="performance" className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Performance Evaluations</h2>
+            <Button onClick={() => setEvalDialogOpen(true)}><Plus className="mr-2 h-4 w-4" />Record Evaluation</Button>
+            <EvaluationDialog
+              open={evalDialogOpen}
+              onOpenChange={setEvalDialogOpen}
+              onSubmit={handleAddEvaluation}
+              staff={staff}
+            />
           </div>
           {evaluations.length === 0 ? (
             <Card className="border-none shadow-sm">

@@ -14,6 +14,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { usePermission } from "@/hooks/use-permission";
+import { Unauthorized } from "@/components/unauthorized";
 import { getSession } from "@/app/actions/auth";
 import {
   fetchAssignmentsDB, createAssignmentDB, deleteAssignmentDB,
@@ -38,6 +40,7 @@ export default function AssignmentsPage() {
   const { students } = useAppState();
   const { toast } = useToast();
   const confirm = useConfirm();
+  const { can, loaded: permsLoaded } = usePermission();
 
   const [sessionRole, setSessionRole] = useState<string | null>(null);
   const [sessionUserId, setSessionUserId] = useState<number | null>(null);
@@ -177,6 +180,9 @@ export default function AssignmentsPage() {
   };
 
   const isPastDue = (d: string) => new Date(d) < new Date();
+
+  if (!permsLoaded) return null;
+  if (!can("assignments.view")) return <Unauthorized />;
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">

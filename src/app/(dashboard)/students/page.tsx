@@ -12,6 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
@@ -21,8 +22,10 @@ import {
   fetchAcademicYearsDB, fetchClassesDB, fetchSectionsByClassDB,
   fetchEnrollmentsDB, createEnrollmentDB, updateEnrollmentStatusDB,
   bulkPromoteStudentsDB, fetchPromotionsDB, changeEnrollmentClassDB,
+  graduateStudentToAlumniDB,
 } from "@/app/actions/academic-core";
 import { resetStudentPasswordDB } from "@/app/actions/db";
+import { fetchStudentWhatsAppPrefsAction, setStudentWhatsAppOptInAction } from "@/app/actions/whatsapp-notifications";
 import { getSession } from "@/app/actions/auth";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
@@ -112,6 +115,28 @@ export default function StudentsPage() {
   });
   const [editPhoto, setEditPhoto] = useState<string>("");
   const [editPassword, setEditPassword] = useState("");
+
+  // ── WhatsApp consent (separate from the legacy edit-form save path above —
+  // parent_phone/whatsapp_opt_in live on the real students row, not the
+  // in-memory legacy model) ────────────────────────────────────────────────
+  const [waPhone, setWaPhone] = useState("");
+  const [waOptIn, setWaOptIn] = useState(false);
+  const [waSaving, setWaSaving] = useState(false);
+  useEffect(() => {
+    if (!editOpen || !editStudent) return;
+    fetchStudentWhatsAppPrefsAction(editStudent.studentId).then(prefs => {
+      setWaPhone(prefs?.phone || "");
+      setWaOptIn(prefs?.optIn || false);
+    });
+  }, [editOpen, editStudent]);
+
+  const handleSaveWhatsAppPrefs = async () => {
+    if (!editStudent) return;
+    setWaSaving(true);
+    await setStudentWhatsAppOptInAction(editStudent.studentId, waOptIn, waPhone);
+    setWaSaving(false);
+    toast({ title: "WhatsApp preferences saved" });
+  };
 
   const handleEditPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -278,6 +303,34 @@ export default function StudentsPage() {
       setChangeTarget(null);
       loadEnrollments();
     }
+  };
+
+  // ── Graduate to Alumni Dialog ────────────────────────────────────────────────
+  const [graduateOpen, setGraduateOpen] = useState(false);
+  const [graduateTarget, setGraduateTarget] = useState<Enrollment | null>(null);
+  const [graduateYear, setGraduateYear] = useState(String(new Date().getFullYear()));
+  const [graduateOccupation, setGraduateOccupation] = useState("");
+  const [graduating, setGraduating] = useState(false);
+
+  const handleGraduate = async () => {
+    if (!graduateTarget || !graduateYear.trim()) {
+      toast({ title: "Graduation year is required", variant: "destructive" }); return;
+    }
+    setGraduating(true);
+    const res = await graduateStudentToAlumniDB(graduateTarget.id, parseInt(graduateYear, 10), graduateOccupation || undefined);
+    setGraduating(false);
+    if (res.error) {
+      toast({ title: "Could not graduate student", description: res.error, variant: "destructive" });
+      return;
+    }
+    toast({
+      title: `${graduateTarget.studentName} moved to Alumni`,
+      description: "Their enrollment is closed and portal login deactivated. View them on the Alumni page.",
+    });
+    setGraduateOpen(false);
+    setGraduateTarget(null);
+    setGraduateOccupation("");
+    loadEnrollments();
   };
 
   // ── Enrollment History Dialog ───────────────────────────────────────────────
@@ -576,7 +629,6 @@ export default function StudentsPage() {
                       <SelectContent>
                         <SelectItem value="Active">Active</SelectItem>
                         <SelectItem value="Inactive">Inactive</SelectItem>
-                        <SelectItem value="Graduated">Graduated</SelectItem>
                         <SelectItem value="Transferred">Transferred</SelectItem>
                       </SelectContent>
                     </Select>
@@ -608,6 +660,16 @@ export default function StudentsPage() {
                           }}>
                             <RefreshCw className="h-3 w-3 mr-1" /> Change
                           </Button>
+                          {isAdmin && (
+                            <Button variant="ghost" size="sm" className="h-8 text-xs text-purple-600 hover:text-purple-700" onClick={() => {
+                              setGraduateTarget(enr);
+                              setGraduateYear(String(new Date().getFullYear()));
+                              setGraduateOccupation("");
+                              setGraduateOpen(true);
+                            }}>
+                              <GraduationCap className="h-3 w-3 mr-1" /> Graduate
+                            </Button>
+                          )}
                         </>
                       )}
                       {isAdmin && (
@@ -711,6 +773,22 @@ export default function StudentsPage() {
               <div><Label>Parent Name</Label><Input value={editForm.parentName} onChange={e => setEditForm(f => ({ ...f, parentName: e.target.value }))} /></div>
               <div><Label>Parent Email</Label><Input value={editForm.parentEmail} onChange={e => setEditForm(f => ({ ...f, parentEmail: e.target.value }))} /></div>
               <div><Label>Guardian Relation</Label><Input value={editForm.guardianRelation} onChange={e => setEditForm(f => ({ ...f, guardianRelation: e.target.value }))} /></div>
+            </div>
+            <Separator />
+            {/* WhatsApp Notifications */}
+            <h4 className="text-sm font-semibold text-[#0F172A]">WhatsApp Notifications</h4>
+            <div className="grid grid-cols-2 gap-3 items-end">
+              <div><Label>Parent WhatsApp Number</Label><Input value={waPhone} onChange={e => setWaPhone(e.target.value)} placeholder="03001234567" /></div>
+              <div className="flex items-center gap-2 pb-2">
+                <Switch checked={waOptIn} onCheckedChange={setWaOptIn} id="wa-opt-in" />
+                <Label htmlFor="wa-opt-in" className="cursor-pointer">Enabled</Label>
+              </div>
+              <div className="col-span-2 flex items-center justify-between">
+                <p className="text-xs text-[#94A3B8]">Absence alerts and fee reminders are only sent to the parent when this is on — having a phone number on file doesn't imply consent.</p>
+                <Button type="button" size="sm" variant="outline" onClick={handleSaveWhatsAppPrefs} disabled={waSaving}>
+                  {waSaving ? "Saving..." : "Save"}
+                </Button>
+              </div>
             </div>
             <Separator />
             {/* Portal Password Reset */}
@@ -820,6 +898,39 @@ export default function StudentsPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => { setChangeOpen(false); setChangeTarget(null); }}>Cancel</Button>
             <Button onClick={handleChangeClass}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Graduate to Alumni Dialog */}
+      <Dialog open={graduateOpen} onOpenChange={o => { setGraduateOpen(o); if (!o) setGraduateTarget(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Graduate to Alumni</DialogTitle></DialogHeader>
+          {graduateTarget && (
+            <div className="space-y-3">
+              <p className="text-sm text-[#64748B]">
+                Graduate <strong>{graduateTarget.studentName}</strong> from <strong>{graduateTarget.className}</strong>
+                {graduateTarget.sectionName ? ` – ${graduateTarget.sectionName}` : ""} to Alumni.
+              </p>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                This closes their enrollment and deactivates their student portal login. Their name, email, and phone
+                are carried over to a new Alumni record automatically — this cannot be undone from here.
+              </div>
+              <div>
+                <Label>Graduation Year *</Label>
+                <Input type="number" value={graduateYear} onChange={e => setGraduateYear(e.target.value)} />
+              </div>
+              <div>
+                <Label>Current Occupation (optional)</Label>
+                <Input value={graduateOccupation} onChange={e => setGraduateOccupation(e.target.value)} placeholder="e.g. University Student" />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setGraduateOpen(false); setGraduateTarget(null); }}>Cancel</Button>
+            <Button onClick={handleGraduate} disabled={graduating} className="bg-purple-600 hover:bg-purple-700">
+              {graduating ? "Graduating..." : "Graduate to Alumni"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

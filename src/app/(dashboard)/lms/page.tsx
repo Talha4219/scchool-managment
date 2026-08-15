@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { getSession } from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,21 +20,204 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
-import { Course } from "@/lib/types";
+import { Course, CourseMaterial } from "@/lib/types";
 import {
   fetchCoursesDB, createCourseDB, updateCourseDB, deleteCourseDB,
+  fetchCourseMaterialsDB, createCourseMaterialDB, deleteCourseMaterialDB,
 } from "@/app/actions/features";
 import {
   Plus, Search, BookOpen, BookMarked, Edit, Trash2, Check, X,
   GraduationCap, Users, Loader2, Lock, FolderOpen,
+  FileText, Video, Download, Upload, PlayCircle,
 } from "lucide-react";
 
+// Converts a normal YouTube/Vimeo watch/share link into its iframe-embeddable
+// form. Falls back to the raw URL for anything else (best-effort — most video
+// hosts' share links work directly as an iframe src too).
+function toEmbedUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes("youtube.com") && u.searchParams.get("v")) {
+      return `https://www.youtube.com/embed/${u.searchParams.get("v")}`;
+    }
+    if (u.hostname === "youtu.be") {
+      return `https://www.youtube.com/embed/${u.pathname.slice(1)}`;
+    }
+    if (u.hostname.includes("vimeo.com")) {
+      const id = u.pathname.split("/").filter(Boolean).pop();
+      return `https://player.vimeo.com/video/${id}`;
+    }
+    return url;
+  } catch {
+    return url;
+  }
+}
+
+// Fallback only, used before any real classes exist in the DB — once classes
+// are created, the grade/class picker below is driven from the real `classes`
+// table instead, so a course's gradeLevel actually corresponds to a class.
 const GRADE_LEVELS = ["Grade 1","Grade 2","Grade 3","Grade 4","Grade 5","Grade 6","Grade 7","Grade 8","Grade 9","Grade 10","Grade 11","Grade 12"];
 
 const blankCourse = {
   title: "", code: "", description: "", gradeLevel: "", teacherName: "",
   credits: 3, learningOutcomes: [] as string[], prerequisites: [] as string[], isActive: true,
 };
+
+function MaterialsDialog({ course, canManage, trigger }: { course: Course; canManage: boolean; trigger: React.ReactNode }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [materials, setMaterials] = useState<CourseMaterial[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const [noteTitle, setNoteTitle] = useState("");
+  const [noteDesc, setNoteDesc] = useState("");
+  const [noteFile, setNoteFile] = useState<{ name: string; dataUrl: string } | null>(null);
+
+  const [videoTitle, setVideoTitle] = useState("");
+  const [videoDesc, setVideoDesc] = useState("");
+  const [videoUrl, setVideoUrl] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    setMaterials(await fetchCourseMaterialsDB(course.id));
+    setLoading(false);
+  };
+  useEffect(() => { if (open) load(); }, [open]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setNoteFile({ name: file.name, dataUrl: reader.result as string });
+    reader.readAsDataURL(file);
+  };
+
+  const handleAddNote = async () => {
+    if (!noteTitle.trim() || !noteFile) { toast({ title: "Title and a file are required.", variant: "destructive" }); return; }
+    const res = await createCourseMaterialDB({ courseId: course.id, title: noteTitle.trim(), type: "document", url: noteFile.dataUrl, fileName: noteFile.name, description: noteDesc || undefined });
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Note added" });
+    setNoteTitle(""); setNoteDesc(""); setNoteFile(null);
+    load();
+  };
+
+  const handleAddVideo = async () => {
+    if (!videoTitle.trim() || !videoUrl.trim()) { toast({ title: "Title and a video link are required.", variant: "destructive" }); return; }
+    const res = await createCourseMaterialDB({ courseId: course.id, title: videoTitle.trim(), type: "video", url: videoUrl.trim(), description: videoDesc || undefined });
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Video lecture added" });
+    setVideoTitle(""); setVideoDesc(""); setVideoUrl("");
+    load();
+  };
+
+  const handleDelete = async (id: string) => {
+    const res = await deleteCourseMaterialDB(id);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Material removed" });
+    load();
+  };
+
+  const notes = materials.filter(m => m.type === "document");
+  const videos = materials.filter(m => m.type === "video");
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader><DialogTitle>{course.title} — Materials</DialogTitle></DialogHeader>
+        <Tabs defaultValue="notes">
+          <TabsList>
+            <TabsTrigger value="notes" className="gap-1.5"><FileText className="h-3.5 w-3.5" /> Notes ({notes.length})</TabsTrigger>
+            <TabsTrigger value="videos" className="gap-1.5"><Video className="h-3.5 w-3.5" /> Video Lectures ({videos.length})</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="notes" className="space-y-3 max-h-[60vh] overflow-y-auto pr-1 mt-3">
+            {canManage && (
+              <div className="p-3 rounded-xl border bg-secondary/20 space-y-2">
+                <Input placeholder="Note title" value={noteTitle} onChange={e => setNoteTitle(e.target.value)} />
+                <Textarea placeholder="Description (optional)" rows={2} value={noteDesc} onChange={e => setNoteDesc(e.target.value)} />
+                <div className="flex items-center gap-2">
+                  <Input type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.txt,image/*" onChange={handleFileChange} className="text-xs" />
+                  <Button type="button" size="sm" onClick={handleAddNote} className="gap-1 shrink-0"><Upload className="h-3.5 w-3.5" /> Upload</Button>
+                </div>
+                {noteFile && <p className="text-xs text-muted-foreground">Selected: {noteFile.name}</p>}
+              </div>
+            )}
+            {loading ? (
+              <div className="py-8 flex justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
+            ) : notes.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">No notes uploaded yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {notes.map(n => (
+                  <div key={n.id} className="flex items-center justify-between p-3 rounded-xl border">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <FileText className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold truncate">{n.title}</p>
+                        {n.description && <p className="text-xs text-muted-foreground line-clamp-1">{n.description}</p>}
+                        <p className="text-[10px] text-muted-foreground">{n.createdByName}{n.createdByName ? " · " : ""}{new Date(n.createdAt).toLocaleDateString()}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <a href={n.url} download={n.fileName || n.title}>
+                        <Button type="button" size="icon" variant="ghost" className="h-8 w-8"><Download className="h-4 w-4" /></Button>
+                      </a>
+                      {canManage && (
+                        <Button type="button" size="icon" variant="ghost" className="h-8 w-8 text-red-500" onClick={() => handleDelete(n.id)}><Trash2 className="h-4 w-4" /></Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="videos" className="space-y-3 max-h-[60vh] overflow-y-auto pr-1 mt-3">
+            {canManage && (
+              <div className="p-3 rounded-xl border bg-secondary/20 space-y-2">
+                <Input placeholder="Lecture title" value={videoTitle} onChange={e => setVideoTitle(e.target.value)} />
+                <Textarea placeholder="Description (optional)" rows={2} value={videoDesc} onChange={e => setVideoDesc(e.target.value)} />
+                <div className="flex items-center gap-2">
+                  <Input placeholder="YouTube or Vimeo link" value={videoUrl} onChange={e => setVideoUrl(e.target.value)} />
+                  <Button type="button" size="sm" onClick={handleAddVideo} className="gap-1 shrink-0"><Plus className="h-3.5 w-3.5" /> Add</Button>
+                </div>
+              </div>
+            )}
+            {loading ? (
+              <div className="py-8 flex justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
+            ) : videos.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">No video lectures added yet.</p>
+            ) : (
+              <div className="space-y-4">
+                {videos.map(v => (
+                  <div key={v.id} className="rounded-xl border overflow-hidden">
+                    <div className="aspect-video bg-black">
+                      <iframe
+                        src={toEmbedUrl(v.url)} className="w-full h-full" title={v.title}
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                      />
+                    </div>
+                    <div className="p-2.5 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold truncate">{v.title}</p>
+                        {v.description && <p className="text-xs text-muted-foreground line-clamp-1">{v.description}</p>}
+                      </div>
+                      {canManage && (
+                        <Button type="button" size="icon" variant="ghost" className="h-8 w-8 text-red-500 shrink-0" onClick={() => handleDelete(v.id)}><Trash2 className="h-4 w-4" /></Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export default function LMSPage() {
   const { activeRole, students, classes } = useAppState();
@@ -53,6 +237,8 @@ export default function LMSPage() {
   const [editOutcomeInput, setEditOutcomeInput] = useState("");
   const [editPrereqInput, setEditPrereqInput] = useState("");
 
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+
   const loadCourses = async () => {
     setLoading(true);
     const data = await fetchCoursesDB();
@@ -61,14 +247,27 @@ export default function LMSPage() {
   };
 
   useEffect(() => { loadCourses(); }, []);
+  useEffect(() => { getSession().then(s => setSessionEmail(s?.email ?? null)); }, []);
 
   const isAdmin = activeRole === "ADMIN";
   const isTeacher = activeRole === "TEACHER";
   const isStudent = activeRole === "STUDENT";
 
+  // The logged-in student's own record — not just "the first active student",
+  // which every student would otherwise incorrectly see.
+  const myStudent = sessionEmail
+    ? students.find(s => s.email === sessionEmail && s.status === "Active") || null
+    : null;
+
+  // Course grade/class options come from the real `classes` table so a
+  // course's gradeLevel actually maps to a real class, not a free-floating
+  // "Grade N" string the school may not even use.
+  const gradeOptions = classes.length > 0 ? Array.from(new Set(classes.map(c => c.name))) : GRADE_LEVELS;
+
   const teacherCourses = courses.filter(c => c.teacherName && classes.some(cl => cl.teacherName === c.teacherName));
+  const studentCourses = myStudent ? courses.filter(c => c.gradeLevel === myStudent.class) : [];
   const studentEnrolled = students.filter(s => s.status === "Active");
-  const displayCourses = isAdmin ? courses : isTeacher ? teacherCourses : courses;
+  const displayCourses = isAdmin ? courses : isTeacher ? teacherCourses : isStudent ? studentCourses : courses;
 
   const filtered = displayCourses.filter(c => {
     const matchSearch = c.title.toLowerCase().includes(search.toLowerCase()) || c.code.toLowerCase().includes(search.toLowerCase());
@@ -154,15 +353,15 @@ export default function LMSPage() {
         <div className="grid grid-cols-3 gap-4">
           <div className="p-4 rounded-xl border bg-blue-50 border-blue-100">
             <p className="text-xs font-semibold text-blue-600">Total Courses</p>
-            <p className="text-2xl font-bold text-primary mt-1">{courses.length}</p>
+            <p className="text-2xl font-bold text-primary mt-1">{studentCourses.length}</p>
           </div>
           <div className="p-4 rounded-xl border bg-green-50 border-green-100">
             <p className="text-xs font-semibold text-green-600">Active Courses</p>
-            <p className="text-2xl font-bold text-primary mt-1">{totalActive}</p>
+            <p className="text-2xl font-bold text-primary mt-1">{studentCourses.filter(c => c.isActive).length}</p>
           </div>
           <div className="p-4 rounded-xl border bg-purple-50 border-purple-100">
             <p className="text-xs font-semibold text-purple-600">My Grade</p>
-            <p className="text-2xl font-bold text-primary mt-1">{students.find(s => s.status === "Active")?.class || "—"}</p>
+            <p className="text-2xl font-bold text-primary mt-1">{myStudent?.class || "—"}</p>
           </div>
         </div>
         {loading ? (
@@ -194,6 +393,10 @@ export default function LMSPage() {
                   {course.teacherName && (
                     <p className="text-xs text-muted-foreground">Instructor: {course.teacherName}</p>
                   )}
+                  <MaterialsDialog
+                    course={course} canManage={false}
+                    trigger={<Button type="button" variant="outline" size="sm" className="w-full gap-1.5 mt-1"><FolderOpen className="h-3.5 w-3.5" /> Notes & Video Lectures</Button>}
+                  />
                 </CardContent>
               </Card>
             ))}
@@ -241,7 +444,7 @@ export default function LMSPage() {
                     <Select value={form.gradeLevel} onValueChange={v => setForm(f => ({...f, gradeLevel: v}))}>
                       <SelectTrigger><SelectValue placeholder="Select grade" /></SelectTrigger>
                       <SelectContent>
-                        {GRADE_LEVELS.map(g => <SelectItem key={g} value={g}>{g}</SelectItem>)}
+                        {gradeOptions.map(g => <SelectItem key={g} value={g}>{g}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -316,7 +519,7 @@ export default function LMSPage() {
               <SelectTrigger className="w-40"><SelectValue placeholder="All Grades" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="ALL">All Grades</SelectItem>
-                {GRADE_LEVELS.map(g => <SelectItem key={g} value={g}>{g}</SelectItem>)}
+                {gradeOptions.map(g => <SelectItem key={g} value={g}>{g}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -362,8 +565,13 @@ export default function LMSPage() {
                       )}
                     </TableCell>
                     <TableCell>
-                      {isAdmin && (
-                        <div className="flex gap-1">
+                      <div className="flex gap-1">
+                        <MaterialsDialog
+                          course={course} canManage={true}
+                          trigger={<Button variant="ghost" size="icon" className="h-8 w-8" title="Notes & Video Lectures"><FolderOpen className="h-4 w-4" /></Button>}
+                        />
+                        {isAdmin && (
+                          <>
                           <Button
                             variant="ghost" size="icon" className="h-8 w-8"
                             onClick={() => { setEditingCourse({ ...course }); setEditOutcomeInput(""); setEditPrereqInput(""); }}
@@ -387,8 +595,9 @@ export default function LMSPage() {
                               </AlertDialogFooter>
                             </AlertDialogContent>
                           </AlertDialog>
-                        </div>
-                      )}
+                          </>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -413,7 +622,7 @@ export default function LMSPage() {
                   <Select value={editingCourse.gradeLevel} onValueChange={v => setEditingCourse({...editingCourse, gradeLevel: v})}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      {GRADE_LEVELS.map(g => <SelectItem key={g} value={g}>{g}</SelectItem>)}
+                      {gradeOptions.map(g => <SelectItem key={g} value={g}>{g}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>

@@ -4,7 +4,7 @@ export type SessionPayload = {
   userId: number;
   name: string;
   email: string;
-  role: "ADMIN" | "TEACHER" | "STUDENT" | "PARENT";
+  role: "ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE";
 };
 
 const secretKey = process.env.JWT_SECRET || "scholarly-central-super-secret-jwt-key-2026";

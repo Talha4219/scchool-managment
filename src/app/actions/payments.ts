@@ -7,6 +7,10 @@ import {
   isJazzCashConfigured, isEasyPaisaConfigured,
   buildJazzCashRequest, buildEasyPaisaRequest,
 } from "@/lib/payment-gateways";
+import { logServerError } from "@/lib/error-log";
+import { isWhatsAppConfigured } from "@/lib/whatsapp/config";
+import { isEmailConfigured } from "@/lib/email";
+import { notificationService } from "@/lib/notification-service";
 
 export type Gateway = "jazzcash" | "easypaisa";
 
@@ -98,7 +102,7 @@ export async function initiateFeePaymentAction(feeRecordId: string, gateway: Gat
       return { actionUrl, fields };
     }
   } catch (err) {
-    console.error("initiateFeePaymentAction error:", err);
+    logServerError("payments", "initiateFeePaymentAction error:", err);
     return { error: "Failed to start payment. Please try again." };
   }
 }
@@ -165,7 +169,7 @@ export async function completeOnlinePaymentAction(
 
     return {};
   } catch (err) {
-    console.error("completeOnlinePaymentAction error:", err);
+    logServerError("payments", "completeOnlinePaymentAction error:", err);
     return { error: "Failed to finalize payment." };
   }
 }
@@ -187,4 +191,76 @@ export async function fetchOnlinePaymentByTxnRefAction(txnRef: string): Promise<
       amount: parseFloat(r.amount), status: r.status, createdAt: r.created_at, completedAt: r.completed_at,
     };
   } catch { return null; }
+}
+
+export async function isFeeReminderChannelConfigured(): Promise<boolean> {
+  return isWhatsAppConfigured();
+}
+
+export async function fetchNotificationChannelsStatusAction(): Promise<{ email: boolean }> {
+  return { email: isEmailConfigured() };
+}
+
+// Sends one WhatsApp fee-due reminder for a single voucher, through the
+// notification service (template-approval + opt-in gate enforced there —
+// this function no longer talks to a gateway directly). Admin-only — this is
+// a real send, never automatic.
+export async function sendFeeReminderAction(feeRecordId: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") return { error: "Only admins can send fee reminders." };
+
+  const feeRes = await query(
+    `SELECT f.student_id, f.amount, f.discount, f.amount_paid, f.due_date, f.voucher_id, s.name as student_name, s.parent_name
+     FROM fee_records f JOIN students s ON s.id = f.student_id WHERE f.id=$1`,
+    [feeRecordId]
+  );
+  if (feeRes.rows.length === 0) return { error: "Voucher not found." };
+  const fee = feeRes.rows[0];
+
+  const netDue = (fee.amount || 0) - (fee.discount || 0) - (fee.amount_paid || 0);
+  if (netDue <= 0) return { error: "This voucher is already fully paid." };
+
+  const result = await notificationService.send({
+    type: "FEE_REMINDER",
+    recipientType: "PARENT",
+    recipientId: fee.student_id,
+    channel: "WHATSAPP",
+    data: {
+      parentName: fee.parent_name || "Parent/Guardian", studentName: fee.student_name,
+      amount: `Rs. ${netDue.toLocaleString()}`, dueDate: fee.due_date,
+    },
+    createdByUserId: session.userId,
+  });
+  return result.error ? { error: result.error } : {};
+}
+
+// Bulk version for the Fees admin page's "Remind All Overdue" action.
+export async function sendOverdueFeeRemindersAction(): Promise<{ sent: number; skipped: number; error?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") return { sent: 0, skipped: 0, error: "Only admins can send fee reminders." };
+
+  const res = await query(
+    `SELECT f.id, f.student_id, f.status, f.amount, f.discount, f.amount_paid, f.due_date, f.voucher_id, s.name as student_name, s.parent_name
+     FROM fee_records f JOIN students s ON s.id = f.student_id
+     WHERE f.status IN ('Unpaid', 'Overdue')`
+  );
+
+  let sent = 0, skipped = 0;
+  for (const fee of res.rows) {
+    const netDue = (fee.amount || 0) - (fee.discount || 0) - (fee.amount_paid || 0);
+    if (netDue <= 0) { skipped++; continue; }
+    const result = await notificationService.send({
+      type: fee.status === "Overdue" ? "FEE_OVERDUE" : "FEE_REMINDER",
+      recipientType: "PARENT",
+      recipientId: fee.student_id,
+      channel: "WHATSAPP",
+      data: {
+        parentName: fee.parent_name || "Parent/Guardian", studentName: fee.student_name,
+        amount: `Rs. ${netDue.toLocaleString()}`, dueDate: fee.due_date,
+      },
+      createdByUserId: session.userId,
+    });
+    if (result.error) skipped++; else sent++;
+  }
+  return { sent, skipped };
 }

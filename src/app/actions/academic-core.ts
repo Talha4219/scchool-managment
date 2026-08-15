@@ -5,6 +5,8 @@ import pool from "@/lib/db";
 import { initializeDatabase } from "@/lib/db-init";
 import { getSession } from "./auth";
 import { logAudit, type AuditActor } from "@/lib/audit";
+import { logServerError } from "@/lib/error-log";
+import { notificationService } from "@/lib/notification-service";
 
 let _acDbInitialized = false;
 async function ensureDbInit() {
@@ -13,7 +15,7 @@ async function ensureDbInit() {
   await initializeDatabase();
 }
 
-type Role = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT';
+type Role = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE';
 
 // Role gating used to live only in the React components calling these — a raw
 // request to the server action endpoint bypassed it entirely. See audit finding
@@ -53,7 +55,10 @@ export async function checkSectionCapacityDB(sectionId: string): Promise<{ ok: b
     }
     return { ok: true, current, capacity };
   } catch {
-    return { ok: true, current: 0, capacity: 0 };
+    // Fail closed like every other function in this file — a DB error here
+    // must not silently let an enrollment through a capacity check that
+    // never actually ran.
+    return { ok: false, current: 0, capacity: 0, error: "Could not verify section capacity. Please try again." };
   }
 }
 
@@ -180,7 +185,7 @@ export async function deleteClassDB(id: string) {
     await query("DELETE FROM sections WHERE class_id = $1", [id]);
     await query("DELETE FROM classes WHERE id = $1", [id]);
   } catch (e) {
-    console.error("deleteClassDB error:", e);
+    logServerError("academic-core", "deleteClassDB error:", e);
   }
 }
 
@@ -199,7 +204,7 @@ export async function createClassDB(data: { name: string; gradeLevel: string; ac
     );
     return { id, name: data.name, gradeLevel: data.gradeLevel, academicYearId: data.academicYearId, isGraduating: !!data.isGraduating };
   } catch (e) {
-    console.error("createClassDB error:", e);
+    logServerError("academic-core", "createClassDB error:", e);
     return null;
   }
 }
@@ -214,7 +219,7 @@ export async function updateClassDB(data: { id: string; name: string; gradeLevel
     await query(`UPDATE classes SET name = $1, grade_level = $2, is_graduating = $3 WHERE id = $4`, [data.name, data.gradeLevel, !!data.isGraduating, data.id]);
     return { id: data.id, name: data.name, gradeLevel: data.gradeLevel, isGraduating: !!data.isGraduating };
   } catch (e) {
-    console.error("updateClassDB error:", e);
+    logServerError("academic-core", "updateClassDB error:", e);
     return null;
   }
 }
@@ -283,7 +288,7 @@ export async function updateSectionDB(data: { id: string; name: string; capacity
     await query("UPDATE sections SET name=$1, capacity=$2, teacher_name=$3, section_group=$4 WHERE id=$5",
       [data.name, data.capacity, data.teacherName || null, data.group || null, data.id]);
     return true;
-  } catch (e) { console.error("updateSectionDB error:", e); return false; }
+  } catch (e) { logServerError("academic-core", "updateSectionDB error:", e); return false; }
 }
 
 export async function updateSectionTeacherDB(sectionId: string, teacherName: string | null) {
@@ -295,7 +300,7 @@ export async function updateSectionTeacherDB(sectionId: string, teacherName: str
   try {
     await query("UPDATE sections SET teacher_name = $1 WHERE id = $2", [teacherName, sectionId]);
     return true;
-  } catch (e) { console.error("updateSectionTeacherDB error:", e); return false; }
+  } catch (e) { logServerError("academic-core", "updateSectionTeacherDB error:", e); return false; }
 }
 
 // ── Enrollments ────────────────────────────────────────────────────────────────
@@ -454,7 +459,7 @@ export async function promoteStudentDB(data: {
     );
     return { promotionId, enrollmentId: enrollId, rollNumber };
   } catch (e) {
-    console.error("promoteStudentDB error:", e);
+    logServerError("academic-core", "promoteStudentDB error:", e);
     return { error: "Failed to promote student" };
   }
 }
@@ -497,6 +502,34 @@ export interface BulkPromotionResult {
   error?: string;
   succeeded?: { studentId: string; outcome: string }[];
   failed?: { studentId: string; reason: string }[];
+}
+
+// Shared by both bulkPromoteStudentsDB (whole-class graduation) and
+// graduateStudentToAlumniDB (single student, from the Students page) so there's
+// one INSERT that actually carries the student's email/phone across, instead of
+// two divergent paths — the bulk path used to leave an alumni row with only a
+// name. `client` is the caller's already-open transaction. `source_student_id`
+// makes this idempotent: graduating the same student twice is rejected here
+// rather than producing a duplicate alumni row.
+async function insertAlumniRecord(
+  client: any, studentId: string, className: string, graduationYear: number,
+  extra?: { currentOccupation?: string }
+): Promise<{ error?: string; alumniId?: string }> {
+  const dupe = await client.query("SELECT id FROM alumni WHERE source_student_id=$1", [studentId]);
+  if (dupe.rows.length > 0) return { error: "This student has already been graduated to Alumni." };
+
+  const studentRes = await client.query("SELECT name, email, parent_phone FROM students WHERE id=$1", [studentId]);
+  if (studentRes.rows.length === 0) return { error: "Student not found." };
+  const student = studentRes.rows[0];
+
+  const { nanoid } = await import("nanoid");
+  const alumniId = `alumni-${nanoid(8)}`;
+  await client.query(
+    `INSERT INTO alumni (id, name, email, phone, graduation_year, class, current_occupation, status, source_student_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'Active',$8)`,
+    [alumniId, student.name || 'Unknown', student.email || '', student.parent_phone || '', graduationYear, className || '', extra?.currentOccupation || '', studentId]
+  );
+  return { alumniId };
 }
 
 export async function bulkPromoteStudentsDB(payload: {
@@ -549,17 +582,22 @@ export async function bulkPromoteStudentsDB(payload: {
         }
 
         if (payload.isGraduating) {
+          const alumniResult = await insertAlumniRecord(client, d.studentId, fromClassName, graduationYear!);
+          if (alumniResult.error) {
+            // Already graduated (e.g. duplicate entry in this batch) — skip, don't fail the whole batch.
+            failed.push({ studentId: d.studentId, reason: alumniResult.error });
+            continue;
+          }
           await client.query("UPDATE enrollments SET status='Graduated', updated_at=NOW() WHERE id=$1", [d.enrollmentId]);
           await client.query(
             `INSERT INTO student_promotions (id, student_id, from_class_id, from_section_id, to_class_id, to_section_id, academic_year_id, promoted_by, promoted_at, outcome)
              VALUES ($1,$2,$3,$4,$3,$4,$5,$6,NOW(),'graduated')`,
             [`prom-${nanoid(8)}`, d.studentId, payload.fromClassId, payload.fromSectionId, payload.toAcademicYearId, payload.promotedByName || null]
           );
-          const studentRes = await client.query("SELECT name FROM students WHERE id=$1", [d.studentId]);
-          await client.query(
-            `INSERT INTO alumni (id, name, graduation_year, class, status) VALUES ($1,$2,$3,$4,'Active')`,
-            [`alumni-${nanoid(8)}`, studentRes.rows[0]?.name || 'Unknown', graduationYear, fromClassName]
-          );
+          const studentRes = await client.query("SELECT email FROM students WHERE id=$1", [d.studentId]);
+          if (studentRes.rows[0]?.email) {
+            await client.query("UPDATE users SET status='INACTIVE' WHERE email=$1", [studentRes.rows[0].email]);
+          }
           promotedCount++;
           succeeded.push({ studentId: d.studentId, outcome: 'graduated' });
           continue;
@@ -596,7 +634,7 @@ export async function bulkPromoteStudentsDB(payload: {
         if (d.outcome === 'retained') retainedCount++; else promotedCount++;
         succeeded.push({ studentId: d.studentId, outcome: d.outcome });
       } catch (err) {
-        console.error("bulkPromoteStudentsDB per-student error:", err);
+        logServerError("academic-core", "bulkPromoteStudentsDB per-student error:", err);
         failed.push({ studentId: d.studentId, reason: "Unexpected error." });
       }
     }
@@ -613,8 +651,73 @@ export async function bulkPromoteStudentsDB(payload: {
     return { succeeded, failed };
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error("bulkPromoteStudentsDB error:", err);
+    logServerError("academic-core", "bulkPromoteStudentsDB error:", err);
     return { error: "Promotion batch failed — no changes were made." };
+  } finally {
+    client.release();
+  }
+}
+
+// Single-student graduation, triggered from the Students page row action —
+// the individual-student counterpart to bulkPromoteStudentsDB's graduating
+// branch above (shares insertAlumniRecord so both produce a fully-populated
+// alumni row, not just a bare name). Closes the enrollment, deactivates the
+// student's portal login (they're no longer a student), and writes both an
+// audit entry and a student_promotions row so this shows up in existing
+// promotion history views.
+export async function graduateStudentToAlumniDB(
+  enrollmentId: string, graduationYear: number, currentOccupation?: string
+): Promise<{ error?: string; alumniId?: string }> {
+  const auth = await requireRole('ADMIN');
+  if ('error' in auth) return { error: auth.error };
+  const isOnline = await checkDbConnection();
+  if (!isOnline) return { error: "Database offline." };
+
+  const { nanoid } = await import("nanoid");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const enrRes = await client.query(
+      `SELECT e.student_id, e.status, e.class_id, e.section_id, e.academic_year_id, c.name as class_name
+       FROM enrollments e JOIN classes c ON c.id = e.class_id
+       WHERE e.id=$1`,
+      [enrollmentId]
+    );
+    if (enrRes.rows.length === 0) { await client.query("ROLLBACK"); return { error: "Enrollment not found." }; }
+    const enr = enrRes.rows[0];
+    if (enr.status !== "Active") { await client.query("ROLLBACK"); return { error: "Only an actively-enrolled student can be graduated." }; }
+
+    const alumniResult = await insertAlumniRecord(client, enr.student_id, enr.class_name, graduationYear, { currentOccupation });
+    if (alumniResult.error) { await client.query("ROLLBACK"); return { error: alumniResult.error }; }
+
+    await client.query("UPDATE enrollments SET status='Graduated', updated_at=NOW() WHERE id=$1", [enrollmentId]);
+    await client.query(
+      `INSERT INTO student_promotions (id, student_id, from_class_id, from_section_id, to_class_id, to_section_id, academic_year_id, promoted_by, promoted_at, outcome)
+       VALUES ($1,$2,$3,$4,$3,$4,$5,$6,NOW(),'graduated')`,
+      [`prom-${nanoid(8)}`, enr.student_id, enr.class_id, enr.section_id, enr.academic_year_id, auth.session.name]
+    );
+
+    const studentRes = await client.query("SELECT email FROM students WHERE id=$1", [enr.student_id]);
+    if (studentRes.rows[0]?.email) {
+      await client.query("UPDATE users SET status='INACTIVE' WHERE email=$1", [studentRes.rows[0].email]);
+    }
+
+    await client.query("COMMIT");
+
+    await logAudit({
+      actor: { userId: auth.session.userId, name: auth.session.name, role: auth.session.role },
+      action: 'CREATE',
+      entityType: 'alumni',
+      entityId: alumniResult.alumniId!,
+      summary: `Graduated student to Alumni — class ${enr.class_name}, year ${graduationYear}`,
+    });
+
+    return { alumniId: alumniResult.alumniId };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    logServerError("academic-core", "graduateStudentToAlumniDB error:", err);
+    return { error: "Failed to graduate student." };
   } finally {
     client.release();
   }
@@ -888,6 +991,22 @@ export async function fetchMarksEntriesDB(examSubjectId: string) {
   } catch { return []; }
 }
 
+// Marks changing after a report card was generated must not leave that card
+// silently stale — flag it so the report-cards UI can surface a
+// "regenerate" prompt instead of quietly serving outdated numbers.
+async function flagReportCardStaleDB(studentId: string, examSubjectId: string): Promise<void> {
+  try {
+    await query(
+      `UPDATE report_cards SET needs_regeneration = true
+       WHERE student_id = $1
+         AND academic_year_id = (
+           SELECT te.academic_year_id FROM exam_subjects es JOIN term_exams te ON te.id = es.exam_id WHERE es.id = $2
+         )`,
+      [studentId, examSubjectId]
+    );
+  } catch {}
+}
+
 export async function upsertMarksEntryDB(data: { examSubjectId: string; studentId: string; marksObtained: number; grade?: string; remarks?: string }) {
   const auth = await requireRole('ADMIN', 'TEACHER');
   if ('error' in auth) return null;
@@ -912,6 +1031,7 @@ export async function upsertMarksEntryDB(data: { examSubjectId: string; studentI
         before: { marksObtained: prev.marks_obtained, grade: prev.grade, remarks: prev.remarks },
         after: { marksObtained: data.marksObtained, grade: data.grade ?? null, remarks: data.remarks ?? null },
       });
+      await flagReportCardStaleDB(data.studentId, data.examSubjectId);
       return { id: prev.id, ...data };
     }
     const id = `me-${nanoid(8)}`;
@@ -924,6 +1044,7 @@ export async function upsertMarksEntryDB(data: { examSubjectId: string; studentI
       summary: `Entered marks for student ${data.studentId} (subject ${data.examSubjectId}): ${data.marksObtained}`,
       after: { marksObtained: data.marksObtained, grade: data.grade ?? null, remarks: data.remarks ?? null },
     });
+    await flagReportCardStaleDB(data.studentId, data.examSubjectId);
     return { id, ...data };
   } catch { return null; }
 }
@@ -1139,6 +1260,7 @@ export async function fetchReportCardsDB(academicYearId?: string, studentId?: st
       totalPercentage: parseFloat(r.total_percentage) || 0,
       overallGrade: r.overall_grade, classPosition: r.class_position,
       classTotal: r.class_total, remarks: r.remarks,
+      needsRegeneration: !!r.needs_regeneration,
     }));
   } catch { return []; }
 }
@@ -1266,7 +1388,7 @@ export async function generateReportCardDB(studentId: string, academicYearId: st
       examResults, generatedAt: new Date().toISOString().split("T")[0],
       totalPercentage, overallGrade, classPosition, classTotal,
     };
-  } catch (e) { console.error("generateReportCardDB error:", e); return null; }
+  } catch (e) { logServerError("academic-core", "generateReportCardDB error:", e); return null; }
 }
 
 export async function generateBatchReportCardsDB(academicYearId: string, classId?: string) {
@@ -1403,7 +1525,7 @@ export async function regenerateReportCardDB(id: string) {
 
     await query(
       `UPDATE report_cards
-       SET exam_results = $1, generated_at = $2, total_percentage = $3, overall_grade = $4, class_position = $5, class_total = $6, class_name = $7, section_name = $8
+       SET exam_results = $1, generated_at = $2, total_percentage = $3, overall_grade = $4, class_position = $5, class_total = $6, class_name = $7, section_name = $8, needs_regeneration = false
        WHERE id = $9`,
       [JSON.stringify(examResults), new Date().toISOString().split("T")[0], totalPercentage, overallGrade, classPosition, classTotal, className || null, sectionName || null, id]
     );
@@ -1662,6 +1784,30 @@ export async function saveAttendanceRecordsDB(sessionId: string, records: { stud
       before: Object.fromEntries(beforeByStudent),
       after: Object.fromEntries(records.map(r => [r.studentId, { status: r.status, remarks: r.remarks ?? null }])),
     });
+
+    // Newly-marked absences only — don't re-alert a parent every time the
+    // teacher re-saves an already-absent record. Fire-and-forget through the
+    // notification service: it enforces the opt-in gate and approved-template
+    // check itself, so a not-yet-configured/opted-out parent is a normal
+    // no-op here, never something attendance-saving needs to know about.
+    const newlyAbsent = records.filter(r => r.status === "Absent" && beforeByStudent.get(r.studentId)?.status !== "Absent");
+    if (newlyAbsent.length > 0) {
+      query(
+        `SELECT id, name, parent_name FROM students WHERE id = ANY($1::text[])`,
+        [newlyAbsent.map(r => r.studentId)]
+      ).then(res => {
+        const today = new Date().toISOString().split("T")[0];
+        for (const student of res.rows) {
+          notificationService.send({
+            type: "STUDENT_ABSENCE",
+            recipientType: "PARENT",
+            recipientId: student.id,
+            channel: "WHATSAPP",
+            data: { parentName: student.parent_name || "Parent/Guardian", studentName: student.name, date: today },
+          }).catch(() => {});
+        }
+      }).catch(() => {});
+    }
   } catch {}
 }
 
@@ -2080,9 +2226,16 @@ export async function fetchExamAnalyticsDB(examId: string): Promise<ExamAnalytic
 
     const appeared = rows.length;
     const percentages = rows.map((r: any) => parseFloat(r.percentage));
+    // Pass/fail must follow the school's actual grade scale (grade_scales.is_pass)
+    // rather than assuming "F" is always the only failing grade — a custom
+    // scale where e.g. "D" also fails would otherwise be misreported here.
+    const gradeScaleRes = await query("SELECT grade, is_pass FROM grade_scales");
+    const isPassByGrade: Record<string, boolean> = {};
+    gradeScaleRes.rows.forEach((g: any) => { isPassByGrade[g.grade] = g.is_pass; });
     const passed = rows.filter((r: any) => {
       const g = r.grade;
-      return g && g !== "F";
+      if (!g) return false;
+      return g in isPassByGrade ? isPassByGrade[g] : g !== "F";
     }).length;
 
     const avgPct = percentages.reduce((a: number, b: number) => a + b, 0) / appeared;
@@ -2229,4 +2382,185 @@ export async function globalSearchDB(rawQuery: string): Promise<GlobalSearchResu
   } catch {
     return [];
   }
+}
+
+// ── Class-wise Book Library (PDF, base64-in-TEXT — same convention as
+// course_materials.url) — used by Examinations' Book Library, the AI
+// Question Generator, and surfaced read-only in LMS materials. ────────────
+export interface ClassBook {
+  id: string; classId: string; className?: string; subjectId: string | null; subjectName?: string;
+  title: string; author: string | null; fileName: string | null; pdfData: string;
+  uploadedByName: string | null; createdAt: string; isActive: boolean;
+}
+
+export async function fetchClassBooksDB(classId?: string, subjectId?: string): Promise<ClassBook[]> {
+  const auth = await requireSession();
+  if ('error' in auth) return [];
+  try {
+    let sql = `SELECT cb.*, c.name as class_name, sub.name as subject_name
+               FROM class_books cb
+               JOIN classes c ON c.id = cb.class_id
+               LEFT JOIN subjects sub ON sub.id = cb.subject_id
+               WHERE cb.is_active = true`;
+    const params: string[] = [];
+    if (classId) { params.push(classId); sql += ` AND cb.class_id = $${params.length}`; }
+    if (subjectId) { params.push(subjectId); sql += ` AND cb.subject_id = $${params.length}`; }
+    sql += ` ORDER BY cb.created_at DESC`;
+    const res = await query(sql, params);
+    return res.rows.map((r: any) => ({
+      id: r.id, classId: r.class_id, className: r.class_name, subjectId: r.subject_id, subjectName: r.subject_name,
+      title: r.title, author: r.author, fileName: r.file_name, pdfData: r.pdf_data,
+      uploadedByName: r.uploaded_by_name, createdAt: r.created_at, isActive: r.is_active,
+    }));
+  } catch { return []; }
+}
+
+export async function uploadClassBookDB(data: { classId: string; subjectId?: string | null; title: string; author?: string; fileName: string; pdfData: string }): Promise<{ error?: string; id?: string }> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return { error: auth.error };
+  try {
+    const { nanoid } = await import("nanoid");
+    const id = `book-${nanoid(8)}`;
+    await query(
+      `INSERT INTO class_books (id, class_id, subject_id, title, author, file_name, pdf_data, uploaded_by_user_id, uploaded_by_name)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, data.classId, data.subjectId || null, data.title, data.author || null, data.fileName, data.pdfData,
+       auth.session.userId, auth.session.name]
+    );
+    return { id };
+  } catch (e) { logServerError("academic-core", "uploadClassBookDB error:", e); return { error: "Failed to upload book." }; }
+}
+
+export async function deleteClassBookDB(id: string): Promise<{ error?: string }> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return { error: auth.error };
+  try { await query("UPDATE class_books SET is_active = false WHERE id = $1", [id]); return {}; }
+  catch { return { error: "Failed to delete book." }; }
+}
+
+// ── AI Question Bank (generated from a class_books PDF, reviewed before use) ──
+export interface QuestionBankItem {
+  id: string; bookId: string; classId: string; subjectId: string | null;
+  questionType: 'MCQ' | 'ShortAnswer' | 'LongAnswer'; questionText: string;
+  options: string[]; correctAnswer: string; marks: number; difficulty: string;
+  status: 'draft' | 'approved'; generatedByAi: boolean; createdAt: string;
+}
+
+export async function fetchQuestionBankDB(bookId?: string): Promise<QuestionBankItem[]> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return [];
+  try {
+    let sql = `SELECT * FROM question_bank`;
+    const params: string[] = [];
+    if (bookId) { params.push(bookId); sql += ` WHERE book_id = $${params.length}`; }
+    sql += ` ORDER BY created_at DESC`;
+    const res = await query(sql, params);
+    return res.rows.map((r: any) => ({
+      id: r.id, bookId: r.book_id, classId: r.class_id, subjectId: r.subject_id,
+      questionType: r.question_type, questionText: r.question_text,
+      options: r.options || [], correctAnswer: r.correct_answer, marks: r.marks,
+      difficulty: r.difficulty, status: r.status, generatedByAi: r.generated_by_ai, createdAt: r.created_at,
+    }));
+  } catch { return []; }
+}
+
+export async function saveQuestionBankItemsDB(items: Omit<QuestionBankItem, 'id' | 'status' | 'createdAt'>[]): Promise<{ error?: string; count?: number }> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return { error: auth.error };
+  try {
+    const { nanoid } = await import("nanoid");
+    for (const item of items) {
+      const id = `qb-${nanoid(8)}`;
+      await query(
+        `INSERT INTO question_bank (id, book_id, class_id, subject_id, question_type, question_text, options, correct_answer, marks, difficulty, status, generated_by_ai, created_by_user_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'draft',$11,$12)`,
+        [id, item.bookId, item.classId, item.subjectId || null, item.questionType, item.questionText,
+         JSON.stringify(item.options || []), item.correctAnswer, item.marks, item.difficulty,
+         item.generatedByAi, auth.session.userId]
+      );
+    }
+    return { count: items.length };
+  } catch (e) { logServerError("academic-core", "saveQuestionBankItemsDB error:", e); return { error: "Failed to save questions." }; }
+}
+
+export async function updateQuestionBankItemDB(id: string, data: Partial<Pick<QuestionBankItem, 'questionText' | 'options' | 'correctAnswer' | 'marks' | 'status'>>): Promise<{ error?: string }> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return { error: auth.error };
+  try {
+    const fields: string[] = []; const vals: any[] = []; let i = 1;
+    if (data.questionText !== undefined) { fields.push(`question_text=$${i++}`); vals.push(data.questionText); }
+    if (data.options !== undefined) { fields.push(`options=$${i++}`); vals.push(JSON.stringify(data.options)); }
+    if (data.correctAnswer !== undefined) { fields.push(`correct_answer=$${i++}`); vals.push(data.correctAnswer); }
+    if (data.marks !== undefined) { fields.push(`marks=$${i++}`); vals.push(data.marks); }
+    if (data.status !== undefined) { fields.push(`status=$${i++}`); vals.push(data.status); }
+    if (!fields.length) return {};
+    vals.push(id);
+    await query(`UPDATE question_bank SET ${fields.join(',')} WHERE id=$${i}`, vals);
+    return {};
+  } catch { return { error: "Failed to update question." }; }
+}
+
+export async function deleteQuestionBankItemDB(id: string): Promise<{ error?: string }> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return { error: auth.error };
+  try { await query("DELETE FROM question_bank WHERE id=$1", [id]); return {}; }
+  catch { return { error: "Failed to delete question." }; }
+}
+
+// Loads the selected book's PDF and calls the AI flow, saving results as
+// draft question-bank items for review before Approve.
+export async function generateQuestionsFromBookDB(bookId: string, params: { topicHint?: string; mcqCount: number; shortAnswerCount: number; difficulty: 'Easy' | 'Medium' | 'Hard' }): Promise<{ error?: string; count?: number }> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return { error: auth.error };
+  try {
+    const bookRes = await query('SELECT cb.*, sub.name as subject_name FROM class_books cb LEFT JOIN subjects sub ON sub.id = cb.subject_id WHERE cb.id=$1', [bookId]);
+    if (bookRes.rows.length === 0) return { error: 'Book not found.' };
+    const book = bookRes.rows[0];
+    const { generateQuestionsFromBook } = await import('@/ai/flows/generate-questions-from-book');
+    const result = await generateQuestionsFromBook({
+      bookPdfDataUrl: book.pdf_data,
+      subjectName: book.subject_name || book.title,
+      topicHint: params.topicHint,
+      mcqCount: params.mcqCount,
+      shortAnswerCount: params.shortAnswerCount,
+      difficulty: params.difficulty,
+    });
+    const saveRes = await saveQuestionBankItemsDB(result.questions.map(q => ({
+      bookId, classId: book.class_id, subjectId: book.subject_id,
+      questionType: q.type, questionText: q.questionText, options: q.options,
+      correctAnswer: q.correctAnswer, marks: q.marks, difficulty: params.difficulty,
+      generatedByAi: true,
+    })));
+    return saveRes;
+  } catch (e: any) {
+    logServerError("academic-core", "generateQuestionsFromBookDB error:", e);
+    if (e?.status === 'UNAVAILABLE' || e?.code === 503) {
+      return { error: 'The AI service is currently experiencing high demand and did not respond after several retries. Please try again in a minute.' };
+    }
+    return { error: 'AI generation failed. Please try again.' };
+  }
+}
+
+// Pushes approved question-bank items into an online exam's own question
+// bank (online_exam_questions) — the two-way bridge between "questions AI
+// generated from a textbook" and "questions a student actually answers."
+export async function addQuestionBankItemsToOnlineExamDB(examId: string, itemIds: string[]): Promise<{ error?: string; count?: number }> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return { error: auth.error };
+  try {
+    const { nanoid } = await import("nanoid");
+    let count = 0;
+    for (const itemId of itemIds) {
+      const res = await query("SELECT * FROM question_bank WHERE id=$1 AND status='approved'", [itemId]);
+      if (res.rows.length === 0) continue;
+      const q = res.rows[0];
+      const type = q.question_type === 'MCQ' ? 'MCQ' : q.question_type === 'ShortAnswer' ? 'ShortAnswer' : 'Essay';
+      await query(
+        `INSERT INTO online_exam_questions (id, exam_id, type, question, options, correct_answer, marks) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [`oeq-${nanoid(8)}`, examId, type, q.question_text, JSON.stringify(q.options || []), q.correct_answer, q.marks]
+      );
+      count++;
+    }
+    return { count };
+  } catch (e) { logServerError("academic-core", "addQuestionBankItemsToOnlineExamDB error:", e); return { error: "Failed to add questions to exam." }; }
 }

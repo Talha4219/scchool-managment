@@ -15,9 +15,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
-import { fetchClassesDB } from "@/app/actions/academic-core";
+import { fetchClassesDB, fetchTermExamsDB, fetchExamSubjectsDB } from "@/app/actions/academic-core";
 import {
   fetchOnlineExamsDB, createOnlineExamDB, updateOnlineExamDB, deleteOnlineExamDB,
   fetchAvailableOnlineExamsForStudentDB, fetchMyOnlineExamAttemptDB,
@@ -43,6 +44,7 @@ const emptyQuestion: { type: OnlineExamQuestion["type"]; question: string; optio
 export default function OnlineExamsPage() {
   const { can, loaded: permsLoaded } = usePermission();
   const { toast } = useToast();
+  const confirm = useConfirm();
   const [role, setRole] = useState<string | null>(null);
 
   useEffect(() => { getSession().then(s => setRole(s?.role ?? null)); }, []);
@@ -76,7 +78,15 @@ export default function OnlineExamsPage() {
 
   // ── Create exam ──────────────────────────────────────────────────────────
   const [createOpen, setCreateOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", className: "", subject: "", duration: "30", passingMarks: "40", startTime: "", endTime: "", instructions: "" });
+  const [form, setForm] = useState({ title: "", className: "", subject: "", duration: "30", passingMarks: "40", startTime: "", endTime: "", instructions: "", linkedTermExamId: "", examSubjectId: "" });
+  const [termExams, setTermExams] = useState<{ id: string; name: string }[]>([]);
+  const [examSubjectOptions, setExamSubjectOptions] = useState<{ id: string; subjectId: string; subjectName?: string }[]>([]);
+
+  useEffect(() => { if (createOpen) fetchTermExamsDB().then(setTermExams); }, [createOpen]);
+  useEffect(() => {
+    if (!form.linkedTermExamId) { setExamSubjectOptions([]); return; }
+    fetchExamSubjectsDB(form.linkedTermExamId).then(setExamSubjectOptions);
+  }, [form.linkedTermExamId]);
 
   const handleCreate = async () => {
     if (!form.title || !form.className || !form.subject || !form.startTime || !form.endTime) {
@@ -87,11 +97,12 @@ export default function OnlineExamsPage() {
       duration: Number(form.duration), totalMarks: 0, passingMarks: Number(form.passingMarks),
       startTime: form.startTime, endTime: form.endTime, instructions: form.instructions,
       proctoringEnabled: false, shuffleQuestions: false, status: "Draft",
+      examSubjectId: form.examSubjectId || null,
     });
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
     toast({ title: "Exam created — add questions before publishing." });
     setCreateOpen(false);
-    setForm({ title: "", className: "", subject: "", duration: "30", passingMarks: "40", startTime: "", endTime: "", instructions: "" });
+    setForm({ title: "", className: "", subject: "", duration: "30", passingMarks: "40", startTime: "", endTime: "", instructions: "", linkedTermExamId: "", examSubjectId: "" });
     load();
   };
 
@@ -110,6 +121,8 @@ export default function OnlineExamsPage() {
   };
 
   const handleDelete = async (exam: OnlineExam) => {
+    const ok = await confirm({ title: `Delete "${exam.title}"?`, description: "This permanently removes the exam, its questions, and any student attempts. This cannot be undone." });
+    if (!ok) return;
     const res = await deleteOnlineExamDB(exam.id);
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
     toast({ title: "Exam deleted." });
@@ -154,6 +167,8 @@ export default function OnlineExamsPage() {
 
   const handleDeleteQuestion = async (id: string) => {
     if (!manageExam) return;
+    const ok = await confirm({ title: "Delete this question?", description: "Removes it from the exam permanently. Any existing student answers to it are also deleted." });
+    if (!ok) return;
     await deleteOnlineExamQuestionDB(id);
     const qs = await fetchOnlineExamQuestionsDB(manageExam.id, { includeAnswers: true });
     setQuestions(qs);
@@ -296,6 +311,20 @@ export default function OnlineExamsPage() {
             <div className="space-y-1.5">
               <Label>Instructions (optional)</Label>
               <Textarea value={form.instructions} onChange={e => setForm({ ...form, instructions: e.target.value })} rows={2} />
+            </div>
+            <div className="space-y-1.5 border-t pt-3">
+              <Label>Count toward a real exam result? (optional)</Label>
+              <p className="text-xs text-muted-foreground">Link this quiz to a term exam's subject slot and a submitted score writes into that student's marks — otherwise this stays a standalone practice quiz.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <Select value={form.linkedTermExamId} onValueChange={v => setForm({ ...form, linkedTermExamId: v, examSubjectId: "" })}>
+                  <SelectTrigger><SelectValue placeholder="No term exam" /></SelectTrigger>
+                  <SelectContent>{termExams.map(te => <SelectItem key={te.id} value={te.id}>{te.name}</SelectItem>)}</SelectContent>
+                </Select>
+                <Select value={form.examSubjectId} onValueChange={v => setForm({ ...form, examSubjectId: v })} disabled={!form.linkedTermExamId}>
+                  <SelectTrigger><SelectValue placeholder="Select subject slot" /></SelectTrigger>
+                  <SelectContent>{examSubjectOptions.map(es => <SelectItem key={es.id} value={es.id}>{es.subjectName || es.subjectId}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
           <DialogFooter>

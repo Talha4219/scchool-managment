@@ -20,7 +20,17 @@ import {
   createAttendanceSessionDB, saveAttendanceRecordsDB, fetchAttendanceRecordsDB,
   fetchAttendanceDatesDB, fetchAttendanceHistoryDB, getAttendanceSummaryDB,
 } from "@/app/actions/academic-core";
+import {
+  fetchStaffAttendanceDB, markStaffAttendanceDB, fetchStaffAttendanceHistoryDB, fetchStaffAttendanceSummaryDB, checkOutStaffDB,
+} from "@/app/actions/staff-attendance";
+import {
+  fetchSubstitutionsForDateDB, fetchEligibleSubstitutesDB, overrideSubstitutionDB, fillUnfilledSubstitutionDB,
+  type SubstitutionRecord,
+} from "@/app/actions/substitutions";
+import { fetchStaffDirectoryDB } from "@/app/actions/features";
+import { getSession } from "@/app/actions/auth";
 import type { AcademicYear, ClassItem, SectionItem, Enrollment } from "@/lib/types";
+import { UserCheck, AlertTriangle, LogOut } from "lucide-react";
 
 const ATT_STATUS_OPTIONS = ["Present", "Absent", "Late", "Leave", "Half Day"] as const;
 
@@ -48,7 +58,7 @@ const STATUS_SHORT: Record<string, string> = {
   "Half Day": "HD",
 };
 
-export default function AttendancePage() {
+function StudentAttendanceTab() {
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
 
@@ -557,6 +567,374 @@ export default function AttendancePage() {
           <p>Select a class and section to view attendance</p>
         </div>
       )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STAFF ATTENDANCE (admin marking) — same status vocabulary/visual language as
+// the student view above, but no class/section grouping: one row per person.
+// ═══════════════════════════════════════════════════════════════════════════════
+function StaffAttendanceTab() {
+  const { toast } = useToast();
+  const { can, loaded: permsLoaded } = usePermission();
+  const [staff, setStaff] = useState<{ userId: number; name: string; department: string }[]>([]);
+  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [records, setRecords] = useState<Record<number, { status: string; remarks?: string }>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [staffList, existing] = await Promise.all([fetchStaffDirectoryDB(), fetchStaffAttendanceDB(date)]);
+    setStaff(staffList);
+    const map: Record<number, { status: string; remarks?: string }> = {};
+    existing.forEach(r => { map[r.userId] = { status: r.status, remarks: r.remarks || undefined }; });
+    setRecords(map);
+    setLoading(false);
+  }, [date]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setStatus = (userId: number, status: string) => setRecords(prev => ({ ...prev, [userId]: { ...prev[userId], status } }));
+  const markAllPresent = () => {
+    const map: Record<number, { status: string; remarks?: string }> = {};
+    staff.forEach(s => { map[s.userId] = { status: "Present" }; });
+    setRecords(map);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    const payload = staff.filter(s => records[s.userId]?.status).map(s => ({ userId: s.userId, date, status: records[s.userId].status, remarks: records[s.userId].remarks }));
+    const res = await markStaffAttendanceDB(payload);
+    setSaving(false);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Staff attendance saved" });
+    load();
+  };
+
+  const handleCheckOut = async (userId: number) => {
+    const res = await checkOutStaffDB(userId, date);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: res.halfDay ? "Checked out — marked Half Day, remaining periods substituted" : "Checked out" });
+    load();
+  };
+
+  if (!permsLoaded) return null;
+  if (!can("attendance.staff.manage")) return <Unauthorized />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <Calendar className="h-4 w-4 text-muted-foreground" />
+          <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-44" />
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={markAllPresent}>Mark All Present</Button>
+          <Button size="sm" onClick={handleSave} disabled={saving}>{saving ? "Saving..." : "Save Attendance"}</Button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="text-center py-12 text-muted-foreground">Loading...</div>
+      ) : (
+        <div className="border rounded-xl overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Staff Member</TableHead>
+                <TableHead>Department</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-24"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {staff.map(s => (
+                <TableRow key={s.userId}>
+                  <TableCell className="font-medium">{s.name}</TableCell>
+                  <TableCell className="text-muted-foreground text-sm">{s.department}</TableCell>
+                  <TableCell>
+                    <div className="flex gap-1 flex-wrap">
+                      {ATT_STATUS_OPTIONS.map(opt => (
+                        <button
+                          key={opt}
+                          onClick={() => setStatus(s.userId, opt)}
+                          className={`px-2 py-1 rounded-md text-xs font-medium border transition-colors ${records[s.userId]?.status === opt ? STATUS_COLORS[opt] : "border-border text-muted-foreground hover:bg-secondary/40"}`}
+                        >
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    {records[s.userId]?.status === "Present" && date === new Date().toISOString().split("T")[0] && (
+                      <button
+                        onClick={() => handleCheckOut(s.userId)}
+                        className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                        title="Check out now — flips to Half Day and substitutes remaining periods if early"
+                      >
+                        <LogOut className="h-3 w-3" /> Check Out
+                      </button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+              {staff.length === 0 && (
+                <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">No staff found.</TableCell></TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MY ATTENDANCE (self-service — teacher/employee viewing their own record)
+// ═══════════════════════════════════════════════════════════════════════════════
+function MyAttendanceTab() {
+  const [userId, setUserId] = useState<number | null>(null);
+  const [summary, setSummary] = useState<Record<string, number> & { total: number; percentage: number }>({ total: 0, percentage: 0 });
+  const [history, setHistory] = useState<{ id: string; date: string; status: string; remarks: string | null }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    getSession().then(async (s) => {
+      if (!s) { setLoading(false); return; }
+      setUserId(s.userId);
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split("T")[0];
+      const [sum, hist] = await Promise.all([
+        fetchStaffAttendanceSummaryDB(s.userId, monthStart, monthEnd),
+        fetchStaffAttendanceHistoryDB(s.userId, monthStart, monthEnd),
+      ]);
+      setSummary(sum);
+      setHistory(hist);
+      setLoading(false);
+    });
+  }, []);
+
+  if (loading) return <div className="text-center py-12 text-muted-foreground">Loading...</div>;
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        {(["Present", "Absent", "Late", "Leave", "Half Day"] as const).map(key => (
+          <div key={key} className={`rounded-xl border p-3 text-center ${STATUS_COLORS[key]}`}>
+            <p className="text-2xl font-bold">{summary[key] || 0}</p>
+            <p className="text-xs font-medium">{key}</p>
+          </div>
+        ))}
+      </div>
+      <div className="rounded-xl border p-4 bg-secondary/10 flex items-center justify-between">
+        <span className="text-sm text-muted-foreground">This month's attendance rate</span>
+        <span className="text-xl font-bold text-primary">{summary.percentage}%</span>
+      </div>
+
+      <div className="border rounded-xl overflow-hidden">
+        <Table>
+          <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Status</TableHead><TableHead>Remarks</TableHead></TableRow></TableHeader>
+          <TableBody>
+            {history.map(h => (
+              <TableRow key={h.id}>
+                <TableCell>{h.date}</TableCell>
+                <TableCell><span className={`px-2 py-0.5 rounded-md text-xs font-medium border ${STATUS_COLORS[h.status] || ""}`}>{h.status}</span></TableCell>
+                <TableCell className="text-muted-foreground text-sm">{h.remarks || "—"}</TableCell>
+              </TableRow>
+            ))}
+            {history.length === 0 && (
+              <TableRow><TableCell colSpan={3} className="text-center py-8 text-muted-foreground">No attendance recorded yet this month.</TableCell></TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUBSTITUTIONS (admin review) — today's (or any date's) auto-generated
+// substitute-teacher assignments, with unfilled slots surfaced first and a
+// one-click swap that only offers teachers who won't create a new conflict.
+// ═══════════════════════════════════════════════════════════════════════════════
+const SUB_STATUS_COLORS: Record<string, string> = {
+  auto: "bg-blue-100 text-blue-700 border-blue-200",
+  confirmed: "bg-green-100 text-green-700 border-green-200",
+  manual_override: "bg-purple-100 text-purple-700 border-purple-200",
+  unfilled: "bg-red-100 text-red-700 border-red-200",
+};
+const SUB_STATUS_LABELS: Record<string, string> = {
+  auto: "Auto", confirmed: "Confirmed", manual_override: "Manual", unfilled: "Unfilled",
+};
+
+function SubstitutionsTab() {
+  const { toast } = useToast();
+  const { can, loaded: permsLoaded } = usePermission();
+  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [subs, setSubs] = useState<SubstitutionRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [swapFor, setSwapFor] = useState<string | null>(null);
+  const [eligible, setEligible] = useState<{ userId: number; name: string }[]>([]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setSubs(await fetchSubstitutionsForDateDB(date));
+    setLoading(false);
+  }, [date]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const openSwap = async (id: string) => {
+    setSwapFor(id);
+    setEligible(await fetchEligibleSubstitutesDB(id));
+  };
+
+  const doSwap = async (teacherId: number) => {
+    if (!swapFor) return;
+    const isUnfilled = subs.find(s => s.id === swapFor)?.status === "unfilled";
+    const res = isUnfilled ? await fillUnfilledSubstitutionDB(swapFor, teacherId) : await overrideSubstitutionDB(swapFor, teacherId);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Substitute assigned" });
+    setSwapFor(null);
+    load();
+  };
+
+  if (!permsLoaded) return null;
+  if (!can("timetable.substitute")) return <Unauthorized />;
+
+  const unfilledCount = subs.filter(s => s.status === "unfilled").length;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <Calendar className="h-4 w-4 text-muted-foreground" />
+          <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-44" />
+        </div>
+        {unfilledCount > 0 && (
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-red-600 bg-red-50 border border-red-200 rounded-full px-3 py-1">
+            <AlertTriangle className="h-3.5 w-3.5" /> {unfilledCount} period{unfilledCount > 1 ? "s" : ""} unfilled
+          </span>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="text-center py-12 text-muted-foreground">Loading...</div>
+      ) : subs.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground">
+          <UserCheck className="h-12 w-12 mx-auto mb-3 opacity-50" />
+          <p>No substitutions needed for {date}</p>
+          <p className="text-xs mt-1">Substitutions appear here automatically when a teacher is marked Absent, on Leave, or checks out early.</p>
+        </div>
+      ) : (
+        <div className="border rounded-xl overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Period</TableHead>
+                <TableHead>Class</TableHead>
+                <TableHead>Subject</TableHead>
+                <TableHead>Original Teacher</TableHead>
+                <TableHead>Substitute</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-20"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {subs.map(s => (
+                <TableRow key={s.id} className={s.status === "unfilled" ? "bg-red-50/40" : ""}>
+                  <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{s.startTime}–{s.endTime}</TableCell>
+                  <TableCell className="font-medium">{s.className}</TableCell>
+                  <TableCell>{s.subjectName}</TableCell>
+                  <TableCell className="text-muted-foreground">{s.originalTeacherName}</TableCell>
+                  <TableCell className="font-medium">{s.substituteTeacherName || <span className="text-red-600">—</span>}</TableCell>
+                  <TableCell>
+                    <span className={`px-2 py-0.5 rounded-md text-xs font-medium border ${SUB_STATUS_COLORS[s.status]}`}>
+                      {SUB_STATUS_LABELS[s.status]}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <button onClick={() => openSwap(s.id)} className="text-xs font-medium text-primary hover:underline">
+                      {s.status === "unfilled" ? "Assign" : "Swap"}
+                    </button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+
+      {swapFor && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setSwapFor(null)}>
+          <div className="bg-card rounded-xl border p-4 w-80 max-h-[70vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold mb-3">Choose a substitute</h3>
+            {eligible.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-4 text-center">No eligible teachers are free at this time.</p>
+            ) : (
+              <div className="space-y-1">
+                {eligible.map(t => (
+                  <button key={t.userId} onClick={() => doSwap(t.userId)}
+                    className="w-full text-left text-sm px-3 py-2 rounded-lg hover:bg-secondary/50">
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE ROOT — tab switcher between Student attendance, Staff attendance
+// (admin marking), and My Attendance (staff self-service).
+// ═══════════════════════════════════════════════════════════════════════════════
+export default function AttendancePage() {
+  const { can, loaded: permsLoaded } = usePermission();
+  const [role, setRole] = useState<string | null>(null);
+  const [tab, setTab] = useState<"students" | "staff" | "substitutions" | "mine">("students");
+
+  useEffect(() => { getSession().then(s => setRole(s?.role ?? null)); }, []);
+
+  if (!permsLoaded || role === null) return null;
+
+  const showStudents = can("attendance.mark");
+  const showStaff = can("attendance.staff.manage");
+  const showSubstitutions = can("timetable.substitute");
+  const showMine = role === "TEACHER" || role === "EMPLOYEE";
+
+  if (!showStudents && !showStaff && !showSubstitutions && !showMine) return <Unauthorized />;
+
+  const tabs = [
+    ...(showStudents ? [{ key: "students" as const, label: "Students" }] : []),
+    ...(showStaff ? [{ key: "staff" as const, label: "Staff" }] : []),
+    ...(showSubstitutions ? [{ key: "substitutions" as const, label: "Substitutions" }] : []),
+    ...(showMine ? [{ key: "mine" as const, label: "My Attendance" }] : []),
+  ];
+  const activeTab = tabs.some(t => t.key === tab) ? tab : tabs[0]?.key;
+
+  return (
+    <div className="space-y-4">
+      {tabs.length > 1 && (
+        <div className="flex gap-1 bg-secondary/50 rounded-lg p-1 w-fit">
+          {tabs.map(t => (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className={`text-xs font-semibold rounded-md px-3 py-1.5 transition-colors ${activeTab === t.key ? "bg-card shadow-sm text-foreground" : "text-muted-foreground"}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {activeTab === "students" && <StudentAttendanceTab />}
+      {activeTab === "staff" && <StaffAttendanceTab />}
+      {activeTab === "substitutions" && <SubstitutionsTab />}
+      {activeTab === "mine" && <MyAttendanceTab />}
     </div>
   );
 }

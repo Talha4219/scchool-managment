@@ -40,6 +40,11 @@ export const initializeDatabase = async () => {
         teacher_name VARCHAR(255),
         is_elective BOOLEAN
       );
+      -- Additive, nullable link to a real class — grade_level stays as the
+      -- free-text field existing UI already filters by; class_id lets new
+      -- subject-to-exam/timetable assignments validate against a real class
+      -- going forward instead of relying on string-matching convention alone.
+      ALTER TABLE subjects ADD COLUMN IF NOT EXISTS class_id VARCHAR(50);
 
       CREATE TABLE IF NOT EXISTS fee_categories (
         id VARCHAR(50) PRIMARY KEY,
@@ -127,6 +132,97 @@ export const initializeDatabase = async () => {
       );
       CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id);
       CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS error_log (
+        id VARCHAR(50) PRIMARY KEY,
+        source VARCHAR(100) NOT NULL,
+        message TEXT NOT NULL,
+        stack TEXT,
+        context JSONB,
+        actor_user_id INTEGER,
+        actor_name VARCHAR(255),
+        actor_role VARCHAR(20),
+        resolved BOOLEAN NOT NULL DEFAULT false,
+        resolved_at TIMESTAMPTZ,
+        resolved_by VARCHAR(255),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_error_log_unresolved ON error_log(resolved) WHERE resolved = false;
+
+      -- WhatsApp / notification-service tables. Named whatsapp_notifications
+      -- (not "notifications" — that name is already taken by the legacy
+      -- in-app bell-notification table above) to hold one channel-agnostic
+      -- row per notification, with whatsapp_messages holding the
+      -- WhatsApp-specific delivery record the webhook updates.
+      CREATE TABLE IF NOT EXISTS whatsapp_notifications (
+        id VARCHAR(50) PRIMARY KEY,
+        recipient_type VARCHAR(20) NOT NULL,
+        recipient_id VARCHAR(50) NOT NULL,
+        channel VARCHAR(20) NOT NULL DEFAULT 'WHATSAPP',
+        notification_type VARCHAR(50) NOT NULL,
+        template_id VARCHAR(50),
+        status VARCHAR(20) NOT NULL DEFAULT 'QUEUED',
+        scheduled_at TIMESTAMPTZ,
+        sent_at TIMESTAMPTZ,
+        delivered_at TIMESTAMPTZ,
+        read_at TIMESTAMPTZ,
+        failed_at TIMESTAMPTZ,
+        error_code VARCHAR(50),
+        error_message TEXT,
+        created_by_user_id INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_wa_notif_recipient ON whatsapp_notifications(recipient_type, recipient_id);
+      CREATE INDEX IF NOT EXISTS idx_wa_notif_status ON whatsapp_notifications(status);
+      CREATE INDEX IF NOT EXISTS idx_wa_notif_created ON whatsapp_notifications(created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS whatsapp_messages (
+        id VARCHAR(50) PRIMARY KEY,
+        notification_id VARCHAR(50) NOT NULL REFERENCES whatsapp_notifications(id) ON DELETE CASCADE,
+        meta_message_id VARCHAR(100),
+        phone_number VARCHAR(30) NOT NULL,
+        template_name VARCHAR(100) NOT NULL,
+        template_language VARCHAR(20) NOT NULL DEFAULT 'en_US',
+        body TEXT,
+        status VARCHAR(20) NOT NULL DEFAULT 'QUEUED',
+        error_code VARCHAR(50),
+        error_message TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      -- Free-form (non-template) WhatsApp messages have real text but no
+      -- template — body holds that text; template_name stays 'freeform' for
+      -- them since the column is NOT NULL for the template-message rows.
+      ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS body TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_messages_meta_id ON whatsapp_messages(meta_message_id) WHERE meta_message_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_wa_messages_notification ON whatsapp_messages(notification_id);
+
+      -- Postgres-backed queue (no Redis/BullMQ in this deployment — see the
+      -- WhatsApp integration plan). A worker (src/app/api/cron/whatsapp-queue,
+      -- or the admin "Process Queue Now" button) claims PENDING rows due at or
+      -- before now with SELECT ... FOR UPDATE SKIP LOCKED, which is what makes
+      -- concurrent workers/duplicate cron triggers safe — two workers can never
+      -- claim the same job, so a message is never sent twice for one job row.
+      CREATE TABLE IF NOT EXISTS notification_jobs (
+        id VARCHAR(50) PRIMARY KEY,
+        notification_id VARCHAR(50) NOT NULL REFERENCES whatsapp_notifications(id) ON DELETE CASCADE,
+        message_id VARCHAR(50) NOT NULL REFERENCES whatsapp_messages(id) ON DELETE CASCADE,
+        phone_number VARCHAR(30) NOT NULL,
+        template_name VARCHAR(100) NOT NULL,
+        template_language VARCHAR(20) NOT NULL DEFAULT 'en_US',
+        components JSONB,
+        status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 5,
+        next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_notification_jobs_claim ON notification_jobs(next_attempt_at) WHERE status = 'PENDING';
+      CREATE INDEX IF NOT EXISTS idx_notification_jobs_notification ON notification_jobs(notification_id);
 
       CREATE TABLE IF NOT EXISTS notifications (
         id VARCHAR(50) PRIMARY KEY,
@@ -216,6 +312,14 @@ export const initializeDatabase = async () => {
         admin_notes TEXT
       );
 
+      -- DEPRECATED (retired from all UI as of the Academics/Examinations
+      -- consolidation): class_compilations, exam_sessions, exam_marks,
+      -- teacher_subject_assignments, result_positions, and the bare exams
+      -- table above were a second, string-keyed (not FK'd) exam/results
+      -- pipeline that ran in parallel with the real one (term_exams /
+      -- exam_subjects / marks_entries / results / report_cards in
+      -- academic-core.ts). No page calls these anymore — kept only so
+      -- historical rows aren't destroyed. Do not build new UI on them.
       CREATE TABLE IF NOT EXISTS class_compilations (
         id VARCHAR(50) PRIMARY KEY,
         session_id VARCHAR(50) NOT NULL,
@@ -304,6 +408,10 @@ export const initializeDatabase = async () => {
       CREATE TABLE IF NOT EXISTS marks_entries (id VARCHAR(50) PRIMARY KEY, exam_subject_id VARCHAR(50), student_id VARCHAR(50), marks_obtained INT DEFAULT 0, grade VARCHAR(10), remarks TEXT);
       CREATE TABLE IF NOT EXISTS results (id VARCHAR(50) PRIMARY KEY, exam_id VARCHAR(50), student_id VARCHAR(50), total_marks INT DEFAULT 0, obtained_marks INT DEFAULT 0, percentage NUMERIC(5,2) DEFAULT 0, grade VARCHAR(10), position INT, status VARCHAR(50) DEFAULT 'Pending');
       CREATE TABLE IF NOT EXISTS report_cards (id VARCHAR(50) PRIMARY KEY, student_id VARCHAR(50), academic_year_id VARCHAR(50), exam_results JSONB DEFAULT '[]', generated_at VARCHAR(50), total_percentage NUMERIC(5,2) DEFAULT 0, overall_grade VARCHAR(10), class_position INT, class_total INT, class_name VARCHAR(100), section_name VARCHAR(100), remarks TEXT);
+      -- Set true whenever marks change for a student after their report card
+      -- was generated, so the UI can show "stale — regenerate" instead of
+      -- silently serving an outdated card.
+      ALTER TABLE report_cards ADD COLUMN IF NOT EXISTS needs_regeneration BOOLEAN DEFAULT false;
 
       -- Attendance Module
       CREATE TABLE IF NOT EXISTS attendance_sessions (id VARCHAR(50) PRIMARY KEY, academic_year_id VARCHAR(50), class_id VARCHAR(50), section_id VARCHAR(50), date VARCHAR(20), taken_by VARCHAR(255), status VARCHAR(20) DEFAULT 'Completed');
@@ -333,6 +441,35 @@ export const initializeDatabase = async () => {
         created_at TIMESTAMPTZ DEFAULT NOW(),
         last_used_at TIMESTAMPTZ
       );
+
+      -- Staff (teacher/employee) attendance — one row per person per day, no
+      -- class/section grouping needed (that's what the session/record split
+      -- above is for on the student side). Same device keys and same
+      -- /api/attendance/checkin endpoint are shared with students — a school's
+      -- front-gate biometric unit is one physical machine for everyone.
+      CREATE TABLE IF NOT EXISTS staff_attendance (
+        id VARCHAR(50) PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        date VARCHAR(20) NOT NULL,
+        status VARCHAR(20) DEFAULT 'Present',
+        check_in_time TIMESTAMPTZ,
+        check_out_time TIMESTAMPTZ,
+        source VARCHAR(20) DEFAULT 'manual',
+        marked_by VARCHAR(255),
+        remarks TEXT,
+        UNIQUE(user_id, date)
+      );
+      CREATE INDEX IF NOT EXISTS idx_staff_attendance_user ON staff_attendance(user_id);
+      CREATE INDEX IF NOT EXISTS idx_staff_attendance_date ON staff_attendance(date);
+
+      CREATE TABLE IF NOT EXISTS staff_id_cards (
+        id VARCHAR(50) PRIMARY KEY,
+        user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        card_uid VARCHAR(100) NOT NULL UNIQUE,
+        label VARCHAR(100),
+        issued_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_staff_id_cards_uid ON staff_id_cards(card_uid);
 
       -- Timetable Module
       CREATE TABLE IF NOT EXISTS time_slots (id VARCHAR(50) PRIMARY KEY, start_time VARCHAR(10), end_time VARCHAR(10), period_name VARCHAR(100));
@@ -368,6 +505,20 @@ export const initializeDatabase = async () => {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'ACTIVE';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INT NOT NULL DEFAULT 0;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_role_id VARCHAR(20);
+
+      -- Custom roles: an admin-defined named permission profile layered on top
+      -- of one of the four base roles. base_role keeps login/session/middleware
+      -- gating exactly as-is; custom_role_id on a user (when set) only changes
+      -- which role_permissions row usePermission() reads from.
+      CREATE TABLE IF NOT EXISTS custom_roles (
+        id VARCHAR(20) PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        base_role VARCHAR(20) NOT NULL,
+        description TEXT DEFAULT '',
+        color VARCHAR(20) DEFAULT 'blue',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS published BOOLEAN DEFAULT false;
       ALTER TABLE results ADD COLUMN IF NOT EXISTS class_id VARCHAR(50);
       ALTER TABLE results ADD COLUMN IF NOT EXISTS section_id VARCHAR(50);
@@ -389,6 +540,55 @@ export const initializeDatabase = async () => {
 
       ALTER TABLE students ADD COLUMN IF NOT EXISTS student_portal_password VARCHAR(255);
       ALTER TABLE students ADD COLUMN IF NOT EXISTS profile_photo TEXT;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_phone VARCHAR(50);
+      -- WhatsApp opt-in lives on students (not a separate "parents" table) because
+      -- parent_phone/contact already lives here and every existing WhatsApp send
+      -- path (absence alerts, fee reminders) already keys off studentId — adding
+      -- consent here keeps one lookup path instead of a second join.
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS whatsapp_opt_in BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS whatsapp_opt_in_at TIMESTAMPTZ;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS whatsapp_opt_out_at TIMESTAMPTZ;
+      ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS whatsapp_opt_in BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS whatsapp_opt_in_at TIMESTAMPTZ;
+      ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS whatsapp_opt_out_at TIMESTAMPTZ;
+
+      CREATE TABLE IF NOT EXISTS whatsapp_templates (
+        id VARCHAR(50) PRIMARY KEY,
+        name VARCHAR(100) NOT NULL UNIQUE,
+        meta_template_name VARCHAR(100) NOT NULL,
+        language VARCHAR(20) NOT NULL DEFAULT 'en_US',
+        category VARCHAR(50) NOT NULL DEFAULT 'UTILITY',
+        status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        description TEXT,
+        variables JSONB NOT NULL DEFAULT '[]',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      -- Seed the 8 template slots from the integration spec. status starts
+      -- 'PENDING' — these are NOT auto-approved; an admin must create the
+      -- matching template in Meta Business Manager, get it approved, then
+      -- flip status to 'APPROVED' (Settings > WhatsApp Templates) before
+      -- notificationService.send() will use it. meta_template_name defaults
+      -- to the same slug; edit it if the approved Meta template is named differently.
+      INSERT INTO whatsapp_templates (id, name, meta_template_name, language, category, status, description, variables) VALUES
+        ('wat_student_absence', 'STUDENT_ABSENCE', 'student_absence', 'en_US', 'UTILITY', 'PENDING', 'Sent to a parent when their child is marked absent.', '["parentName","studentName","date"]'),
+        ('wat_fee_reminder', 'FEE_REMINDER', 'fee_reminder', 'en_US', 'UTILITY', 'PENDING', 'Sent ahead of a fee due date.', '["parentName","studentName","amount","dueDate"]'),
+        ('wat_fee_overdue', 'FEE_OVERDUE', 'fee_overdue', 'en_US', 'UTILITY', 'PENDING', 'Sent when a fee voucher is past due.', '["parentName","studentName","amount","dueDate"]'),
+        ('wat_exam_reminder', 'EXAM_REMINDER', 'exam_reminder', 'en_US', 'UTILITY', 'PENDING', 'Sent ahead of an exam.', '["studentName","examName","date"]'),
+        ('wat_ptm_reminder', 'PTM_REMINDER', 'ptm_reminder', 'en_US', 'UTILITY', 'PENDING', 'Parent-teacher meeting reminder.', '["parentName","studentName","date","time"]'),
+        ('wat_school_announcement', 'SCHOOL_ANNOUNCEMENT', 'school_announcement', 'en_US', 'MARKETING', 'PENDING', 'General school announcement broadcast.', '["title","message"]'),
+        ('wat_teacher_meeting', 'TEACHER_MEETING', 'teacher_meeting', 'en_US', 'UTILITY', 'PENDING', 'Staff meeting notification to a teacher.', '["teacherName","date","time"]'),
+        ('wat_event_reminder', 'EVENT_REMINDER', 'event_reminder', 'en_US', 'UTILITY', 'PENDING', 'Sent ahead of a school event.', '["recipientName","eventName","date"]')
+      ON CONFLICT (name) DO NOTHING;
+
+      ALTER TABLE alumni ADD COLUMN IF NOT EXISTS source_student_id VARCHAR(50) REFERENCES students(id);
+      CREATE INDEX IF NOT EXISTS idx_alumni_source_student ON alumni(source_student_id);
+      -- Best-effort backfill from admission applications, since students created
+      -- before this column existed have no phone number recorded anywhere else.
+      UPDATE students s SET parent_phone = a.parent_phone
+        FROM admission_applications a
+        WHERE s.parent_phone IS NULL AND s.parent_email = a.parent_email AND a.parent_phone IS NOT NULL;
       -- Make new schema columns match (name, capacity default to null now)
       ALTER TABLE sections ALTER COLUMN name DROP NOT NULL;
       ALTER TABLE sections ALTER COLUMN capacity DROP NOT NULL;
@@ -430,6 +630,25 @@ export const initializeDatabase = async () => {
         end_time VARCHAR(10) NOT NULL,
         is_break BOOLEAN DEFAULT false
       );
+
+      -- Substitute-teacher assignments for a specific calendar date (timetable_entries
+      -- are recurring weekly templates; an absence only affects one actual date, so
+      -- substitutions key off (timetable_entry_id, date) rather than the entry alone).
+      CREATE TABLE IF NOT EXISTS timetable_substitutions (
+        id VARCHAR(50) PRIMARY KEY,
+        timetable_entry_id VARCHAR(50) NOT NULL REFERENCES timetable_entries(id) ON DELETE CASCADE,
+        date VARCHAR(20) NOT NULL,
+        original_teacher_id INTEGER NOT NULL,
+        substitute_teacher_id INTEGER,
+        reason VARCHAR(20) NOT NULL,
+        status VARCHAR(20) DEFAULT 'auto',
+        notified BOOLEAN DEFAULT false,
+        created_by VARCHAR(255),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(timetable_entry_id, date)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tt_sub_date ON timetable_substitutions(date);
+      CREATE INDEX IF NOT EXISTS idx_tt_sub_substitute ON timetable_substitutions(substitute_teacher_id);
 
       -- Fee module: relational roster references + a real payment ledger.
       ALTER TABLE fee_records ADD COLUMN IF NOT EXISTS class_id VARCHAR(50);
@@ -542,6 +761,13 @@ export const initializeDatabase = async () => {
         sort_order INT DEFAULT 0
       );
 
+      -- Standard government BPS grades (BPS-1 to BPS-22) — seeded once so the
+      -- BPS Grade dropdown on a teacher's profile isn't empty with no way to
+      -- populate it from the UI.
+      INSERT INTO pay_scales (id, label, sort_order)
+      SELECT 'bps-' || n, 'BPS-' || n, n FROM generate_series(1, 22) AS n
+      ON CONFLICT (label) DO NOTHING;
+
       CREATE TABLE IF NOT EXISTS teacher_qualifications (
         id VARCHAR(50) PRIMARY KEY,
         teacher_id INTEGER NOT NULL,
@@ -572,6 +798,57 @@ export const initializeDatabase = async () => {
       -- LMS tables
       CREATE TABLE IF NOT EXISTS courses (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255), code VARCHAR(50) UNIQUE, description TEXT, grade_level VARCHAR(100), teacher_name VARCHAR(255), credits INT, learning_outcomes TEXT[] DEFAULT '{}', prerequisites TEXT[] DEFAULT '{}', is_active BOOLEAN DEFAULT true);
       CREATE TABLE IF NOT EXISTS course_materials (id VARCHAR(50) PRIMARY KEY, course_id VARCHAR(50), title VARCHAR(255), type VARCHAR(50), url TEXT, created_at VARCHAR(50));
+      -- Notes (type='document', url = base64 data URI via the app's existing
+      -- readAsDataURL upload pattern) and Video Lectures (type='video', url =
+      -- a YouTube/Vimeo link, embedded via iframe — no video file upload,
+      -- there's no blob storage in this app and base64-in-DB doesn't scale to
+      -- video file sizes).
+      ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS file_name VARCHAR(255);
+      ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS description TEXT;
+      ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS created_by_user_id INTEGER;
+      ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS created_by_name VARCHAR(255);
+      CREATE INDEX IF NOT EXISTS idx_course_materials_course ON course_materials(course_id);
+
+      -- Class-wise textbook PDF library — same base64-in-TEXT convention as
+      -- course_materials.url above. subject_id is nullable (a book can cover
+      -- a whole class, not just one subject). Read from Examinations' Book
+      -- Library page, the AI Question Generator, and surfaced in LMS.
+      CREATE TABLE IF NOT EXISTS class_books (
+        id VARCHAR(50) PRIMARY KEY,
+        class_id VARCHAR(50) NOT NULL,
+        subject_id VARCHAR(50),
+        title VARCHAR(255) NOT NULL,
+        author VARCHAR(255),
+        file_name VARCHAR(255),
+        pdf_data TEXT NOT NULL,
+        uploaded_by_user_id INTEGER,
+        uploaded_by_name VARCHAR(255),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        is_active BOOLEAN DEFAULT true
+      );
+      CREATE INDEX IF NOT EXISTS idx_class_books_class ON class_books(class_id);
+
+      -- AI-assisted (and manually added) question bank generated from a
+      -- class_books PDF. Draft items are reviewed/edited before Approve;
+      -- approved items can be pushed into an online exam's question bank.
+      CREATE TABLE IF NOT EXISTS question_bank (
+        id VARCHAR(50) PRIMARY KEY,
+        book_id VARCHAR(50) NOT NULL,
+        class_id VARCHAR(50) NOT NULL,
+        subject_id VARCHAR(50),
+        question_type VARCHAR(20) NOT NULL,
+        question_text TEXT NOT NULL,
+        options JSONB DEFAULT '[]',
+        correct_answer TEXT,
+        marks INT DEFAULT 1,
+        difficulty VARCHAR(20) DEFAULT 'Medium',
+        status VARCHAR(20) DEFAULT 'draft',
+        generated_by_ai BOOLEAN DEFAULT true,
+        created_by_user_id INTEGER,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_question_bank_book ON question_bank(book_id);
+
       CREATE TABLE IF NOT EXISTS discussion_forums (id VARCHAR(50) PRIMARY KEY, course_id VARCHAR(50), topic VARCHAR(255), author_name VARCHAR(255), content TEXT, created_at VARCHAR(50));
       CREATE TABLE IF NOT EXISTS forum_replies (id VARCHAR(50) PRIMARY KEY, forum_id VARCHAR(50), author_name VARCHAR(255), content TEXT, created_at VARCHAR(50));
       CREATE TABLE IF NOT EXISTS online_quizzes (id VARCHAR(50) PRIMARY KEY, course_id VARCHAR(50), title VARCHAR(255), questions JSONB DEFAULT '[]', total_marks INT, time_limit INT, due_date VARCHAR(50));
@@ -605,7 +882,49 @@ export const initializeDatabase = async () => {
       CREATE TABLE IF NOT EXISTS salary_structures (id VARCHAR(50) PRIMARY KEY, name VARCHAR(255), employee_id INT, employee_name VARCHAR(255), basic_salary INT, allowances JSONB DEFAULT '[]', deductions JSONB DEFAULT '[]', total_salary INT, is_active BOOLEAN DEFAULT true);
       CREATE TABLE IF NOT EXISTS payslips (id VARCHAR(50) PRIMARY KEY, employee_id INT, employee_name VARCHAR(255), month VARCHAR(20), year INT, basic_salary INT, allowances JSONB DEFAULT '[]', deductions JSONB DEFAULT '[]', gross_pay INT, total_deductions INT, net_pay INT, tax_amount INT DEFAULT 0, overtime_pay INT DEFAULT 0, status VARCHAR(50) DEFAULT 'Draft', generated_at VARCHAR(50));
       CREATE TABLE IF NOT EXISTS overtime_records (id VARCHAR(50) PRIMARY KEY, employee_id INT, employee_name VARCHAR(255), date VARCHAR(50), hours FLOAT DEFAULT 0, rate INT DEFAULT 0, amount INT DEFAULT 0, status VARCHAR(50) DEFAULT 'Pending');
-      
+
+      -- Unify staff identity: employees becomes the HR extension record for
+      -- EVERY staff member (teachers included), 1:1 with users. Prisma's
+      -- migrations already enforce leave_requests/salary_structures/payslips/
+      -- performance_evaluations.employee_id -> employees.user_id (verified
+      -- live) — that's the real reference target, not users.id directly, so
+      -- "staff" here always means "has an employees row."
+      ALTER TABLE employees ADD COLUMN IF NOT EXISTS pay_scale_id VARCHAR(50);
+      -- user_id is NOT NULL, so the legacy user_id=0 phantom (from HR's old
+      -- "Add Employee" flow, which never created a real login) can't be
+      -- nulled out — it's deleted instead. It never resolved to a real person.
+      DELETE FROM employees WHERE user_id NOT IN (SELECT id FROM users);
+      DO $$ BEGIN
+        ALTER TABLE employees ADD CONSTRAINT employees_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+      -- Backfill: every existing teacher gets a linked employees row so they
+      -- immediately appear in HR/Payroll/Leave staff pickers.
+      INSERT INTO employees (id, user_id, name, email, phone, department, designation, employment_type, joining_date, cnic, address, emergency_contact, emergency_phone, qualification, experience, status, bank_name, bank_account, profile_photo, pay_scale_id)
+      SELECT 'emp_tp_' || tp.user_id, tp.user_id, u.name, u.email, COALESCE(tp.phone, ''), 'Teaching', COALESCE(tp.designation, ''), COALESCE(tp.employment_type, 'fulltime'), COALESCE(tp.joining_date, ''), COALESCE(tp.cnic, ''), COALESCE(tp.address, ''), '', '', COALESCE(tp.qualification, ''), COALESCE(tp.experience_years, 0), CASE WHEN tp.status = 'active' THEN 'Active' WHEN tp.status = 'inactive' THEN 'Inactive' ELSE 'Active' END, '', '', '', tp.pay_scale_id
+      FROM teacher_profiles tp
+      JOIN users u ON u.id = tp.user_id
+      WHERE NOT EXISTS (SELECT 1 FROM employees e WHERE e.user_id = tp.user_id)
+      ON CONFLICT DO NOTHING;
+
+      -- Note: teacher_profiles.employee_id is a separate, admin-typed
+      -- human-readable staff code (e.g. "EMP-1004") shown in the Teacher UI —
+      -- it is NOT the link to the employees row above. The real link is
+      -- teacher_profiles.user_id = employees.user_id (both unique), so no
+      -- write to teacher_profiles.employee_id happens here.
+
+      -- employee_id on Payroll/Leave/Performance/Contract/Overtime is
+      -- enforced (by Prisma) to reference employees.user_id, not any users.id
+      -- — clean up rows from the old hand-typed forms that never matched a
+      -- real employees row (employee_id/user_id are NOT NULL, so delete
+      -- rather than null).
+      DELETE FROM leave_requests WHERE employee_id NOT IN (SELECT user_id FROM employees);
+      DELETE FROM salary_structures WHERE employee_id NOT IN (SELECT user_id FROM employees);
+      DELETE FROM payslips WHERE employee_id NOT IN (SELECT user_id FROM employees);
+      DELETE FROM performance_evaluations WHERE employee_id NOT IN (SELECT user_id FROM employees);
+      DELETE FROM contract_records WHERE employee_id NOT IN (SELECT user_id FROM employees);
+      DELETE FROM overtime_records WHERE employee_id NOT IN (SELECT user_id FROM employees);
+
       -- Accounting tables
       CREATE TABLE IF NOT EXISTS account_entries (id VARCHAR(50) PRIMARY KEY, date VARCHAR(50), type VARCHAR(20), category VARCHAR(100), description TEXT, amount INT, payment_method VARCHAR(50), reference VARCHAR(100), created_by VARCHAR(255));
       CREATE TABLE IF NOT EXISTS budget_allocations (id VARCHAR(50) PRIMARY KEY, department VARCHAR(100), category VARCHAR(100), allocated_amount INT, spent_amount INT DEFAULT 0, fiscal_year VARCHAR(20), notes TEXT DEFAULT '');
@@ -648,6 +967,11 @@ export const initializeDatabase = async () => {
       
       -- Online Exam tables
       CREATE TABLE IF NOT EXISTS online_exams (id VARCHAR(50) PRIMARY KEY, title VARCHAR(255), class_name VARCHAR(100), subject VARCHAR(100), duration INT, total_marks INT, passing_marks INT, start_time VARCHAR(50), end_time VARCHAR(50), instructions TEXT DEFAULT '', proctoring_enabled BOOLEAN DEFAULT false, shuffle_questions BOOLEAN DEFAULT false, status VARCHAR(50) DEFAULT 'Draft');
+      -- Nullable link to a real exam_subjects row: when set, a submitted
+      -- attempt's score is written into marks_entries so this online exam
+      -- counts toward the student's real term result/report card instead of
+      -- staying a disconnected practice quiz.
+      ALTER TABLE online_exams ADD COLUMN IF NOT EXISTS exam_subject_id VARCHAR(50);
       CREATE TABLE IF NOT EXISTS online_exam_questions (id VARCHAR(50) PRIMARY KEY, exam_id VARCHAR(50), type VARCHAR(50), question TEXT, options JSONB DEFAULT '[]', correct_answer TEXT, marks INT);
       CREATE TABLE IF NOT EXISTS online_exam_attempts (id VARCHAR(50) PRIMARY KEY, exam_id VARCHAR(50), student_id VARCHAR(50), student_name VARCHAR(255), answers JSONB DEFAULT '[]', score INT DEFAULT 0, started_at VARCHAR(50), submitted_at VARCHAR(50), status VARCHAR(50) DEFAULT 'InProgress', proctoring_logs TEXT);
       
@@ -717,20 +1041,29 @@ export const initializeDatabase = async () => {
         'teachers.view', 'teachers.create', 'teachers.edit', 'teachers.delete',
         'admissions.view', 'admissions.approve', 'admissions.reject',
         'classes.view', 'classes.create', 'classes.edit', 'classes.delete',
-        'attendance.view', 'attendance.mark',
+        'assignments.view', 'assignments.create', 'assignments.grade', 'assignments.delete',
+        'attendance.view', 'attendance.mark', 'attendance.staff.manage',
         'exams.view', 'exams.create', 'exams.edit', 'exams.delete', 'exams.online',
         'results.view', 'results.enter', 'results.approve', 'results.publish',
         'fees.view', 'fees.create', 'fees.edit', 'fees.delete',
-        'timetable.view', 'timetable.create', 'timetable.edit', 'timetable.delete',
+        'timetable.view', 'timetable.create', 'timetable.edit', 'timetable.delete', 'timetable.substitute',
         'announcements.view', 'announcements.create', 'announcements.delete',
+        'library.view', 'library.create', 'library.edit', 'library.delete',
+        'messages.view',
+        'transport.view', 'transport.create', 'transport.edit',
+        'reports.view', 'reports.export',
         'settings.view', 'settings.edit',
         'users.view', 'users.create', 'users.edit', 'users.delete',
       ];
       const roleDefaults: Record<string, string[]> = {
         ADMIN: permissions,
-        TEACHER: ['students.view', 'attendance.view', 'attendance.mark', 'exams.view', 'exams.online', 'results.view', 'results.enter', 'timetable.view', 'announcements.view', 'fees.view', 'classes.view'],
-        STUDENT: ['students.view', 'exams.view', 'exams.online', 'results.view', 'fees.view', 'timetable.view', 'announcements.view', 'attendance.view'],
-        PARENT: ['students.view', 'results.view', 'fees.view', 'announcements.view', 'attendance.view'],
+        TEACHER: ['students.view', 'attendance.view', 'attendance.mark', 'exams.view', 'exams.online', 'results.view', 'results.enter', 'timetable.view', 'announcements.view', 'fees.view', 'classes.view', 'assignments.view', 'assignments.create', 'assignments.grade', 'library.view', 'messages.view', 'transport.view'],
+        STUDENT: ['students.view', 'exams.view', 'exams.online', 'results.view', 'fees.view', 'timetable.view', 'announcements.view', 'attendance.view', 'assignments.view', 'library.view', 'messages.view', 'transport.view'],
+        PARENT: ['students.view', 'results.view', 'fees.view', 'announcements.view', 'attendance.view', 'assignments.view', 'messages.view', 'transport.view'],
+        // Generic non-teaching staff (front desk, accounts, admin support). Starts
+        // minimal — real access for a given employee comes from a custom role
+        // layered on top, configured per hire in the Permissions grid.
+        EMPLOYEE: ['timetable.view', 'announcements.view', 'messages.view'],
       };
       for (const [role, perms] of Object.entries(roleDefaults)) {
         for (const perm of permissions) {
@@ -750,6 +1083,59 @@ export const initializeDatabase = async () => {
         `INSERT INTO role_permissions (role, permission, enabled) VALUES ($1, 'exams.online', $2) ON CONFLICT (role, permission) DO NOTHING`,
         [role, enabled]
       );
+    }
+
+    // Same backfill problem for 'timetable.substitute' (substitution-engine review
+    // screen) — ADMIN-only by default, same as the other non-'view' timetable perms.
+    for (const [role, enabled] of [['ADMIN', true], ['TEACHER', false], ['STUDENT', false], ['PARENT', false], ['EMPLOYEE', false]] as const) {
+      await query(
+        `INSERT INTO role_permissions (role, permission, enabled) VALUES ($1, 'timetable.substitute', $2) ON CONFLICT (role, permission) DO NOTHING`,
+        [role, enabled]
+      );
+    }
+
+    // Same backfill problem for the EMPLOYEE role added after go-live: an
+    // already-seeded install never re-runs the count===0 block above, so grant
+    // its minimal default set (and nothing else) via ON CONFLICT DO NOTHING.
+    {
+      const employeePerms = ['students.view','teachers.view','admissions.view','classes.view','attendance.view','attendance.mark','exams.view','exams.online','results.view','fees.view','timetable.view','timetable.create','timetable.edit','timetable.delete','announcements.view','announcements.create','announcements.delete','settings.view','users.view'];
+      const employeeDefaults = new Set(['timetable.view', 'announcements.view']);
+      for (const perm of employeePerms) {
+        await query(
+          `INSERT INTO role_permissions (role, permission, enabled) VALUES ('EMPLOYEE', $1, $2) ON CONFLICT (role, permission) DO NOTHING`,
+          [perm, employeeDefaults.has(perm)]
+        );
+      }
+    }
+
+    // Backfill for Assignments/Messages/Library/Transport/Reports — these five
+    // sidebar items had zero permission gating until this pass, so an
+    // already-seeded install never got role_permissions rows for them. Without
+    // this, every role would see the new gate and lose access outright the
+    // moment it goes live, rather than keeping the access they already had.
+    {
+      const newModulePerms: Record<string, boolean> = {
+        'assignments.view': true, 'assignments.create': true, 'assignments.grade': true, 'assignments.delete': true,
+        'messages.view': true,
+        'library.view': true, 'library.create': true, 'library.edit': true, 'library.delete': true,
+        'transport.view': true, 'transport.create': true, 'transport.edit': true,
+        'reports.view': true, 'reports.export': true,
+      };
+      const roleOverrides: Record<string, Record<string, boolean>> = {
+        ADMIN: newModulePerms,
+        TEACHER: { 'assignments.view': true, 'assignments.create': true, 'assignments.grade': true, 'library.view': true, 'messages.view': true, 'transport.view': true },
+        STUDENT: { 'assignments.view': true, 'library.view': true, 'messages.view': true, 'transport.view': true },
+        PARENT: { 'assignments.view': true, 'messages.view': true, 'transport.view': true },
+        EMPLOYEE: { 'messages.view': true },
+      };
+      for (const [role, overrides] of Object.entries(roleOverrides)) {
+        for (const perm of Object.keys(newModulePerms)) {
+          await query(
+            `INSERT INTO role_permissions (role, permission, enabled) VALUES ($1, $2, $3) ON CONFLICT (role, permission) DO NOTHING`,
+            [role, perm, !!overrides[perm]]
+          );
+        }
+      }
     }
 
     // Default grade scales

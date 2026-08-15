@@ -10,7 +10,7 @@ import {
   Calculator, MessageSquare, PieChart, X,
   UserPlus, type LucideIcon, User, BookMarked,
   Briefcase, Package, Award,
-  Radio, Presentation, HeartHandshake, ShieldCheck, History, Bus,
+  Radio, Presentation, HeartHandshake, ShieldCheck, History, Bus, MessageCircle, KeyRound,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -24,7 +24,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useAppState } from "@/lib/state-context";
 import { useSidebarCollapse } from "@/app/(dashboard)/layout";
 import { logout, getSession } from "@/app/actions/auth";
-import { fetchRolePermissionsDB } from "@/app/actions/features";
+import { fetchRolePermissionsDB, fetchMyCustomRoleIdDB } from "@/app/actions/features";
 import { useDarkMode } from "@/hooks/use-dark-mode";
 import { useLanguage } from "@/hooks/use-language";
 
@@ -71,12 +71,13 @@ const navItems: NavItem[] = [
       { label: "Report Cards", href: "/exams/report-cards", permission: "exams.report-cards" },
       { label: "Analytics", href: "/exams/analytics", permission: "exams.analytics" },
       { label: "Online Exams", href: "/exams/online", permission: "exams.online" },
-      { label: "Class Compilations", href: "/results", permission: "results.view" },
+      { label: "Book Library & AI Questions", href: "/exams/books", permission: "exams.books" },
+      { label: "My Results", href: "/results", permission: "results.view" },
       { label: "Settings", href: "/exams/settings", permission: "exams.settings" },
     ],
     permission: "exams.view",
   },
-  { icon: ClipboardList, label: "Assignments", href: "/assignments" },
+  { icon: ClipboardList, label: "Assignments", href: "/assignments", permission: "assignments.view" },
   { icon: CreditCard, label: "Fees", href: "/fees", permission: "fees.view" },
   { icon: Calculator, label: "Accounting", href: "/accounting", permission: "accounting.view" },
   {
@@ -106,14 +107,16 @@ const navItems: NavItem[] = [
     ],
     permission: "discipline.view",
   },
-  { icon: MessageSquare, label: "Messages", href: "/messages" },
+  { icon: MessageSquare, label: "Messages", href: "/messages", permission: "messages.view" },
   { icon: Radio, label: "Communications", href: "/communications", permission: "communications.view" },
-  { icon: Library, label: "Library", href: "/library" },
-  { icon: Bus, label: "Transport", href: "/transport" },
+  { icon: MessageCircle, label: "WhatsApp", href: "/whatsapp", permission: "whatsapp.view" },
+  { icon: Library, label: "Library", href: "/library", permission: "library.view" },
+  { icon: Bus, label: "Transport", href: "/transport", permission: "transport.view" },
   { icon: Presentation, label: "LMS", href: "/lms", permission: "lms.view" },
   { icon: HeartHandshake, label: "Parents", href: "/parents", permission: "parents.view" },
-  { icon: BarChart3, label: "Reports", href: "/reports" },
+  { icon: BarChart3, label: "Reports", href: "/reports", permission: "reports.view" },
   { icon: ShieldCheck, label: "Users", href: "/users", permission: "users.view" },
+  { icon: KeyRound, label: "Permissions", href: "/permissions", permission: "settings.edit" },
   { icon: History, label: "Audit Log", href: "/audit-log", permission: "audit.view" },
   { icon: Settings, label: "Settings", href: "/settings", permission: "settings.view" },
 ];
@@ -149,12 +152,20 @@ export function AppSidebar() {
   const toggleParent = useCallback((label: string) => {
     setExpandedParent(prev => prev === label ? null : label);
   }, []);
+  const [customRoleId, setCustomRoleId] = useState<string | null>(null);
+
   useEffect(() => {
-    getSession().then(s => {
+    getSession().then(async s => {
       setSessionName(s?.name ?? null);
       setSessionRole(s?.role ?? null);
       if (s?.role) {
-        fetchRolePermissionsDB(s.role).then(setPermissions);
+        // Looked up live (not baked into the session JWT) so assigning a
+        // custom role applies immediately without a re-login.
+        const cr = await fetchMyCustomRoleIdDB();
+        setCustomRoleId(cr);
+        if (s.role !== "ADMIN" || cr) {
+          fetchRolePermissionsDB(cr || s.role).then(setPermissions);
+        }
       }
     });
     setFavorites(JSON.parse(localStorage.getItem("sc_favorites") || "[]"));
@@ -164,9 +175,10 @@ export function AppSidebar() {
 
   const hasPermission = useCallback((perm?: string) => {
     if (!perm) return true;
-    if (sessionRole === "ADMIN") return true;
+    // A custom role narrows an ADMIN's automatic bypass too — see usePermission().
+    if (sessionRole === "ADMIN" && !customRoleId) return true;
     return permissions[perm] === true;
-  }, [permissions, sessionRole]);
+  }, [permissions, sessionRole, customRoleId]);
 
   const visibleNavItems = navItems.filter(item => hasPermission(item.permission));
 

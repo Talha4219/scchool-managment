@@ -29,6 +29,7 @@ import {
   fetchAcademicYearsDB, fetchClassesDB, fetchEnrollmentsDB,
   fetchReportCardsDB, fetchStudentTermResultsDB, fetchTermExamsDB,
 } from "@/app/actions/academic-core";
+import { fetchStaffAttendanceSummaryDB, fetchStaffAttendanceDB } from "@/app/actions/staff-attendance";
 import { useLanguage } from "@/hooks/use-language";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -110,6 +111,98 @@ function SkeletonCard() {
 
 const fmtToday = () => new Date().toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
 const todayISO = () => new Date().toISOString().split("T")[0];
+
+const ATT_STATUS_BADGE: Record<string, string> = {
+  Present: "bg-green-100 text-green-700", Absent: "bg-red-100 text-red-700",
+  Late: "bg-yellow-100 text-yellow-700", Leave: "bg-blue-100 text-blue-700", "Half Day": "bg-orange-100 text-orange-700",
+};
+
+// Self-service widget — a teacher's own attendance, distinct from the
+// "My Classes' Attendance" KPI above it (which is their students', not theirs).
+function MyAttendanceWidget() {
+  const [today, setToday] = useState<string | null>(null);
+  const [percentage, setPercentage] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    // Dev-server action POSTs intermittently 503 under Turbopack; retry a
+    // few times before giving up so a transient blip doesn't show as "no data".
+    const withRetry = async <T,>(fn: () => Promise<T>, attempts = 5): Promise<T> => {
+      let lastErr: unknown;
+      for (let i = 0; i < attempts; i++) {
+        try { return await fn(); } catch (err) {
+          lastErr = err;
+          if (i < attempts - 1) await new Promise(r => setTimeout(r, 600 * (i + 1)));
+        }
+      }
+      throw lastErr;
+    };
+
+    getSession().then((s) => {
+      if (!s || cancelled) return;
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split("T")[0];
+      // Independent fetches — a failure on one shouldn't discard a success on the other.
+      withRetry(() => fetchStaffAttendanceSummaryDB(s.userId, monthStart, monthEnd))
+        .then(summary => { if (!cancelled) setPercentage(summary.percentage); })
+        .catch(() => {});
+      withRetry(() => fetchStaffAttendanceDB(todayISO(), s.userId))
+        .then(todayRecords => { if (!cancelled) setToday(todayRecords[0]?.status ?? null); })
+        .catch(() => {});
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  return (
+    <SoftCard title="My Attendance" action={<Link href="/attendance" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">View History <ChevronRight className="h-3 w-3" /></Link>}>
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-xs text-muted-foreground">Today</p>
+          <Badge className={`mt-1 border-0 ${today ? ATT_STATUS_BADGE[today] || "bg-secondary" : "bg-secondary text-muted-foreground"}`}>
+            {today || "Not marked yet"}
+          </Badge>
+        </div>
+        <div className="text-right">
+          <p className="text-xs text-muted-foreground">This Month</p>
+          <p className="text-xl font-bold text-foreground">{percentage === null ? "—" : `${percentage}%`}</p>
+        </div>
+      </div>
+    </SoftCard>
+  );
+}
+
+// Shows nothing when the teacher isn't covering anyone today — no empty-state
+// clutter on a dashboard that's mostly zeros on a slow day already.
+function CoveringTodayWidget() {
+  const [items, setItems] = useState<{ id: string; className: string; subjectName: string; startTime: string; endTime: string }[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSession().then(async (s) => {
+      if (!s || cancelled) return;
+      const { fetchSubstitutionsForDateDB } = await import("@/app/actions/substitutions");
+      const subs = await fetchSubstitutionsForDateDB(todayISO(), { teacherId: s.userId });
+      if (!cancelled) setItems(subs.map(sub => ({ id: sub.id, className: sub.className, subjectName: sub.subjectName, startTime: sub.startTime, endTime: sub.endTime })));
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!items || items.length === 0) return null;
+
+  return (
+    <SoftCard title="Covering Today" action={<Badge variant="outline" className="text-[10px]">{items.length} period{items.length > 1 ? "s" : ""}</Badge>}>
+      <div className="space-y-2">
+        {items.map(i => (
+          <div key={i.id} className="flex items-center justify-between text-sm">
+            <span className="font-medium text-foreground">{i.className} · {i.subjectName}</span>
+            <span className="text-xs text-muted-foreground">{i.startTime}–{i.endTime}</span>
+          </div>
+        ))}
+      </div>
+    </SoftCard>
+  );
+}
 
 // ── Main Dashboard ──────────────────────────────────────────────────────────
 export default function DashboardPage() {
@@ -443,6 +536,8 @@ export default function DashboardPage() {
           </div>
 
           <div className="space-y-4">
+            <MyAttendanceWidget />
+            <CoveringTodayWidget />
             <SoftCard title={t("dash.resultsOverview")} action={<Badge variant="outline" className="text-[10px]">{t("dash.thisTerm")}</Badge>}>
               <div className="h-[160px] -ml-2">
                 <ResponsiveContainer width="100%" height="100%">
@@ -583,26 +678,26 @@ export default function DashboardPage() {
     <div className="space-y-6">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="dashboard-heading">System Overview</h1>
-          <p className="text-sm text-muted-foreground mt-1">Welcome back. Here is the latest summary.</p>
+          <h1 className="dashboard-heading">{t("dash.systemOverview")}</h1>
+          <p className="text-sm text-muted-foreground mt-1">{t("dash.adminWelcomeSub")}</p>
         </div>
         <Badge variant="outline" className="h-9 px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5">
-          <CalendarDays className="h-3.5 w-3.5" /> {academicYearName || "Current Term"}
+          <CalendarDays className="h-3.5 w-3.5" /> {academicYearName || t("dash.currentTerm")}
         </Badge>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard label="Total Students" value={<AnimatedCounter value={totalStudents} />} valueColor="text-primary" sub={`+${studentTrend}% vs last term`} trend="up" icon={Users} href="/students" />
-        <KpiCard label="Total Teachers" value={<AnimatedCounter value={teachers.length} />} sub="Optimal staffing level" icon={GraduationCap} href="/teachers" />
-        <KpiCard label="Monthly Revenue" value={`Rs.${currentMonthFees.toLocaleString()}`} valueColor="text-warning" sub={`${feeTrend >= 0 ? "+" : ""}${feeTrend}% vs last month`} trend={feeTrend >= 0 ? "up" : "down"} icon={Wallet} href="/fees" />
-        <KpiCard label="Overall Attendance" value={`${attPct}%`} valueColor={attPct >= 90 ? "text-foreground" : "text-destructive"} sub="vs last week" trend={attPct >= 90 ? "up" : "down"} icon={Activity} href="/attendance" />
+        <KpiCard label={t("dash.totalStudents")} value={<AnimatedCounter value={totalStudents} />} valueColor="text-primary" sub={`+${studentTrend}% ${t("dash.vsLastTerm")}`} trend="up" icon={Users} href="/students" />
+        <KpiCard label={t("dash.totalTeachers")} value={<AnimatedCounter value={teachers.length} />} sub={t("dash.optimalStaffing")} icon={GraduationCap} href="/teachers" />
+        <KpiCard label={t("dash.monthlyRevenue")} value={`Rs.${currentMonthFees.toLocaleString()}`} valueColor="text-warning" sub={`${feeTrend >= 0 ? "+" : ""}${feeTrend}% ${t("dash.vsLastMonth")}`} trend={feeTrend >= 0 ? "up" : "down"} icon={Wallet} href="/fees" />
+        <KpiCard label={t("dash.overallAttendance")} value={`${attPct}%`} valueColor={attPct >= 90 ? "text-foreground" : "text-destructive"} sub={t("dash.vsLastWeek")} trend={attPct >= 90 ? "up" : "down"} icon={Activity} href="/attendance" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <SoftCard title="Enrollment Trends" className="lg:col-span-2" action={
+        <SoftCard title={t("dash.enrollmentTrends")} className="lg:col-span-2" action={
           <div className="flex gap-1 bg-secondary/60 rounded-xl p-1">
-            <button className="px-3 py-1 text-[11px] font-semibold rounded-lg bg-card shadow-sm text-foreground">6 Months</button>
-            <button className="px-3 py-1 text-[11px] font-semibold rounded-lg text-muted-foreground">1 Year</button>
+            <button className="px-3 py-1 text-[11px] font-semibold rounded-lg bg-card shadow-sm text-foreground">{t("dash.sixMonths")}</button>
+            <button className="px-3 py-1 text-[11px] font-semibold rounded-lg text-muted-foreground">{t("dash.oneYear")}</button>
           </div>
         }>
           <div className="h-[280px] -ml-2">
@@ -624,13 +719,13 @@ export default function DashboardPage() {
           </div>
         </SoftCard>
 
-        <SoftCard title="Pending Approvals" action={<Badge className="h-5 min-w-5 px-1.5 rounded-full text-[10px]">{pendingApps.length + pendingLeaves.length}</Badge>}>
+        <SoftCard title={t("dash.pendingApprovals")} action={<Badge className="h-5 min-w-5 px-1.5 rounded-full text-[10px]">{pendingApps.length + pendingLeaves.length}</Badge>}>
           <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
             {pendingApps.slice(0, 3).map(app => (
               <div key={app.id} className="flex items-start gap-3 p-3 rounded-2xl bg-secondary/40">
                 <div className="h-8 w-8 rounded-xl bg-primary/10 flex items-center justify-center shrink-0"><UserPlus className="h-3.5 w-3.5 text-primary" /></div>
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-foreground">New Admission</p>
+                  <p className="text-xs font-bold text-foreground">{t("dash.newAdmission")}</p>
                   <p className="text-[10px] text-muted-foreground">{app.firstName} {app.lastName} ({app.applyingForClass})</p>
                 </div>
               </div>
@@ -639,21 +734,21 @@ export default function DashboardPage() {
               <div key={l.id} className="flex items-start gap-3 p-3 rounded-2xl bg-secondary/40">
                 <div className="h-8 w-8 rounded-xl bg-warning/10 flex items-center justify-center shrink-0"><Clock className="h-3.5 w-3.5 text-warning" /></div>
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-foreground">Staff Leave Request</p>
-                  <p className="text-[10px] text-muted-foreground">{l.employeeName} · {l.days || ""} Days</p>
+                  <p className="text-xs font-bold text-foreground">{t("dash.staffLeaveRequest")}</p>
+                  <p className="text-[10px] text-muted-foreground">{l.employeeName} · {l.days || ""} {t("dash.days")}</p>
                 </div>
               </div>
             ))}
-            {pendingApps.length + pendingLeaves.length === 0 && <p className="text-xs text-muted-foreground text-center py-8">Nothing pending</p>}
+            {pendingApps.length + pendingLeaves.length === 0 && <p className="text-xs text-muted-foreground text-center py-8">{t("dash.nothingPending")}</p>}
           </div>
           <Link href="/admissions">
-            <Button variant="ghost" className="w-full h-9 text-xs font-semibold rounded-xl mt-3 text-primary hover:text-primary">View All Approvals</Button>
+            <Button variant="ghost" className="w-full h-9 text-xs font-semibold rounded-xl mt-3 text-primary hover:text-primary">{t("dash.viewAllApprovals")}</Button>
           </Link>
         </SoftCard>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <SoftCard title="Recent Admissions" className="lg:col-span-2" action={<Link href="/admissions" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">View All <ChevronRight className="h-3 w-3" /></Link>}>
+        <SoftCard title={t("dash.recentAdmissions")} className="lg:col-span-2" action={<Link href="/admissions" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">{t("dash.viewAll")} <ChevronRight className="h-3 w-3" /></Link>}>
           <div className="space-y-1">
             {applications.slice(0, 4).map(app => (
               <div key={app.id} className="flex items-center gap-3 p-3 rounded-2xl hover:bg-secondary/50 transition-colors">
@@ -666,16 +761,16 @@ export default function DashboardPage() {
                 <Badge className={`text-[10px] shrink-0 ${app.status === "Approved" ? "bg-success/15 text-success" : app.status === "Rejected" ? "bg-destructive/15 text-destructive" : "bg-warning/15 text-warning"}`}>{app.status}</Badge>
               </div>
             ))}
-            {applications.length === 0 && <p className="text-xs text-muted-foreground text-center py-6">No admissions yet</p>}
+            {applications.length === 0 && <p className="text-xs text-muted-foreground text-center py-6">{t("dash.noAdmissionsYet")}</p>}
           </div>
         </SoftCard>
 
-        <SoftCard title="Financial Summary">
+        <SoftCard title={t("dash.financialSummary")}>
           <div className="space-y-3">
             {[
-              { label: "Collected", value: paidFees, color: "bg-success" },
-              { label: "Pending", value: feeRecords.filter(f => f.status === "Unpaid").reduce((s, f) => s + f.amount, 0), color: "bg-warning" },
-              { label: "Overdue", value: feeRecords.filter(f => f.status === "Overdue").reduce((s, f) => s + f.amount, 0), color: "bg-destructive" },
+              { label: t("dash.collected"), value: paidFees, color: "bg-success" },
+              { label: t("dash.pending"), value: feeRecords.filter(f => f.status === "Unpaid").reduce((s, f) => s + f.amount, 0), color: "bg-warning" },
+              { label: t("dash.overdue"), value: feeRecords.filter(f => f.status === "Overdue").reduce((s, f) => s + f.amount, 0), color: "bg-destructive" },
             ].map(row => {
               const pct = totalFees > 0 ? Math.round((row.value / totalFees) * 100) : 0;
               return (
@@ -691,11 +786,11 @@ export default function DashboardPage() {
           </div>
           <div className="flex items-center justify-between mt-4 pt-4 border-t border-border">
             <div>
-              <p className="text-[10px] text-muted-foreground font-medium">Net Balance</p>
+              <p className="text-[10px] text-muted-foreground font-medium">{t("dash.netBalance")}</p>
               <p className="text-lg font-bold text-success">+Rs.{(paidFees - pendingFeesCount * 0).toLocaleString()}</p>
             </div>
             <div className="text-right">
-              <p className="text-[10px] text-muted-foreground font-medium">Collection Rate</p>
+              <p className="text-[10px] text-muted-foreground font-medium">{t("dash.collectionRate")}</p>
               <p className="text-lg font-bold text-primary">{totalFees > 0 ? Math.round((paidFees / totalFees) * 100) : 0}%</p>
             </div>
           </div>
@@ -703,9 +798,9 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <KpiCard label="Library" value={totalBooks} sub={`${totalIssues} issued`} icon={Library} iconColor="text-info" href="/library" />
-        <KpiCard label="Classes & Sections" value={totalClasses} sub={`${totalSections} sections`} icon={Building2} iconColor="text-primary" href="/classes" />
-        <KpiCard label="Exams" value={exams.length} sub={`${recentExams.length} upcoming`} icon={FileText} iconColor="text-destructive" href="/exams" />
+        <KpiCard label={t("dash.library")} value={totalBooks} sub={`${totalIssues} ${t("dash.issued")}`} icon={Library} iconColor="text-info" href="/library" />
+        <KpiCard label={t("dash.classesAndSections")} value={totalClasses} sub={`${totalSections} ${t("dash.sections")}`} icon={Building2} iconColor="text-primary" href="/classes" />
+        <KpiCard label={t("dash.exams")} value={exams.length} sub={`${recentExams.length} ${t("dash.upcoming")}`} icon={FileText} iconColor="text-destructive" href="/exams" />
       </div>
     </div>
   );

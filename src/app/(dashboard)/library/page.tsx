@@ -16,6 +16,8 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
+import { usePermission } from "@/hooks/use-permission";
+import { Unauthorized } from "@/components/unauthorized";
 import { LibraryBook, BookIssue } from "@/lib/types";
 import { defaultLibraryBooks } from "@/lib/default-data";
 import {
@@ -38,6 +40,7 @@ const blankBook: Omit<LibraryBook, "id"> = {
 export default function LibraryPage() {
   const { activeRole, students } = useAppState();
   const { toast } = useToast();
+  const { can, loaded: permsLoaded } = usePermission();
 
   const [books, setBooks] = useState<LibraryBook[]>([]);
   const [issues, setIssues] = useState<BookIssue[]>([]);
@@ -139,6 +142,9 @@ export default function LibraryPage() {
     toast({ title: "Fine paid successfully." });
     loadData();
   };
+
+  if (!permsLoaded) return null;
+  if (!can("library.view")) return <Unauthorized />;
 
   if (isStudent) {
     return (

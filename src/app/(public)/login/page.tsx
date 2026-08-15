@@ -98,7 +98,7 @@ export default function LoginPage() {
 
             {/* Error */}
             {error && (
-              <div className="flex items-center gap-2.5 text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
+              <div role="alert" className="flex items-center gap-2.5 text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
                 <ShieldCheck className="w-4 h-4 shrink-0 text-red-500" />
                 {error}
               </div>
