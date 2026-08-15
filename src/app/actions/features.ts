@@ -2044,10 +2044,15 @@ export async function approveLeaveDB(id: string, approvedBy: string): Promise<{ 
     if (leaveRes.rows.length > 0) {
       const { employee_id, start_date, end_date } = leaveRes.rows[0];
       const { generateSubstitutionsForTeacherDateDB } = await import('./substitutions');
+      // Build each date as a plain Y-M-D string instead of Date#toISOString() —
+      // toISOString() converts to UTC first, which silently shifts the date by
+      // one day in any timezone ahead of UTC (confirmed live: this always
+      // generated substitutions for the day BEFORE the actual leave date).
       const start = new Date(`${start_date}T00:00:00`);
       const end = new Date(`${end_date}T00:00:00`);
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        await generateSubstitutionsForTeacherDateDB(employee_id, d.toISOString().split('T')[0], 'leave');
+        const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        await generateSubstitutionsForTeacherDateDB(employee_id, dateStr, 'leave');
       }
     }
     return {};

@@ -1,0 +1,12 @@
+npm verbose cli C:\Program Files\nodejs\node.exe C:\Users\11 TRD\AppData\Roaming\npm\node_modules\npm\bin\npm-cli.js
+npm info using npm@11.4.2
+npm info using node@v22.17.0
+npm verbose title npm install next@15.5.23
+npm verbose argv "install" "next@15.5.23" "--loglevel" "verbose"
+npm verbose logfile logs-max:10 dir:C:\Users\11 TRD\AppData\Local\npm-cache\_logs\2026-08-15T06_05_39_448Z-
+npm verbose logfile C:\Users\11 TRD\AppData\Local\npm-cache\_logs\2026-08-15T06_05_39_448Z-debug-0.log
+npm http fetch GET 200 https://registry.npmjs.org/next 1967ms (cache revalidated)
+npm http fetch GET 200 https://registry.npmjs.org/@opentelemetry%2fapi 690ms (cache revalidated)
+npm http fetch GET 200 https://registry.npmjs.org/@playwright%2ftest 195ms (cache revalidated)
+npm http cache https://registry.npmjs.org/babel-plugin-react-compiler 11ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/react 316522ms (cache updated)
