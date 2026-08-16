@@ -31,7 +31,7 @@ const notoNastaliq = Noto_Nastaliq_Urdu({
 });
 
 export const metadata: Metadata = {
-  title: 'Scholarly Central | Modern School Management',
+  title: 'Classora | Modern School Management',
   description: 'The ultimate institution resource planning system for modern education.',
 };
 

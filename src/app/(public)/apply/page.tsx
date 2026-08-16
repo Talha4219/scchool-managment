@@ -728,7 +728,7 @@ export default function ApplyPage() {
   const [agreed, setAgreed] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<{ applicationId: string; submittedAt: string; parentEmail: string; hasPhoto: boolean; hasResult: boolean } | null>(null);
-  const [schoolInfo, setSchoolInfo] = useState({ name: "Scholarly Central", academicYear: "2026-2027" });
+  const [schoolInfo, setSchoolInfo] = useState({ name: "Classora", academicYear: "2026-2027" });
 
   const [classOptions, setClassOptions] = useState<{id: string; name: string}[]>(
     ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6",

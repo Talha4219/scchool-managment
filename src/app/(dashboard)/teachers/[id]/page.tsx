@@ -70,11 +70,16 @@ export default function TeacherProfilePage() {
   const [compForm, setCompForm] = useState({ subjectId: "", classId: "" });
 
   const [assignForm, setAssignForm] = useState({ classId: "", sectionId: "", subjectId: "" });
-  const [confirmOverride, setConfirmOverride] = useState<null | { classId: string; sectionId: string; subjectId: string }>(null);
+  const [assigning, setAssigning] = useState(false);
+  // sectionId: null means "Whole Class" — apply the override to every section in one go.
+  const [confirmOverride, setConfirmOverride] = useState<null | { classId: string; sectionId: string | null; subjectId: string }>(null);
 
-  const load = useCallback(async () => {
+  // silent=true skips the full-page skeleton — used after in-tab mutations
+  // (add/remove competency, assign, etc.) so the page doesn't unmount its
+  // content and snap the scroll position back to the top on every edit.
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!teacherId) return;
-    setLoading(true);
+    if (!opts?.silent) setLoading(true);
     const [users, p, scales, quals, comps, leaves] = await Promise.all([
       fetchUsersDB(), fetchTeacherProfileDB(teacherId), fetchPayScalesDB(),
       fetchTeacherQualificationsDB(teacherId), fetchTeacherCompetenciesDB(teacherId),
@@ -122,7 +127,7 @@ export default function TeacherProfilePage() {
       const res = await updateTeacherProfileDB(teacherId, { [field]: reader.result as string });
       if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
       toast({ title: field === "profilePhoto" ? "Profile photo updated" : "Degree photo updated" });
-      load();
+      load({ silent: true });
     };
     reader.readAsDataURL(file);
   };
@@ -141,7 +146,7 @@ export default function TeacherProfilePage() {
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
     setEditOpen(false);
     toast({ title: "Profile updated" });
-    load();
+    load({ silent: true });
   };
 
   const handleStatusChange = async (status: "active" | "on_leave" | "inactive") => {
@@ -152,7 +157,7 @@ export default function TeacherProfilePage() {
     const res = await updateTeacherStatusDB(teacherId, status);
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
     toast({ title: "Status updated" });
-    load();
+    load({ silent: true });
   };
 
   const handleQualCertUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -175,7 +180,7 @@ export default function TeacherProfilePage() {
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
     setQualForm({ degreeTitle: "", institution: "", yearCompleted: "", specialization: "", certificateFilePath: null });
     toast({ title: "Qualification added" });
-    load();
+    load({ silent: true });
   };
 
   const handleDeleteQualification = async (id: string) => {
@@ -183,21 +188,23 @@ export default function TeacherProfilePage() {
     if (!ok) return;
     await deleteTeacherQualificationDB(id);
     toast({ title: "Qualification deleted" });
-    load();
+    load({ silent: true });
   };
 
   const handleAddCompetency = async () => {
     if (!compForm.subjectId || !compForm.classId) { toast({ title: "Select subject and class", variant: "destructive" }); return; }
+    const dup = competencies.some(c => c.subjectId === compForm.subjectId && c.classId === compForm.classId);
+    if (dup) { toast({ title: "Already declared for this subject and grade.", variant: "destructive" }); return; }
     await addTeacherCompetencyDB(teacherId, compForm.subjectId, compForm.classId);
     setCompForm({ subjectId: "", classId: "" });
     toast({ title: "Competency added" });
-    load();
+    load({ silent: true });
   };
 
   const handleDeleteCompetency = async (id: string) => {
     await deleteTeacherCompetencyDB(id);
     toast({ title: "Competency removed" });
-    load();
+    load({ silent: true });
   };
 
   const assignSubjectClassCompetent = useMemo(() => {
@@ -217,10 +224,65 @@ export default function TeacherProfilePage() {
     ? subjects.filter(s => assignTeacherSubjectIds.has(s.id))
     : subjects;
 
+  // Grouped for the redesigned cards — one heading per subject/class instead
+  // of a flat list, so a teacher with a dozen+ entries stays scannable.
+  const competenciesBySubject = useMemo(() => {
+    const map = new Map<string, { subjectName: string; items: TeacherSubjectCompetency[] }>();
+    for (const c of competencies) {
+      if (!map.has(c.subjectId)) map.set(c.subjectId, { subjectName: c.subjectName || c.subjectId, items: [] });
+      map.get(c.subjectId)!.items.push(c);
+    }
+    return Array.from(map.values()).sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+  }, [competencies]);
+
+  const assignmentsByClass = useMemo(() => {
+    const map = new Map<string, { className: string; items: TeacherClassSubject[] }>();
+    for (const a of assignments) {
+      if (!map.has(a.classId)) map.set(a.classId, { className: a.className, items: [] });
+      map.get(a.classId)!.items.push(a);
+    }
+    return Array.from(map.values()).sort((a, b) => a.className.localeCompare(b.className));
+  }, [assignments]);
+
+  // Sections of the currently-picked class that don't already have this exact
+  // subject assignment — used both to size the "Whole Class" batch and to skip
+  // sections a second "Whole Class" click would otherwise try to re-create.
+  const pendingWholeClassSections = useCallback((classId: string, subjectId: string) => {
+    return sections.filter(s => !assignments.some(a => a.classId === classId && a.sectionId === s.id && a.subjectId === subjectId));
+  }, [sections, assignments]);
+
   const handleAssign = async (override = false) => {
     if (!assignForm.classId || !assignForm.sectionId || !assignForm.subjectId) {
       toast({ title: "Fill all fields", variant: "destructive" }); return;
     }
+
+    if (assignForm.sectionId === "__ALL__") {
+      if (!override && !assignSubjectClassCompetent) {
+        setConfirmOverride({ classId: assignForm.classId, sectionId: null, subjectId: assignForm.subjectId });
+        return;
+      }
+      const targets = pendingWholeClassSections(assignForm.classId, assignForm.subjectId);
+      if (targets.length === 0) {
+        toast({ title: "Every section already has this assignment." });
+        return;
+      }
+      setAssigning(true);
+      let created = 0;
+      for (const s of targets) {
+        const res = await createTeacherAssignmentDB({
+          teacherId, classId: assignForm.classId, sectionId: s.id,
+          subjectId: assignForm.subjectId, academicYearId: activeYearId, override: true,
+        });
+        if (!(res as any)?.error) created++;
+      }
+      setAssigning(false);
+      setConfirmOverride(null);
+      setAssignForm({ classId: "", sectionId: "", subjectId: "" });
+      toast({ title: `Assigned to ${created} section${created === 1 ? "" : "s"}` });
+      load({ silent: true });
+      return;
+    }
+
     const res = await createTeacherAssignmentDB({
       teacherId, classId: assignForm.classId, sectionId: assignForm.sectionId,
       subjectId: assignForm.subjectId, academicYearId: activeYearId, override,
@@ -232,16 +294,20 @@ export default function TeacherProfilePage() {
     setConfirmOverride(null);
     setAssignForm({ classId: "", sectionId: "", subjectId: "" });
     toast({ title: "Assigned" });
-    load();
+    load({ silent: true });
   };
 
   const handleConfirmOverride = async () => {
     if (!confirmOverride) return;
-    await createTeacherAssignmentDB({ teacherId, ...confirmOverride, academicYearId: activeYearId, override: true });
+    if (confirmOverride.sectionId === null) {
+      await handleAssign(true);
+      return;
+    }
+    await createTeacherAssignmentDB({ teacherId, ...confirmOverride, sectionId: confirmOverride.sectionId, academicYearId: activeYearId, override: true });
     setConfirmOverride(null);
     setAssignForm({ classId: "", sectionId: "", subjectId: "" });
     toast({ title: "Assigned (competency override logged)" });
-    load();
+    load({ silent: true });
   };
 
   const handleDeleteAssignment = async (id: string) => {
@@ -249,7 +315,7 @@ export default function TeacherProfilePage() {
     if (!ok) return;
     await deleteTeacherAssignmentDB(id);
     toast({ title: "Assignment removed" });
-    load();
+    load({ silent: true });
   };
 
   if (!permsLoaded) return null;
@@ -413,27 +479,46 @@ export default function TeacherProfilePage() {
         <div className="space-y-4">
           <Card className="border-border">
             <CardHeader><CardTitle className="text-sm flex items-center gap-2"><GraduationCap className="h-4 w-4" /> Declared Competencies</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Select value={compForm.subjectId} onValueChange={v => setCompForm(f => ({ ...f, subjectId: v }))}>
-                  <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Subject" /></SelectTrigger>
-                  <SelectContent>{subjects.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
-                </Select>
-                <Select value={compForm.classId} onValueChange={v => setCompForm(f => ({ ...f, classId: v }))}>
-                  <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Grade" /></SelectTrigger>
-                  <SelectContent>{classes.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
-                </Select>
-                <Button size="sm" className="shrink-0" onClick={handleAddCompetency}><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
+            <CardContent className="space-y-4">
+              <div className="flex items-end gap-2 rounded-lg border border-dashed border-border/70 p-3">
+                <div className="flex-1 space-y-1"><Label className="text-xs text-muted-foreground">Subject</Label>
+                  <Select value={compForm.subjectId} onValueChange={v => setCompForm(f => ({ ...f, subjectId: v }))}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select subject" /></SelectTrigger>
+                    <SelectContent>{subjects.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="flex-1 space-y-1"><Label className="text-xs text-muted-foreground">Grade</Label>
+                  <Select value={compForm.classId} onValueChange={v => setCompForm(f => ({ ...f, classId: v }))}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select grade" /></SelectTrigger>
+                    <SelectContent>{classes.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <Button size="sm" className="shrink-0" disabled={!compForm.subjectId || !compForm.classId} onClick={handleAddCompetency}>
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Add
+                </Button>
               </div>
               {competencies.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No competencies declared yet.</p>
+                <div className="text-center py-8 text-muted-foreground">
+                  <GraduationCap className="h-8 w-8 mx-auto mb-2 opacity-40" />
+                  <p className="text-sm">No competencies declared yet.</p>
+                  <p className="text-xs mt-0.5">A competency covers every section of that grade automatically — no need to repeat it per section.</p>
+                </div>
               ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {competencies.map(c => (
-                    <Badge key={c.id} variant="secondary" className="text-xs gap-1">
-                      {c.subjectName} · {c.className}
-                      <button onClick={() => handleDeleteCompetency(c.id)}><Trash2 className="h-3 w-3" /></button>
-                    </Badge>
+                <div className="space-y-2.5">
+                  {competenciesBySubject.map(group => (
+                    <div key={group.subjectName} className="flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2">
+                      <p className="text-xs font-semibold text-foreground w-28 shrink-0 pt-0.5">{group.subjectName}</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {group.items.map(c => (
+                          <Badge key={c.id} variant="secondary" className="text-xs gap-1">
+                            {c.className}
+                            <button onClick={() => handleDeleteCompetency(c.id)} aria-label={`Remove ${group.subjectName} · ${c.className}`}>
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
                   ))}
                 </div>
               )}
@@ -442,20 +527,29 @@ export default function TeacherProfilePage() {
 
           <Card className="border-border">
             <CardHeader><CardTitle className="text-sm flex items-center gap-2"><BookOpen className="h-4 w-4" /> Class & Subject Assignments</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <Select value={assignForm.classId} onValueChange={v => setAssignForm({ classId: v, sectionId: "", subjectId: "" })}>
-                  <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Class" /></SelectTrigger>
-                  <SelectContent>{classes.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
-                </Select>
-                <Select value={assignForm.sectionId} onValueChange={v => setAssignForm(f => ({ ...f, sectionId: v }))}>
-                  <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Section" /></SelectTrigger>
-                  <SelectContent>{sections.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
-                </Select>
-                <Select value={assignForm.subjectId} onValueChange={v => setAssignForm(f => ({ ...f, subjectId: v }))}>
-                  <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Subject" /></SelectTrigger>
-                  <SelectContent>{assignSubjectOptions.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
-                </Select>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 rounded-lg border border-dashed border-border/70 p-3">
+                <div className="space-y-1"><Label className="text-xs text-muted-foreground">Class</Label>
+                  <Select value={assignForm.classId} onValueChange={v => setAssignForm({ classId: v, sectionId: "", subjectId: "" })}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select class" /></SelectTrigger>
+                    <SelectContent>{classes.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1"><Label className="text-xs text-muted-foreground">Section</Label>
+                  <Select value={assignForm.sectionId} onValueChange={v => setAssignForm(f => ({ ...f, sectionId: v }))} disabled={!assignForm.classId}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select section" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__ALL__" className="font-semibold text-primary">Whole Class (all sections)</SelectItem>
+                      {sections.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1"><Label className="text-xs text-muted-foreground">Subject</Label>
+                  <Select value={assignForm.subjectId} onValueChange={v => setAssignForm(f => ({ ...f, subjectId: v }))}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select subject" /></SelectTrigger>
+                    <SelectContent>{assignSubjectOptions.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
               </div>
               {!assignSubjectClassCompetent && (
                 <div className="flex items-start gap-2 rounded-lg bg-warning/10 border border-warning/30 p-2.5">
@@ -463,19 +557,38 @@ export default function TeacherProfilePage() {
                   <p className="text-xs text-foreground">This teacher isn't declared competent for this subject/grade. You'll be asked to confirm an override.</p>
                 </div>
               )}
-              <Button size="sm" onClick={() => handleAssign(false)}>Assign</Button>
+              <Button
+                size="sm"
+                disabled={!assignForm.classId || !assignForm.sectionId || !assignForm.subjectId || assigning}
+                onClick={() => handleAssign(false)}
+              >
+                {assigning ? "Assigning..." : assignForm.sectionId === "__ALL__" ? "Assign to All Sections" : "Assign"}
+              </Button>
 
-              <div className="space-y-1.5 pt-2">
-                {assignments.length === 0 && <p className="text-sm text-muted-foreground">No assignments for the active academic year.</p>}
-                {assignments.map(a => (
-                  <div key={a.id} className="flex items-center justify-between text-sm border border-border rounded-md px-3 py-2">
-                    <span>{a.subjectName} — {a.className} {a.sectionName}</span>
-                    <button className="text-muted-foreground hover:text-destructive" onClick={() => handleDeleteAssignment(a.id)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
+              {assignments.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <BookOpen className="h-8 w-8 mx-auto mb-2 opacity-40" />
+                  <p className="text-sm">No assignments for the active academic year.</p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {assignmentsByClass.map(group => (
+                    <div key={group.className} className="flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2">
+                      <p className="text-xs font-semibold text-foreground w-28 shrink-0 pt-0.5">{group.className}</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {group.items.map(a => (
+                          <Badge key={a.id} variant="secondary" className="text-xs gap-1">
+                            {a.subjectName} — {a.sectionName}
+                            <button onClick={() => handleDeleteAssignment(a.id)} aria-label={`Remove ${a.subjectName} · ${group.className} ${a.sectionName}`}>
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

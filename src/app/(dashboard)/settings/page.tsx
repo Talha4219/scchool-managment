@@ -509,6 +509,7 @@ function NotificationChannelsTab() {
   const [waConfigured, setWaConfigured] = useState(false);
   const [testPhone, setTestPhone] = useState("");
   const [testTemplate, setTestTemplate] = useState("hello_world");
+  const [testVariables, setTestVariables] = useState("");
   const [testSending, setTestSending] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [recent, setRecent] = useState<WhatsAppNotificationRecord[]>([]);
@@ -524,7 +525,7 @@ function NotificationChannelsTab() {
   const handleSendTest = async () => {
     setTestSending(true);
     setTestResult(null);
-    const res = await sendWhatsAppTestMessageAction(testPhone, testTemplate);
+    const res = await sendWhatsAppTestMessageAction(testPhone, testTemplate, testVariables);
     setTestSending(false);
     if (res.error) {
       setTestResult({ ok: false, message: res.error });
@@ -615,6 +616,10 @@ function NotificationChannelsTab() {
             <Button onClick={handleSendTest} disabled={testSending || !waConfigured}>
               {testSending ? "Sending..." : "Send Test"}
             </Button>
+          </div>
+          <div className="mt-3">
+            <Label className="text-xs">Variables (comma-separated, only for templates with {"{{1}}"}, {"{{2}}"}... placeholders)</Label>
+            <Input value={testVariables} onChange={e => setTestVariables(e.target.value)} placeholder="e.g. Mr. Khan, Ali Khan, 16 Aug 2026" />
           </div>
           {!waConfigured && <p className="text-xs text-muted-foreground mt-2">Set the WHATSAPP_* environment variables and restart the app to enable this.</p>}
           {testResult && (

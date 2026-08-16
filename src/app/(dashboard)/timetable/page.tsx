@@ -7,7 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -52,9 +53,10 @@ export default function TimetablePage() {
   const [entries, setEntries] = useState<TimetableEntry[]>([]);
   const [todaySubs, setTodaySubs] = useState<SubstitutionRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ subjectId: "", teacherId: "", dayOfWeek: "Monday", periodId: "", room: "" });
-  const [pendingOverride, setPendingOverride] = useState<typeof form | null>(null);
+  const [form, setForm] = useState({ subjectId: "", teacherId: "", room: "" });
+  const [openCell, setOpenCell] = useState<{ day: string; periodId: string } | null>(null);
+  const [showRoomInput, setShowRoomInput] = useState(false);
+  const [pendingOverride, setPendingOverride] = useState<{ form: typeof form; day: string; periodId: string } | null>(null);
 
   // Manage Periods dialog
   const [periodsOpen, setPeriodsOpen] = useState(false);
@@ -129,41 +131,53 @@ export default function TimetablePage() {
   useEffect(() => { load(); }, [load]);
 
   const teachingPeriods = useMemo(() => periods.filter(p => !p.isBreak), [periods]);
-  const selectedPeriod = useMemo(() => periods.find(p => p.id === form.periodId), [periods, form.periodId]);
 
   const isCompetent = useMemo(() => {
     if (!form.teacherId || !form.subjectId || !classId) return true;
     return competencies.some(c => c.teacherId === parseInt(form.teacherId) && c.subjectId === form.subjectId && c.classId === classId);
   }, [form.teacherId, form.subjectId, classId, competencies]);
 
-  const submitEntry = async (f: typeof form, override: boolean) => {
+  const resetForm = () => { setForm({ subjectId: "", teacherId: "", room: "" }); setShowRoomInput(false); };
+
+  const openAddCell = (day: string, periodId: string) => {
+    resetForm();
+    setOpenCell({ day, periodId });
+  };
+
+  // Auto-fills Teacher when exactly one competent teacher exists for this
+  // subject+class — the common case, so admins usually never touch this field.
+  const handleSubjectChange = (subjectId: string) => {
+    const matches = competencies.filter(c => c.subjectId === subjectId && c.classId === classId);
+    setForm(f => ({ ...f, subjectId, teacherId: matches.length === 1 ? String(matches[0].teacherId) : "" }));
+  };
+
+  const submitEntry = async (f: typeof form, day: string, periodId: string, override: boolean) => {
     const teacher = teachers.find(t => String(t.id) === f.teacherId);
     const subject = subjects.find(s => s.id === f.subjectId);
     const cls = classes.find(c => c.id === classId);
-    const period = periods.find(p => p.id === f.periodId);
+    const period = periods.find(p => p.id === periodId);
     if (!teacher || !subject || !cls || !period) { toast({ title: "Fill all required fields.", variant: "destructive" }); return; }
 
     const res = await createTimetableEntryDB({
       className: cls.name, subjectName: subject.name, teacherName: teacher.name,
-      dayOfWeek: f.dayOfWeek, startTime: period.startTime, endTime: period.endTime, room: f.room || null,
+      dayOfWeek: day, startTime: period.startTime, endTime: period.endTime, room: f.room || null,
       classId, sectionId, subjectId: f.subjectId, teacherId: teacher.id, academicYearId: activeYearId,
       assignedByUserId: sessionUserId || undefined,
     }, { competencyOverride: override });
 
-    if (res.needsCompetencyOverride) { setPendingOverride(f); return; }
+    if (res.needsCompetencyOverride) { setPendingOverride({ form: f, day, periodId }); return; }
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
 
     toast({ title: "Slot added (draft)." });
-    setOpen(false);
+    setOpenCell(null);
     setPendingOverride(null);
-    setForm({ subjectId: "", teacherId: "", dayOfWeek: "Monday", periodId: "", room: "" });
+    resetForm();
     load();
   };
 
-  const handleCreate = () => {
-    if (!classId || !sectionId) { toast({ title: "Select a class and section first.", variant: "destructive" }); return; }
-    if (!form.periodId) { toast({ title: "Select a period.", variant: "destructive" }); return; }
-    submitEntry(form, false);
+  const handleCreate = (day: string, periodId: string) => {
+    if (!form.subjectId || !form.teacherId) { toast({ title: "Pick a subject and teacher.", variant: "destructive" }); return; }
+    submitEntry(form, day, periodId, false);
   };
 
   const handleDelete = async (id: string) => {
@@ -280,52 +294,6 @@ export default function TimetablePage() {
                 <Button variant="outline" className="gap-2" disabled={!hasDraft} onClick={handlePublish}>
                   <UploadCloud className="h-4 w-4" /> Publish
                 </Button>
-                <Dialog open={open} onOpenChange={setOpen}>
-                  <DialogTrigger asChild>
-                    <Button className="gap-2" disabled={teachingPeriods.length === 0}><Plus className="h-4 w-4" />Add Slot</Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader><DialogTitle>Add Timetable Slot</DialogTitle></DialogHeader>
-                    <div className="space-y-3 py-2">
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1"><Label>Subject *</Label>
-                          <Select value={form.subjectId} onValueChange={v => setForm(f => ({ ...f, subjectId: v }))}>
-                            <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                            <SelectContent>{subjects.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-1"><Label>Teacher *</Label>
-                          <Select value={form.teacherId} onValueChange={v => setForm(f => ({ ...f, teacherId: v }))}>
-                            <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                            <SelectContent>{teachers.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>)}</SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                      {!isCompetent && (
-                        <div className="flex items-start gap-2 rounded-lg bg-warning/10 border border-warning/30 p-2.5">
-                          <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
-                          <p className="text-xs text-foreground">This teacher isn't declared competent for this subject/grade. You'll be asked to confirm an override.</p>
-                        </div>
-                      )}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1"><Label>Day</Label>
-                          <Select value={form.dayOfWeek} onValueChange={v => setForm(f => ({ ...f, dayOfWeek: v }))}>
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>{DAYS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-1"><Label>Period *</Label>
-                          <Select value={form.periodId} onValueChange={v => setForm(f => ({ ...f, periodId: v }))}>
-                            <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                            <SelectContent>{teachingPeriods.map(p => <SelectItem key={p.id} value={p.id}>{p.label} ({p.startTime}-{p.endTime})</SelectItem>)}</SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                      <div className="space-y-1"><Label>Room (optional)</Label><Input value={form.room} onChange={e => setForm(f => ({ ...f, room: e.target.value }))} placeholder="e.g. Room 101" /></div>
-                    </div>
-                    <DialogFooter><Button onClick={handleCreate}>Add Slot</Button></DialogFooter>
-                  </DialogContent>
-                </Dialog>
               </>
             )}
           </div>
@@ -341,6 +309,10 @@ export default function TimetablePage() {
           <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
           <p className="text-sm text-foreground">No periods defined for this academic year yet. Click <strong>Manage Periods</strong> above to set up the bell schedule before adding slots.</p>
         </div>
+      )}
+
+      {sessionRole === "ADMIN" && classId && sectionId && teachingPeriods.length > 0 && (
+        <p className="text-xs text-muted-foreground">Click any empty cell below to add a slot.</p>
       )}
 
       {sessionRole === "ADMIN" && classId && sectionId && (
@@ -383,8 +355,9 @@ export default function TimetablePage() {
                       </td>
                       {DAYS.map(d => {
                         const cells = getCell(d, p.id);
+                        const isOpen = openCell?.day === d && openCell?.periodId === p.id;
                         return (
-                          <td key={d} className="p-2 align-top">
+                          <td key={d} className="p-2 align-top group/cell">
                             {cells.map(e => {
                               const sub = subForEntry(e.id);
                               return (
@@ -410,6 +383,64 @@ export default function TimetablePage() {
                               </div>
                               );
                             })}
+                            {cells.length === 0 && sessionRole === "ADMIN" && classId && sectionId && (
+                              <Popover open={isOpen} onOpenChange={(o) => !o && setOpenCell(null)}>
+                                <PopoverTrigger asChild>
+                                  <button
+                                    onClick={() => openAddCell(d, p.id)}
+                                    aria-label={`Add slot for ${d} ${p.label}`}
+                                    className="w-full h-10 rounded-lg border border-dashed border-border/60 flex items-center justify-center text-muted-foreground/0 group-hover/cell:text-muted-foreground/50 hover:!text-primary hover:!border-primary/40 transition-colors"
+                                  >
+                                    <Plus className="h-4 w-4" />
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent
+                                  className="w-64"
+                                  align="start"
+                                  onInteractOutside={(e) => {
+                                    // The Subject/Teacher <Select> dropdowns render into their own
+                                    // Radix portal, which this Popover doesn't recognize as "inside"
+                                    // itself — without this guard, picking an option closes the
+                                    // popover instead of just updating the field.
+                                    if ((e.target as HTMLElement).closest('[data-radix-popper-content-wrapper]')) {
+                                      e.preventDefault();
+                                    }
+                                  }}
+                                >
+                                  <div className="space-y-2">
+                                    <p className="text-xs font-semibold text-foreground">{d} · {p.label}</p>
+                                    <div className="space-y-1">
+                                      <Label className="text-xs">Subject</Label>
+                                      <Select value={form.subjectId} onValueChange={handleSubjectChange}>
+                                        <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select" /></SelectTrigger>
+                                        <SelectContent>{subjects.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+                                      </Select>
+                                    </div>
+                                    <div className="space-y-1">
+                                      <Label className="text-xs">Teacher</Label>
+                                      <Select value={form.teacherId} onValueChange={v => setForm(f => ({ ...f, teacherId: v }))}>
+                                        <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select" /></SelectTrigger>
+                                        <SelectContent>{teachers.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>)}</SelectContent>
+                                      </Select>
+                                    </div>
+                                    {!isCompetent && form.subjectId && form.teacherId && (
+                                      <div className="flex items-start gap-1.5 rounded-md bg-warning/10 border border-warning/30 p-1.5">
+                                        <AlertTriangle className="h-3 w-3 text-warning shrink-0 mt-0.5" />
+                                        <p className="text-[10px] text-foreground">Not declared competent — you'll confirm an override.</p>
+                                      </div>
+                                    )}
+                                    {showRoomInput ? (
+                                      <Input value={form.room} onChange={e => setForm(f => ({ ...f, room: e.target.value }))} placeholder="Room (optional)" className="h-8 text-sm" />
+                                    ) : (
+                                      <button type="button" onClick={() => setShowRoomInput(true)} className="text-[11px] text-primary hover:underline">+ Room</button>
+                                    )}
+                                    <Button size="sm" className="w-full h-8" disabled={!form.subjectId || !form.teacherId} onClick={() => handleCreate(d, p.id)}>
+                                      Add
+                                    </Button>
+                                  </div>
+                                </PopoverContent>
+                              </Popover>
+                            )}
                           </td>
                         );
                       })}
@@ -430,7 +461,7 @@ export default function TimetablePage() {
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPendingOverride(null)}>Cancel</Button>
-            <Button onClick={() => pendingOverride && submitEntry(pendingOverride, true)}>Add Anyway</Button>
+            <Button onClick={() => pendingOverride && submitEntry(pendingOverride.form, pendingOverride.day, pendingOverride.periodId, true)}>Add Anyway</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -276,3 +276,12 @@ html[dir="rtl"] .no-rtl-flip {
     padding: 12px 24px 24px;
   }
 }
+
+/* ── Marquee ticker ─────────────────────────────────────────────────── */
+@keyframes ticker {
+  from { transform: translateX(0); }
+  to { transform: translateX(-33.333%); }
+}
+.animate-ticker {
+  animation: ticker 22s linear infinite;
+}

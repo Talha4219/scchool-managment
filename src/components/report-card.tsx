@@ -67,7 +67,7 @@ function gradeBg(grade: string): string {
 export function ReportCard({
   studentName, admissionNumber, className, sectionName,
   academicYearName, examResults, totalPercentage, overallGrade,
-  classPosition, classTotal, generatedAt, schoolName = "Scholarly Central", remarks,
+  classPosition, classTotal, generatedAt, schoolName = "Classora", remarks,
 }: ReportCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
 

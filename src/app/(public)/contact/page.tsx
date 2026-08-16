@@ -25,7 +25,7 @@ export default function ContactPage() {
             <Phone className="w-3 h-3" /> Reach Out
           </div>
           <h1 className="text-4xl sm:text-5xl font-bold text-white font-headline">Contact Us</h1>
-          <p className="mt-3 text-white/70 max-w-xl">We're here to help. Our admissions team responds within 24 hours.</p>
+          <p className="mt-3 text-white/70 max-w-xl">We&apos;re here to help. Our team responds within 24 hours.</p>
         </div>
       </div>
 
@@ -45,9 +45,9 @@ export default function ContactPage() {
               <h2 className="text-2xl font-bold text-[#1e3a6e] font-headline mb-6">Contact Information</h2>
               <div className="space-y-5">
                 {[
-                  { icon: MapPin, label: "Address",      value: "123 Education Avenue, Knowledge Park\nIslamabad, Pakistan" },
-                  { icon: Phone, label: "Phone",          value: "+92-51-1234567\n+92-51-7654321" },
-                  { icon: Mail,  label: "Email",          value: "info@scholarlycentral.edu.pk\nadmissions@scholarlycentral.edu.pk" },
+                  { icon: MapPin, label: "Address",      value: "Serving schools worldwide, remote-first team" },
+                  { icon: Phone, label: "Phone",          value: "0300 3380058" },
+                  { icon: Mail,  label: "Email",          value: "talhashamsch@gmail.com" },
                   { icon: Clock, label: "Office Hours",   value: "Mon–Fri: 8:00 AM – 3:30 PM\nSat: 9:00 AM – 1:00 PM" },
                 ].map((item) => (
                   <div key={item.label} className="flex gap-4">

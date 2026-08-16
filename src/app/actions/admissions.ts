@@ -12,12 +12,12 @@ import { logServerError } from '../../lib/error-log';
 export async function getSchoolInfoAction(): Promise<{ name: string; academicYear: string }> {
   try {
     const isOnline = await checkDbConnection();
-    if (!isOnline) return { name: "Scholarly Central", academicYear: "2026-2027" };
+    if (!isOnline) return { name: "Classora", academicYear: "2026-2027" };
     const res = await query('SELECT name, academic_year FROM school_info LIMIT 1');
-    if (res.rows.length === 0) return { name: "Scholarly Central", academicYear: "2026-2027" };
+    if (res.rows.length === 0) return { name: "Classora", academicYear: "2026-2027" };
     return { name: res.rows[0].name, academicYear: res.rows[0].academic_year };
   } catch {
-    return { name: "Scholarly Central", academicYear: "2026-2027" };
+    return { name: "Classora", academicYear: "2026-2027" };
   }
 }
 

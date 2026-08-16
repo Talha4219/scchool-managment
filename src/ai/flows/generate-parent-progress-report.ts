@@ -56,7 +56,7 @@ ${input.studentName} has demonstrated solid engagement in our curriculum. We rec
 
 Best regards,
 ${input.teacherName}
-Scholarly Central Academics Department`;
+Classora Academics Department`;
 
     return { reportMessage: mockMessage };
   }

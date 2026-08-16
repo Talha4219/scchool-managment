@@ -220,7 +220,7 @@ export default function SignUpPage() {
             {step === 1 ? (
               <>
                 <h1 className="font-headline text-3xl font-bold text-gray-900 mb-1.5">Create an account</h1>
-                <p className="text-gray-500 text-sm">Fill in your details below to get started with Scholarly Central.</p>
+                <p className="text-gray-500 text-sm">Fill in your details below to get started with Classora.</p>
               </>
             ) : (
               <>
