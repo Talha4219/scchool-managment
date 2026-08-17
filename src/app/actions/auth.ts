@@ -46,13 +46,14 @@ export async function login(email: string, password: string): Promise<{ error?: 
     }
 
     const statusRes = await query(
-      'SELECT status, failed_login_attempts, locked_until FROM users WHERE id=$1',
+      'SELECT status, failed_login_attempts, locked_until, branch_id FROM users WHERE id=$1',
       [user.id]
     );
     const row = statusRes.rows[0];
     const status = row?.status ?? 'ACTIVE';
     const failedAttempts: number = row?.failed_login_attempts ?? 0;
     const lockedUntil: Date | null = row?.locked_until ? new Date(row.locked_until) : null;
+    const branchId: string | null = row?.branch_id ?? null;
 
     // Gate on lockout before ever touching the password — this is the whole
     // point: once locked, further guesses are refused outright, not just
@@ -86,7 +87,7 @@ export async function login(email: string, password: string): Promise<{ error?: 
       return { error: "This account has been deactivated. Contact the school office if you believe this is a mistake." };
     }
 
-    const payload: SessionPayload = { userId: user.id, name: user.name, email: user.email, role: user.role };
+    const payload: SessionPayload = { userId: user.id, name: user.name, email: user.email, role: user.role as SessionPayload['role'], branchId };
     const token = await encrypt(payload);
     const cookieStore = await cookies();
     cookieStore.set(SESSION_COOKIE, token, {

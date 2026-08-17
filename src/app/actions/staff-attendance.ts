@@ -7,23 +7,8 @@
 // try/catch swallow-to-empty, nanoid-prefixed IDs, logAudit on mutations).
 
 import { query, checkDbConnection } from "@/lib/db";
-import { getSession } from "./auth";
 import { logAudit } from "@/lib/audit";
-
-type Role = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE';
-
-async function requireRole(...roles: Role[]): Promise<{ session: NonNullable<Awaited<ReturnType<typeof getSession>>> } | { error: string }> {
-  const session = await getSession();
-  if (!session) return { error: 'Not authenticated.' };
-  if (!roles.includes(session.role as Role)) return { error: 'You are not authorized to perform this action.' };
-  return { session };
-}
-
-async function requireSession(): Promise<{ session: NonNullable<Awaited<ReturnType<typeof getSession>>> } | { error: string }> {
-  const session = await getSession();
-  if (!session) return { error: 'Not authenticated.' };
-  return { session };
-}
+import { requireRole, requireSession, scopeBranch } from "@/lib/auth-scope";
 
 export interface StaffAttendanceRecord {
   id: string; userId: number; userName?: string; date: string;
@@ -48,12 +33,15 @@ export async function fetchStaffAttendanceDB(date?: string, userId?: number): Pr
   if ('error' in auth) return [];
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
-  const scopedUserId = auth.session.role === 'ADMIN' ? userId : auth.session.userId;
+  const isAdminView = auth.session.role === 'ADMIN' || auth.session.role === 'PRINCIPAL' || auth.session.role === 'OWNER';
+  const scopedUserId = isAdminView ? userId : auth.session.userId;
+  const branchId = isAdminView ? scopeBranch(auth.session) : null;
   try {
     let sql = `SELECT sa.*, u.name as user_name FROM staff_attendance sa JOIN users u ON u.id = sa.user_id WHERE 1=1`;
     const params: any[] = [];
     if (date) { params.push(date); sql += ` AND sa.date=$${params.length}`; }
     if (scopedUserId !== undefined) { params.push(scopedUserId); sql += ` AND sa.user_id=$${params.length}`; }
+    if (branchId) { params.push(branchId); sql += ` AND u.branch_id=$${params.length}`; }
     sql += ` ORDER BY u.name`;
     const res = await query(sql, params);
     return res.rows.map(mapRow);
@@ -182,7 +170,11 @@ export async function fetchStaffCardsAction(): Promise<StaffCardRecord[]> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return [];
   try {
-    const res = await query(`SELECT sc.*, u.name as user_name FROM staff_id_cards sc JOIN users u ON u.id = sc.user_id ORDER BY u.name`);
+    const branchId = scopeBranch(auth.session);
+    const params: string[] = [];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = ` AND u.branch_id=$${params.length}`; }
+    const res = await query(`SELECT sc.*, u.name as user_name FROM staff_id_cards sc JOIN users u ON u.id = sc.user_id WHERE 1=1${branchFilter} ORDER BY u.name`, params);
     return res.rows.map((r: any) => ({ id: r.id, userId: r.user_id, userName: r.user_name, cardUid: r.card_uid, label: r.label, issuedAt: r.issued_at }));
   } catch { return []; }
 }

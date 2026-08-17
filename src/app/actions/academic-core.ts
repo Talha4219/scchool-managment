@@ -7,33 +7,19 @@ import { getSession } from "./auth";
 import { logAudit, type AuditActor } from "@/lib/audit";
 import { logServerError } from "@/lib/error-log";
 import { notificationService } from "@/lib/notification-service";
+// Role gating used to live only in the React components calling these — a raw
+// request to the server action endpoint bypassed it entirely. See audit finding
+// "Three core server-action files have zero session/role checks". Every read
+// in this file requires at least a logged-in session — these fetchers were
+// previously callable with no auth at all, leaking full class/enrollment/
+// exam/attendance data to anonymous requests.
+import { requireRole, requireSession, scopeBranch } from "@/lib/auth-scope";
 
 let _acDbInitialized = false;
 async function ensureDbInit() {
   if (_acDbInitialized) return;
   _acDbInitialized = true;
   await initializeDatabase();
-}
-
-type Role = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE';
-
-// Role gating used to live only in the React components calling these — a raw
-// request to the server action endpoint bypassed it entirely. See audit finding
-// "Three core server-action files have zero session/role checks".
-async function requireRole(...roles: Role[]): Promise<{ session: NonNullable<Awaited<ReturnType<typeof getSession>>> } | { error: string }> {
-  const session = await getSession();
-  if (!session) return { error: 'Not authenticated.' };
-  if (!roles.includes(session.role as Role)) return { error: 'You are not authorized to perform this action.' };
-  return { session };
-}
-
-// Every read in this file requires at least a logged-in session — these fetchers
-// were previously callable with no auth at all, leaking full class/enrollment/
-// exam/attendance data to anonymous requests.
-async function requireSession(): Promise<{ session: NonNullable<Awaited<ReturnType<typeof getSession>>> } | { error: string }> {
-  const session = await getSession();
-  if (!session) return { error: 'Not authenticated.' };
-  return { session };
 }
 
 // ── Academic Year ──────────────────────────────────────────────────────────────
@@ -171,7 +157,13 @@ export async function fetchClassesDB(_academicYearId?: string) {
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
-    const res = await query("SELECT * FROM classes ORDER BY grade_level, name");
+    // "classes" is the multi-branch scoping anchor — sections, enrollments,
+    // timetable and attendance all cascade from class_id, so scoping the
+    // class list here is what keeps a Principal's whole experience scoped
+    // to their own branch without needing branch_id on every child table.
+    const branchId = scopeBranch(auth.session);
+    const sql = branchId ? "SELECT * FROM classes WHERE branch_id=$1 ORDER BY grade_level, name" : "SELECT * FROM classes ORDER BY grade_level, name";
+    const res = await query(sql, branchId ? [branchId] : []);
     return res.rows.map((r: any) => ({ id: r.id, name: r.name, gradeLevel: r.grade_level, academicYearId: r.academic_year_id, isGraduating: !!r.is_graduating }));
   } catch { return []; }
 }
@@ -198,9 +190,13 @@ export async function createClassDB(data: { name: string; gradeLevel: string; ac
   try {
     const { nanoid } = await import("nanoid");
     const id = `cls-${nanoid(8)}`;
+    // New classes belong to the creator's own branch. OWNER has no branch of
+    // their own — cross-branch class creation isn't supported yet (OWNER
+    // manages branches, not per-branch academic structure).
+    const branchId = scopeBranch(auth.session);
     await query(
-      `INSERT INTO classes (id, name, grade_level, academic_year_id, is_graduating) VALUES ($1, $2, $3, $4, $5)`,
-      [id, data.name, data.gradeLevel, data.academicYearId, !!data.isGraduating]
+      `INSERT INTO classes (id, name, grade_level, academic_year_id, is_graduating, branch_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, data.name, data.gradeLevel, data.academicYearId, !!data.isGraduating, branchId]
     );
     return { id, name: data.name, gradeLevel: data.gradeLevel, academicYearId: data.academicYearId, isGraduating: !!data.isGraduating };
   } catch (e) {
@@ -231,7 +227,14 @@ export async function fetchSectionsByClassDB(classId: string) {
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
-    const res = await query("SELECT * FROM sections WHERE class_id = $1 ORDER BY name", [classId]);
+    // sections has no branch_id of its own — scope indirectly via
+    // classes.branch_id (defensive: classId is normally already a class the
+    // caller is scoped to, but this closes the gap if it isn't).
+    const branchId = scopeBranch(auth.session);
+    const sql = branchId
+      ? "SELECT s.* FROM sections s JOIN classes c ON c.id = s.class_id WHERE s.class_id = $1 AND c.branch_id = $2 ORDER BY s.name"
+      : "SELECT * FROM sections WHERE class_id = $1 ORDER BY name";
+    const res = await query(sql, branchId ? [classId, branchId] : [classId]);
     return res.rows.map((r: any) => ({ id: r.id, name: r.name, capacity: r.capacity, teacherName: r.teacher_name, classId: r.class_id, group: r.section_group }));
   } catch { return []; }
 }
@@ -243,12 +246,18 @@ export async function fetchAllSectionsDB(classIds?: string[]) {
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
+    const branchId = scopeBranch(auth.session);
     if (classIds && classIds.length > 0) {
       const placeholders = classIds.map((_, i) => `$${i + 1}`).join(",");
       const res = await query(`SELECT * FROM sections WHERE class_id IN (${placeholders}) ORDER BY class_id, name`, classIds);
       return res.rows.map((r: any) => ({ id: r.id, name: r.name, capacity: r.capacity, teacherName: r.teacher_name, classId: r.class_id, group: r.section_group }));
     }
-    const res = await query("SELECT * FROM sections ORDER BY class_id, name");
+    // No classIds given — this is the "every section school-wide" path, so
+    // it's the one that actually needs the branch join.
+    const sql = branchId
+      ? "SELECT s.* FROM sections s JOIN classes c ON c.id = s.class_id WHERE c.branch_id = $1 ORDER BY s.class_id, s.name"
+      : "SELECT * FROM sections ORDER BY class_id, name";
+    const res = await query(sql, branchId ? [branchId] : []);
     return res.rows.map((r: any) => ({ id: r.id, name: r.name, capacity: r.capacity, teacherName: r.teacher_name, classId: r.class_id, group: r.section_group }));
   } catch { return []; }
 }
@@ -320,6 +329,8 @@ export async function fetchEnrollmentsDB(academicYearId?: string, classId?: stri
     if (academicYearId) { conditions.push(`e.academic_year_id = $${params.length + 1}`); params.push(academicYearId); }
     if (classId) { conditions.push(`e.class_id = $${params.length + 1}`); params.push(classId); }
     if (studentId) { conditions.push(`e.student_id = $${params.length + 1}`); params.push(studentId); }
+    const branchId = scopeBranch(auth.session);
+    if (branchId) { conditions.push(`c.branch_id = $${params.length + 1}`); params.push(branchId); }
     if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
     sql += " ORDER BY e.roll_number, s.name";
     const res = await query(sql, params);
@@ -496,6 +507,7 @@ export async function fetchPromotionCandidatesDB(classId: string, sectionId: str
 
 export interface PromotionDecision {
   enrollmentId: string; studentId: string; outcome: 'promoted' | 'retained' | 'withdrawn';
+  remarks?: string;
 }
 
 export interface BulkPromotionResult {
@@ -538,6 +550,7 @@ export async function bulkPromoteStudentsDB(payload: {
   isGraduating: boolean;
   decisions: PromotionDecision[];
   promotedByUserId?: number; promotedByName?: string;
+  batchRemarks?: string;
 }): Promise<BulkPromotionResult> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { error: auth.error };
@@ -572,9 +585,9 @@ export async function bulkPromoteStudentsDB(payload: {
         if (d.outcome === 'withdrawn') {
           await client.query("UPDATE enrollments SET status='Inactive', updated_at=NOW() WHERE id=$1", [d.enrollmentId]);
           await client.query(
-            `INSERT INTO student_promotions (id, student_id, from_class_id, from_section_id, to_class_id, to_section_id, academic_year_id, promoted_by, promoted_at, outcome)
-             VALUES ($1,$2,$3,$4,$3,$4,$5,$6,NOW(),'withdrawn')`,
-            [`prom-${nanoid(8)}`, d.studentId, payload.fromClassId, payload.fromSectionId, payload.toAcademicYearId, payload.promotedByName || null]
+            `INSERT INTO student_promotions (id, student_id, from_class_id, from_section_id, to_class_id, to_section_id, academic_year_id, promoted_by, promoted_at, outcome, remarks)
+             VALUES ($1,$2,$3,$4,$3,$4,$5,$6,NOW(),'withdrawn',$7)`,
+            [`prom-${nanoid(8)}`, d.studentId, payload.fromClassId, payload.fromSectionId, payload.toAcademicYearId, payload.promotedByName || null, d.remarks || payload.batchRemarks || null]
           );
           withdrawnCount++;
           succeeded.push({ studentId: d.studentId, outcome: 'withdrawn' });
@@ -590,9 +603,9 @@ export async function bulkPromoteStudentsDB(payload: {
           }
           await client.query("UPDATE enrollments SET status='Graduated', updated_at=NOW() WHERE id=$1", [d.enrollmentId]);
           await client.query(
-            `INSERT INTO student_promotions (id, student_id, from_class_id, from_section_id, to_class_id, to_section_id, academic_year_id, promoted_by, promoted_at, outcome)
-             VALUES ($1,$2,$3,$4,$3,$4,$5,$6,NOW(),'graduated')`,
-            [`prom-${nanoid(8)}`, d.studentId, payload.fromClassId, payload.fromSectionId, payload.toAcademicYearId, payload.promotedByName || null]
+            `INSERT INTO student_promotions (id, student_id, from_class_id, from_section_id, to_class_id, to_section_id, academic_year_id, promoted_by, promoted_at, outcome, remarks)
+             VALUES ($1,$2,$3,$4,$3,$4,$5,$6,NOW(),'graduated',$7)`,
+            [`prom-${nanoid(8)}`, d.studentId, payload.fromClassId, payload.fromSectionId, payload.toAcademicYearId, payload.promotedByName || null, d.remarks || payload.batchRemarks || null]
           );
           const studentRes = await client.query("SELECT email FROM students WHERE id=$1", [d.studentId]);
           if (studentRes.rows[0]?.email) {
@@ -627,9 +640,9 @@ export async function bulkPromoteStudentsDB(payload: {
           [`enr-${nanoid(8)}`, d.studentId, targetClassId, targetSectionId, payload.toAcademicYearId, parseInt(rollRes.rows[0]?.next || '1', 10)]
         );
         await client.query(
-          `INSERT INTO student_promotions (id, student_id, from_class_id, from_section_id, to_class_id, to_section_id, academic_year_id, promoted_by, promoted_at, outcome)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9)`,
-          [`prom-${nanoid(8)}`, d.studentId, payload.fromClassId, payload.fromSectionId, targetClassId, targetSectionId, payload.toAcademicYearId, payload.promotedByName || null, d.outcome]
+          `INSERT INTO student_promotions (id, student_id, from_class_id, from_section_id, to_class_id, to_section_id, academic_year_id, promoted_by, promoted_at, outcome, remarks)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,$10)`,
+          [`prom-${nanoid(8)}`, d.studentId, payload.fromClassId, payload.fromSectionId, targetClassId, targetSectionId, payload.toAcademicYearId, payload.promotedByName || null, d.outcome, d.remarks || payload.batchRemarks || null]
         );
         if (d.outcome === 'retained') retainedCount++; else promotedCount++;
         succeeded.push({ studentId: d.studentId, outcome: d.outcome });
@@ -849,6 +862,8 @@ export async function fetchTermExamsDB(academicYearId?: string, classId?: string
     const params: string[] = [];
     if (academicYearId) { conditions.push(`te.academic_year_id = $${params.length + 1}`); params.push(academicYearId); }
     if (classId) { conditions.push(`te.class_id = $${params.length + 1}`); params.push(classId); }
+    const branchId = scopeBranch(auth.session);
+    if (branchId) { conditions.push(`c.branch_id = $${params.length + 1}`); params.push(branchId); }
     if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
     sql += " ORDER BY te.start_date DESC";
     const res = await query(sql, params);
@@ -1152,13 +1167,14 @@ export async function fetchResultsDB(examId: string) {
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
+    const branchId = scopeBranch(auth.session);
     const res = await query(
       `SELECT r.*, s.name as student_name, s.admission_number
        FROM results r
        JOIN students s ON r.student_id = s.id
-       WHERE r.exam_id = $1
+       WHERE r.exam_id = $1 ${branchId ? 'AND s.branch_id = $2' : ''}
        ORDER BY r.percentage DESC`,
-      [examId]
+      branchId ? [examId, branchId] : [examId]
     );
     return res.rows.map((r: any) => ({
       id: r.id, examId: r.exam_id, studentId: r.student_id,
@@ -1248,6 +1264,8 @@ export async function fetchReportCardsDB(academicYearId?: string, studentId?: st
     const params: string[] = [];
     if (academicYearId) { conditions.push(`rc.academic_year_id = $${params.length + 1}`); params.push(academicYearId); }
     if (studentId) { conditions.push(`rc.student_id = $${params.length + 1}`); params.push(studentId); }
+    const branchId = scopeBranch(auth.session);
+    if (branchId) { conditions.push(`s.branch_id = $${params.length + 1}`); params.push(branchId); }
     if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
     sql += " ORDER BY rc.generated_at DESC";
     const res = await query(sql, params);
@@ -1586,13 +1604,16 @@ export async function fetchSchoolResultsOverviewDB() {
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
+    const branchId = scopeBranch(auth.session);
     const res = await query(
       `SELECT r.student_id, s.name as student_name, r.percentage, r.grade,
               c.name as class_name, sec.name as section_name
        FROM results r
        JOIN students s ON s.id = r.student_id
        LEFT JOIN classes c ON c.id = r.class_id
-       LEFT JOIN sections sec ON sec.id = r.section_id`
+       LEFT JOIN sections sec ON sec.id = r.section_id
+       ${branchId ? 'WHERE s.branch_id = $1' : ''}`,
+      branchId ? [branchId] : []
     );
     return res.rows.map((r: any) => ({
       studentId: r.student_id, studentName: r.student_name,
@@ -1611,11 +1632,14 @@ export async function fetchSchoolAttendanceOverviewDB() {
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
+    const branchId = scopeBranch(auth.session);
     const res = await query(
       `SELECT ar.status, c.name as class_name
        FROM attendance_records ar
        JOIN attendance_sessions ases ON ases.id = ar.session_id
-       LEFT JOIN classes c ON c.id = ases.class_id`
+       LEFT JOIN classes c ON c.id = ases.class_id
+       ${branchId ? 'WHERE c.branch_id = $1' : ''}`,
+      branchId ? [branchId] : []
     );
     return res.rows.map((r: any) => ({ status: r.status, className: r.class_name || 'Unassigned' }));
   } catch { return []; }
@@ -1740,6 +1764,8 @@ export async function fetchAttendanceSessionsDB(classId?: string, sectionId?: st
     if (classId) { conditions.push(`asess.class_id = $${params.length + 1}`); params.push(classId); }
     if (sectionId) { conditions.push(`asess.section_id = $${params.length + 1}`); params.push(sectionId); }
     if (date) { conditions.push(`asess.date = $${params.length + 1}`); params.push(date); }
+    const branchId = scopeBranch(auth.session);
+    if (branchId) { conditions.push(`c.branch_id = $${params.length + 1}`); params.push(branchId); }
     if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
     sql += " ORDER BY asess.date DESC";
     const res = await query(sql, params);
@@ -2041,6 +2067,8 @@ export async function fetchTimetablesDB(classId?: string, sectionId?: string, te
     if (sectionId) { conditions.push(`tt.section_id = $${params.length + 1}`); params.push(sectionId); }
     if (teacherId) { conditions.push(`tt.teacher_id = $${params.length + 1}`); params.push(teacherId); }
     if (dayOfWeek) { conditions.push(`tt.day_of_week = $${params.length + 1}`); params.push(dayOfWeek); }
+    const branchId = scopeBranch(auth.session);
+    if (branchId) { conditions.push(`c.branch_id = $${params.length + 1}`); params.push(branchId); }
     if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
     sql += " ORDER BY tt.day_of_week, ts.start_time";
     const res = await query(sql, params);

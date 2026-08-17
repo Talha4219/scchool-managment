@@ -53,7 +53,7 @@ export default function InventoryPage() {
   const [maintAssetId, setMaintAssetId] = useState("");
   const [maintForm, setMaintForm] = useState({ maintenanceType: "Routine" as MaintenanceRecord["maintenanceType"], description: "", cost: 0, performedBy: "", scheduledDate: "", completedDate: "", status: "Scheduled" as MaintenanceRecord["status"] });
 
-  const isAdmin = activeRole === "ADMIN";
+  const isAdmin = (activeRole === "ADMIN" || activeRole === "PRINCIPAL");
 
   const loadData = async () => {
     setLoading(true);

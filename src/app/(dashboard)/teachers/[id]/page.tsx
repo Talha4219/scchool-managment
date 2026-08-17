@@ -31,6 +31,7 @@ import {
   fetchTeacherAssignmentsDB, createTeacherAssignmentDB, deleteTeacherAssignmentDB,
 } from "@/app/actions/academic-core";
 import type { AcademicYear, ClassItem, SectionItem, TeacherClassSubject, LeaveRequest } from "@/lib/types";
+import { formatDatePK } from "@/lib/date-format";
 
 export default function TeacherProfilePage() {
   const { toast } = useToast();
@@ -409,7 +410,7 @@ export default function TeacherProfilePage() {
             <div><p className="text-xs text-muted-foreground">CNIC</p><p>{profile.cnic || "—"}</p></div>
             <div><p className="text-xs text-muted-foreground">Specialization</p><p>{profile.specialization || "—"}</p></div>
             <div><p className="text-xs text-muted-foreground">Qualification Summary</p><p>{profile.qualification || "—"}</p></div>
-            <div><p className="text-xs text-muted-foreground">Joining Date</p><p>{profile.joiningDate || "—"}</p></div>
+            <div><p className="text-xs text-muted-foreground">Joining Date</p><p>{formatDatePK(profile.joiningDate)}</p></div>
             <div><p className="text-xs text-muted-foreground">Employment Type</p><p className="capitalize">{profile.employmentType}</p></div>
             <div className="sm:col-span-2"><p className="text-xs text-muted-foreground">Address</p><p>{profile.address || "—"}</p></div>
             <div>
@@ -605,7 +606,7 @@ export default function TeacherProfilePage() {
                 {leaveRequests.map(lr => (
                   <div key={lr.id} className="flex items-center justify-between border border-border rounded-md px-3 py-2 text-sm">
                     <div>
-                      <p className="font-medium">{lr.leaveType} — {lr.startDate} to {lr.endDate}</p>
+                      <p className="font-medium">{lr.leaveType} — {formatDatePK(lr.startDate)} to {formatDatePK(lr.endDate)}</p>
                       <p className="text-xs text-muted-foreground">{lr.totalDays} day(s){lr.reason ? ` · ${lr.reason}` : ""}</p>
                     </div>
                     <Badge variant={lr.status === "Approved" ? "default" : lr.status === "Rejected" ? "outline" : "secondary"}>{lr.status}</Badge>

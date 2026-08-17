@@ -3,6 +3,8 @@
 import { query } from '@/lib/db';
 import { getSession } from '@/app/actions/auth';
 import { logServerError } from '@/lib/error-log';
+import { scopeBranch } from '@/lib/auth-scope';
+import type { SessionPayload } from '@/lib/auth';
 
 export interface MessagingContact {
   userId: number;
@@ -14,14 +16,22 @@ export interface MessagingContact {
 // TeacherClassSubject) — never an open directory. This same query backs both
 // the contact picker AND sendMessageDB's server-side authorization check, so
 // the UI list and the enforcement can never drift apart.
-async function resolveContacts(userId: number, role: string): Promise<MessagingContact[]> {
+async function resolveContacts(userId: number, role: string, session: SessionPayload): Promise<MessagingContact[]> {
   const contacts = new Map<number, MessagingContact>();
-
-  const admins = await query(`SELECT id, name FROM users WHERE role='ADMIN' AND id != $1`, [userId]);
+  // Admins/Principals are only ever a branch's own — cross-branch admin
+  // directories aren't a real contact list for anyone but OWNER.
+  const branchId = scopeBranch(session);
+  const adminParams: (number | string)[] = [userId];
+  let adminSql = `SELECT id, name FROM users WHERE role='ADMIN' AND id != $1`;
+  if (branchId) { adminParams.push(branchId); adminSql += ` AND branch_id=$${adminParams.length}`; }
+  const admins = await query(adminSql, adminParams);
   for (const r of admins.rows) contacts.set(r.id, { userId: r.id, name: r.name, role: 'ADMIN' });
 
-  if (role === 'ADMIN') {
-    const all = await query(`SELECT id, name, role FROM users WHERE id != $1`, [userId]);
+  if (role === 'ADMIN' || role === 'PRINCIPAL' || role === 'OWNER') {
+    const params: (number | string)[] = [userId];
+    let sql = `SELECT id, name, role FROM users WHERE id != $1`;
+    if (branchId) { params.push(branchId); sql += ` AND branch_id=$${params.length}`; }
+    const all = await query(sql, params);
     for (const r of all.rows) contacts.set(r.id, { userId: r.id, name: r.name, role: r.role });
     return Array.from(contacts.values());
   }
@@ -63,7 +73,7 @@ async function resolveContacts(userId: number, role: string): Promise<MessagingC
 export async function fetchMessagingContactsDB(): Promise<MessagingContact[]> {
   const session = await getSession();
   if (!session) return [];
-  try { return await resolveContacts(session.userId, session.role); }
+  try { return await resolveContacts(session.userId, session.role, session); }
   catch { return []; }
 }
 
@@ -138,7 +148,7 @@ export async function sendMessageDB(recipientUserId: number, body: string): Prom
     // Real server-side enforcement of "restrict to real relationships" — the
     // contact picker only ever shows this same list, but a crafted request
     // could try to target anyone, so this is re-checked here, not trusted from the client.
-    const allowed = await resolveContacts(session.userId, session.role);
+    const allowed = await resolveContacts(session.userId, session.role, session);
     if (!allowed.some(c => c.userId === recipientUserId)) {
       return { error: "You don't have a messaging relationship with this person." };
     }

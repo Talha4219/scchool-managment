@@ -11,6 +11,7 @@ import {
   UserPlus, type LucideIcon, User, BookMarked,
   Briefcase, Package, Award,
   Radio, Presentation, HeartHandshake, ShieldCheck, History, Bus, MessageCircle, KeyRound,
+  Building2,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -35,10 +36,16 @@ type NavItem = {
   badge?: number;
   children?: { label: string; href: string; permission?: string }[];
   permission?: string;
+  // OWNER-only nav items (e.g. cross-branch management) bypass the
+  // permission-string gate entirely and instead check session role directly,
+  // since no permission profile makes sense for a role that predates
+  // branches for most schools.
+  ownerOnly?: boolean;
 };
 
 const navItems: NavItem[] = [
   { icon: LayoutDashboard, label: "Dashboard", href: "/dashboard" },
+  { icon: Building2, label: "Branches", href: "/owner", ownerOnly: true },
   { icon: Users, label: "Students", href: "/students", permission: "students.view" },
   { icon: UserPlus, label: "Admissions", href: "/admissions", permission: "admissions.view" },
   { icon: UserCheck, label: "Teachers", href: "/teachers", permission: "teachers.view" },
@@ -163,7 +170,9 @@ export function AppSidebar() {
         // custom role applies immediately without a re-login.
         const cr = await fetchMyCustomRoleIdDB();
         setCustomRoleId(cr);
-        if (s.role !== "ADMIN" || cr) {
+        // PRINCIPAL = "Admin, branch-scoped" — same unconditional bypass as
+        // ADMIN unless a custom role narrows it (see hasPermission below).
+        if ((s.role !== "ADMIN" && s.role !== "PRINCIPAL") || cr) {
           fetchRolePermissionsDB(cr || s.role).then(setPermissions);
         }
       }
@@ -175,12 +184,14 @@ export function AppSidebar() {
 
   const hasPermission = useCallback((perm?: string) => {
     if (!perm) return true;
-    // A custom role narrows an ADMIN's automatic bypass too — see usePermission().
-    if (sessionRole === "ADMIN" && !customRoleId) return true;
+    // A custom role narrows an ADMIN's/PRINCIPAL's automatic bypass too — see usePermission().
+    if ((sessionRole === "ADMIN" || sessionRole === "PRINCIPAL") && !customRoleId) return true;
     return permissions[perm] === true;
   }, [permissions, sessionRole, customRoleId]);
 
-  const visibleNavItems = navItems.filter(item => hasPermission(item.permission));
+  const visibleNavItems = navItems.filter(item =>
+    item.ownerOnly ? sessionRole === "OWNER" : hasPermission(item.permission)
+  );
 
   const isFav = useCallback((href: string) => favorites.includes(href), [favorites]);
   const toggleFavorite = useCallback((href: string) => {

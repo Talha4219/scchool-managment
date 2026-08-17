@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -58,7 +59,8 @@ function formatDate(d: string) {
 }
 
 export default function DisciplinePage() {
-  const { activeRole, schoolInfo, students } = useAppState();
+  const { activeRole, schoolInfo } = useAppState();
+  const { students } = useStudents();
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
   const [incidents, setIncidents] = useState<IncidentReport[]>([]);

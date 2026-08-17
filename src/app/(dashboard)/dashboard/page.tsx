@@ -3,6 +3,10 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { fetchAllSectionsDB } from "@/app/actions/academic-core";
 import { useAppState } from "@/lib/state-context";
+import { useNotifications } from "@/lib/notifications-context";
+import { useAttendance } from "@/lib/attendance-context";
+import { useExams } from "@/lib/exams-context";
+import { useStudents } from "@/lib/students-context";
 import { getSession } from "@/app/actions/auth";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -207,7 +211,11 @@ function CoveringTodayWidget() {
 // ── Main Dashboard ──────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const { t } = useLanguage();
-  const { activeRole, students, feeRecords, attendance, exams, classes, subjects, schoolInfo, applications, notifications } = useAppState();
+  const { activeRole, feeRecords, classes, subjects, schoolInfo, applications } = useAppState();
+  const { notifications } = useNotifications();
+  const { attendance } = useAttendance();
+  const { exams } = useExams();
+  const { students } = useStudents();
   const [sessionRole, setSessionRole] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState<string | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);

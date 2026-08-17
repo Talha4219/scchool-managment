@@ -1,5 +1,5 @@
 
-export type UserRole = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE';
+export type UserRole = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE' | 'OWNER' | 'PRINCIPAL';
 
 export interface SchoolInfo {
   name: string;

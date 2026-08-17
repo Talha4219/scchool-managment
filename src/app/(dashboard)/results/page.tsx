@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -109,7 +110,7 @@ function TeacherResultsView() {
 // PARENT VIEW
 // ═══════════════════════════════════════════════════════════════════════════════
 function ParentResultsView() {
-  const { students } = useAppState();
+  const { students } = useStudents();
   const [wardsData, setWardsData] = useState<{ ward: any; termResults: any[]; reportCards: any[] }[]>([]);
   const [gradeScale, setGradeScale] = useState<GradeScaleItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -259,7 +260,7 @@ function ParentResultsView() {
 // STUDENT VIEW
 // ═══════════════════════════════════════════════════════════════════════════════
 function StudentResultsView() {
-  const { students } = useAppState();
+  const { students } = useStudents();
   const [termResults, setTermResults] = useState<any[]>([]);
   const [reportCards, setReportCards] = useState<any[]>([]);
   const [gradeScale, setGradeScale] = useState<GradeScaleItem[]>([]);
@@ -486,7 +487,7 @@ export default function ResultsPage() {
     );
   }
 
-  if (activeRole === "ADMIN") {
+  if ((activeRole === "ADMIN" || activeRole === "PRINCIPAL")) {
     return (
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }} className="space-y-6">
         <div>

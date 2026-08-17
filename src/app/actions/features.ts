@@ -7,6 +7,20 @@ import bcrypt from 'bcryptjs';
 import { getSession } from '@/app/actions/auth';
 import { logServerError } from '@/lib/error-log';
 import { logAudit } from '@/lib/audit';
+import { scopeBranch } from '@/lib/auth-scope';
+import type { SessionPayload } from '@/lib/auth';
+
+// Guards id-based user mutations (approve/deactivate/delete/reset password/etc.)
+// against cross-branch tampering: an Admin/Principal for branch A must not be
+// able to act on a user id belonging to branch B just by guessing/enumerating
+// ids. Returns true if the caller may act on this target.
+async function ownsUserId(session: SessionPayload, targetUserId: number): Promise<boolean> {
+  const branchId = scopeBranch(session);
+  if (!branchId) return true; // OWNER — unscoped by design
+  const res = await query('SELECT branch_id FROM users WHERE id=$1', [targetUserId]);
+  if (res.rows.length === 0) return false;
+  return res.rows[0].branch_id === branchId;
+}
 
 export async function notify(title: string, message: string, recipientRole: string, recipientEmail?: string | null) {
   try {
@@ -49,9 +63,14 @@ export interface TimetableEntry {
 // ── Announcements ────────────────────────────────────────────────────────────
 
 export async function fetchAnnouncementsDB(role?: string, viewerUserId?: number): Promise<Announcement[]> {
+  const session = await getSession();
+  if (!session) return [];
   try {
     let sql = 'SELECT * FROM announcements';
     const params: string[] = [];
+    const branchConditions: string[] = [];
+    const branchId = scopeBranch(session);
+    if (branchId) { params.push(branchId); branchConditions.push(`branch_id=$${params.length}`); }
     if (role && role !== 'ADMIN') {
       // Older seed data stores "everyone" announcements as the literal string
       // 'ALL' rather than NULL — treat both as "everyone" so they aren't
@@ -64,8 +83,9 @@ export async function fetchAnnouncementsDB(role?: string, viewerUserId?: number)
       params.push(role);
       let clause = "(target_role IS NULL OR target_role = 'ALL' OR target_role = $1)";
       if (viewerUserId) { params.push(String(viewerUserId)); clause = `(${clause} OR author_id = $${params.length})`; }
-      sql += ` WHERE ${clause}`;
+      branchConditions.push(clause);
     }
+    if (branchConditions.length) sql += ' WHERE ' + branchConditions.join(' AND ');
     sql += ' ORDER BY date DESC';
     const res = await query(sql, params);
     return res.rows.map(r => ({
@@ -81,7 +101,7 @@ export async function createAnnouncementDB(data: Omit<Announcement, 'id'>): Prom
   // but that's UI-only; a crafted request could still call this action directly.
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') {
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') {
     return { error: 'Only admins and teachers can post announcements.' };
   }
   // A teacher can only target a class they're actually assigned to teach —
@@ -99,10 +119,10 @@ export async function createAnnouncementDB(data: Omit<Announcement, 'id'>): Prom
   try {
     const id = `ann_${Date.now()}`;
     await query(
-      `INSERT INTO announcements (id, title, content, date, author_id, author_name, target_role, target_class, priority)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      `INSERT INTO announcements (id, title, content, date, author_id, author_name, target_role, target_class, priority, branch_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [id, data.title, data.content, data.date, String(session.userId), session.name,
-       data.targetRole || null, data.targetClass || null, data.priority]
+       data.targetRole || null, data.targetClass || null, data.priority, scopeBranch(session)]
     );
     return {};
   } catch (err) { logServerError("features", err); return { error: 'Failed to create.' }; }
@@ -111,7 +131,7 @@ export async function createAnnouncementDB(data: Omit<Announcement, 'id'>): Prom
 export async function deleteAnnouncementDB(id: string): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN') return { error: 'Only admins can delete announcements.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL') return { error: 'Only admins can delete announcements.' };
   try { await query('DELETE FROM announcements WHERE id=$1', [id]); return {}; }
   catch { return { error: 'Failed to delete.' }; }
 }
@@ -131,15 +151,22 @@ export async function fetchAssignmentsDB(
   className?: string, teacherName?: string,
   opts?: { classId?: string; sectionId?: string; teacherId?: number }
 ): Promise<Assignment[]> {
+  const session = await getSession();
+  if (!session) return [];
   try {
-    let sql = 'SELECT * FROM assignments WHERE 1=1';
+    // assignments has no branch_id of its own — scope indirectly via
+    // classes.branch_id (this previously had no auth check or scoping at
+    // all, so any request could pull the full school-wide assignment list).
+    const branchId = scopeBranch(session);
+    let sql = branchId ? 'SELECT a.* FROM assignments a JOIN classes c ON c.id = a.class_id WHERE 1=1' : 'SELECT * FROM assignments a WHERE 1=1';
     const params: (string | number)[] = [];
-    if (className) { params.push(className); sql += ` AND class_name=$${params.length}`; }
-    if (teacherName) { params.push(teacherName); sql += ` AND teacher_name=$${params.length}`; }
-    if (opts?.classId) { params.push(opts.classId); sql += ` AND class_id=$${params.length}`; }
-    if (opts?.sectionId) { params.push(opts.sectionId); sql += ` AND section_id=$${params.length}`; }
-    if (opts?.teacherId !== undefined) { params.push(opts.teacherId); sql += ` AND teacher_id=$${params.length}`; }
-    sql += ' ORDER BY due_date ASC';
+    if (className) { params.push(className); sql += ` AND a.class_name=$${params.length}`; }
+    if (teacherName) { params.push(teacherName); sql += ` AND a.teacher_name=$${params.length}`; }
+    if (opts?.classId) { params.push(opts.classId); sql += ` AND a.class_id=$${params.length}`; }
+    if (opts?.sectionId) { params.push(opts.sectionId); sql += ` AND a.section_id=$${params.length}`; }
+    if (opts?.teacherId !== undefined) { params.push(opts.teacherId); sql += ` AND a.teacher_id=$${params.length}`; }
+    if (branchId) { params.push(branchId); sql += ` AND c.branch_id=$${params.length}`; }
+    sql += ' ORDER BY a.due_date ASC';
     const res = await query(sql, params);
     return res.rows.map(mapAssignment);
   } catch { return []; }
@@ -551,7 +578,12 @@ export async function deletePeriodSlotDB(id: string): Promise<{ error?: string }
 async function requireAdmin() {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' } as const;
-  if (session.role !== 'ADMIN') return { error: 'Only administrators can do this.' } as const;
+  // PRINCIPAL = "Admin, branch-scoped" and OWNER manages the whole school —
+  // both act with Admin-equivalent authority here; scoping (who they can
+  // actually see/touch) is enforced separately via scopeBranch().
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'OWNER') {
+    return { error: 'Only administrators can do this.' } as const;
+  }
   return { session };
 }
 
@@ -559,13 +591,21 @@ export async function fetchUsersDB() {
   const auth = await requireAdmin();
   if ('error' in auth) return [];
   try {
+    // Branch-scoped for everyone except OWNER — this backs both /users and
+    // /teachers, so a Principal managing "their" staff/teacher accounts only
+    // ever sees their own branch's, same as every other module.
+    const branchId = scopeBranch(auth.session);
+    const params: string[] = [];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = ` AND u.branch_id=$${params.length}`; }
     const res = await query(
       `SELECT u.id, u.name, u.email, u.role, u.created_at, COALESCE(u.status, 'ACTIVE') AS status,
               u.custom_role_id, cr.name AS custom_role_name, cr.color AS custom_role_color
        FROM users u
        LEFT JOIN custom_roles cr ON cr.id = u.custom_role_id
-       WHERE COALESCE(u.status, 'ACTIVE') IN ('ACTIVE', 'INACTIVE')
-       ORDER BY u.created_at DESC`
+       WHERE COALESCE(u.status, 'ACTIVE') IN ('ACTIVE', 'INACTIVE')${branchFilter}
+       ORDER BY u.created_at DESC`,
+      params
     );
     return res.rows.map(r => ({
       id: r.id, name: r.name, email: r.email, role: r.role,
@@ -581,6 +621,10 @@ export async function fetchPendingUsersDB() {
   const auth = await requireAdmin();
   if ('error' in auth) return [];
   try {
+    const branchId = scopeBranch(auth.session);
+    const params: string[] = [];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = ` AND u.branch_id=$${params.length}`; }
     const res = await query(
       `SELECT u.id, u.name, u.email, u.role, u.created_at,
               tp.phone, tp.cnic, tp.specialization, tp.qualification,
@@ -588,8 +632,9 @@ export async function fetchPendingUsersDB() {
               tp.profile_photo, tp.degree_photo
        FROM users u
        LEFT JOIN teacher_profiles tp ON tp.user_id = u.id
-       WHERE COALESCE(u.status, 'ACTIVE') = 'PENDING'
-       ORDER BY u.created_at DESC`
+       WHERE COALESCE(u.status, 'ACTIVE') = 'PENDING'${branchFilter}
+       ORDER BY u.created_at DESC`,
+      params
     );
     return res.rows.map(r => ({
       id: r.id as number,
@@ -611,6 +656,7 @@ export async function fetchPendingUsersDB() {
 export async function approveUserDB(id: number): Promise<{ error?: string }> {
   const auth = await requireAdmin();
   if ('error' in auth) return auth;
+  if (!(await ownsUserId(auth.session, id))) return { error: 'Not authorized for this user.' };
   try {
     await query('UPDATE users SET status=$1 WHERE id=$2', ['ACTIVE', id]);
     await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'user', entityId: String(id), summary: `Approved pending account #${id}`, after: { status: 'ACTIVE' } });
@@ -621,6 +667,7 @@ export async function approveUserDB(id: number): Promise<{ error?: string }> {
 export async function rejectUserDB(id: number): Promise<{ error?: string }> {
   const auth = await requireAdmin();
   if ('error' in auth) return auth;
+  if (!(await ownsUserId(auth.session, id))) return { error: 'Not authorized for this user.' };
   try {
     await query('DELETE FROM teacher_profiles WHERE user_id=$1', [id]);
     await prisma.user.delete({ where: { id } });
@@ -635,6 +682,7 @@ export async function updateUserDB(
 ): Promise<{ error?: string }> {
   const auth = await requireAdmin();
   if ('error' in auth) return auth;
+  if (!(await ownsUserId(auth.session, id))) return { error: 'Not authorized for this user.' };
   try {
     const { customRoleId, ...prismaData } = data;
     if (Object.keys(prismaData).length > 0) await prisma.user.update({ where: { id }, data: prismaData });
@@ -648,6 +696,7 @@ export async function deactivateUserDB(id: number): Promise<{ error?: string }> 
   const auth = await requireAdmin();
   if ('error' in auth) return auth;
   if (auth.session.userId === id) return { error: "You can't deactivate your own account." };
+  if (!(await ownsUserId(auth.session, id))) return { error: 'Not authorized for this user.' };
   try {
     await query(`UPDATE users SET status='INACTIVE' WHERE id=$1`, [id]);
     await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'user', entityId: String(id), summary: `Deactivated user #${id}`, after: { status: 'INACTIVE' } });
@@ -658,6 +707,7 @@ export async function deactivateUserDB(id: number): Promise<{ error?: string }> 
 export async function reactivateUserDB(id: number): Promise<{ error?: string }> {
   const auth = await requireAdmin();
   if ('error' in auth) return auth;
+  if (!(await ownsUserId(auth.session, id))) return { error: 'Not authorized for this user.' };
   try {
     await query(`UPDATE users SET status='ACTIVE', failed_login_attempts=0, locked_until=NULL WHERE id=$1`, [id]);
     await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'user', entityId: String(id), summary: `Reactivated user #${id}`, after: { status: 'ACTIVE' } });
@@ -669,6 +719,7 @@ export async function deleteUserDB(id: number): Promise<{ error?: string }> {
   const auth = await requireAdmin();
   if ('error' in auth) return auth;
   if (auth.session.userId === id) return { error: "You can't delete your own account." };
+  if (!(await ownsUserId(auth.session, id))) return { error: 'Not authorized for this user.' };
   try {
     await prisma.user.delete({ where: { id } });
     await logAudit({ actor: auth.session, action: 'DELETE', entityType: 'user', entityId: String(id), summary: `Deleted user #${id}` });
@@ -679,6 +730,7 @@ export async function deleteUserDB(id: number): Promise<{ error?: string }> {
 export async function resetUserPasswordDB(id: number, newPassword: string): Promise<{ error?: string }> {
   const auth = await requireAdmin();
   if ('error' in auth) return auth;
+  if (!(await ownsUserId(auth.session, id))) return { error: 'Not authorized for this user.' };
   try {
     const passwordHash = await bcrypt.hash(newPassword, 12);
     await prisma.user.update({ where: { id }, data: { passwordHash } });
@@ -689,18 +741,29 @@ export async function resetUserPasswordDB(id: number, newPassword: string): Prom
 
 export async function createUserDB(
   name: string, email: string, password: string,
-  role: 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE',
-  customRoleId?: string | null
+  role: 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE' | 'OWNER' | 'PRINCIPAL',
+  customRoleId?: string | null,
+  branchId?: string | null
 ): Promise<{ error?: string }> {
   const auth = await requireAdmin();
   if ('error' in auth) return auth;
+  // Only OWNER creates OWNER/PRINCIPAL accounts — an Admin/Principal
+  // creating staff shouldn't be able to hand out cross-branch authority.
+  if ((role === 'OWNER' || role === 'PRINCIPAL') && auth.session.role !== 'OWNER') {
+    return { error: 'Only the school owner can create Owner or Principal accounts.' };
+  }
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) return { error: 'Email already in use.' };
     const passwordHash = await bcrypt.hash(password, 12);
     const user = await prisma.user.create({ data: { name, email, passwordHash, role } });
     if (customRoleId) await query('UPDATE users SET custom_role_id=$1 WHERE id=$2', [customRoleId, user.id]);
-    await logAudit({ actor: auth.session, action: 'CREATE', entityType: 'user', entityId: String(user.id), summary: `Created user ${name} (${role})`, after: { name, email, role, customRoleId: customRoleId || null } });
+    // A Principal/Admin/Teacher/Employee created by a branch-scoped caller
+    // (Principal) automatically belongs to that caller's own branch;
+    // OWNER-created accounts use whichever branch was explicitly picked.
+    const effectiveBranchId = role === 'OWNER' ? null : (branchId ?? scopeBranch(auth.session));
+    if (effectiveBranchId) await query('UPDATE users SET branch_id=$1 WHERE id=$2', [effectiveBranchId, user.id]);
+    await logAudit({ actor: auth.session, action: 'CREATE', entityType: 'user', entityId: String(user.id), summary: `Created user ${name} (${role})`, after: { name, email, role, customRoleId: customRoleId || null, branchId: effectiveBranchId } });
     return {};
   } catch { return { error: 'Failed to create user.' }; }
 }
@@ -880,6 +943,8 @@ export async function createTeacherWithProfileDB(
   password: string,
   profile: Omit<TeacherProfile, 'id' | 'userId'>
 ): Promise<{ error?: string; userId?: number }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return auth;
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) return { error: 'Email already in use.' };
@@ -889,17 +954,22 @@ export async function createTeacherWithProfileDB(
     }
     const passwordHash = await bcrypt.hash(password, 12);
     const user = await prisma.user.create({ data: { name, email, passwordHash, role: 'TEACHER' } });
+    // A Principal creating a teacher stamps their own branch; branch_id isn't
+    // in the Prisma model (added via raw ALTER), so set it with a follow-up
+    // raw UPDATE, same pattern as createStaffEmployeeDB.
+    const branchId = scopeBranch(auth.session);
+    if (branchId) await query('UPDATE users SET branch_id=$1 WHERE id=$2', [branchId, user.id]);
     const id = `tp_${Date.now()}`;
     // employees is the canonical HR record for every staff member (teachers
     // included) — create the linked row in the same flow so this person is
     // immediately visible/editable in HR and selectable in Payroll/Leave.
     const empId = `emp_tp_${user.id}`;
     await query(
-      `INSERT INTO employees (id, user_id, name, email, phone, department, designation, employment_type, joining_date, cnic, address, emergency_contact, emergency_phone, qualification, experience, status, bank_name, bank_account, profile_photo, pay_scale_id)
-       VALUES ($1,$2,$3,$4,$5,'Teaching',$6,$7,$8,$9,$10,'','',$11,$12,$13,'','','',$14)`,
+      `INSERT INTO employees (id, user_id, name, email, phone, department, designation, employment_type, joining_date, cnic, address, emergency_contact, emergency_phone, qualification, experience, status, bank_name, bank_account, profile_photo, pay_scale_id, branch_id)
+       VALUES ($1,$2,$3,$4,$5,'Teaching',$6,$7,$8,$9,$10,'','',$11,$12,$13,'','','',$14,$15)`,
       [empId, user.id, name, email, profile.phone, profile.designation || '', profile.employmentType || 'fulltime',
        profile.joiningDate, profile.cnic, profile.address, profile.qualification, profile.experienceYears,
-       profile.status === 'inactive' ? 'Inactive' : 'Active', profile.payScaleId || null]
+       profile.status === 'inactive' ? 'Inactive' : 'Active', profile.payScaleId || null, branchId]
     );
     await query(
       `INSERT INTO teacher_profiles (id, user_id, phone, cnic, specialization, qualification, experience_years, joining_date, address, profile_photo, degree_photo, employee_id, employment_type, status, pay_scale_id, designation)
@@ -915,7 +985,10 @@ export async function createTeacherWithProfileDB(
 }
 
 export async function fetchTeacherProfileDB(userId: number): Promise<TeacherProfile | null> {
+  const session = await getSession();
+  if (!session) return null;
   try {
+    if (!(await ownsUserId(session, userId))) return null;
     const res = await query('SELECT * FROM teacher_profiles WHERE user_id=$1', [userId]);
     if (!res.rows.length) return null;
     return mapTeacherProfile(res.rows[0]);
@@ -923,8 +996,17 @@ export async function fetchTeacherProfileDB(userId: number): Promise<TeacherProf
 }
 
 export async function fetchAllTeacherProfilesDB(): Promise<TeacherProfile[]> {
+  const session = await getSession();
+  if (!session) return [];
   try {
-    const res = await query('SELECT * FROM teacher_profiles ORDER BY created_at DESC');
+    const branchId = scopeBranch(session);
+    const params: string[] = [];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = ' WHERE u.branch_id=$1'; }
+    const res = await query(
+      `SELECT tp.* FROM teacher_profiles tp JOIN users u ON u.id = tp.user_id${branchFilter} ORDER BY tp.created_at DESC`,
+      params
+    );
     return res.rows.map(mapTeacherProfile);
   } catch { return []; }
 }
@@ -937,7 +1019,7 @@ export async function updateTeacherProfileDB(
   userId: number, data: Partial<Omit<TeacherProfile, 'id' | 'userId' | 'status'>>
 ): Promise<{ error?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can edit teacher profiles.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can edit teacher profiles.' };
   try {
     const fields: string[] = []; const vals: any[] = []; let i = 1;
     if (data.phone !== undefined) { fields.push(`phone=$${i++}`); vals.push(data.phone); }
@@ -987,6 +1069,9 @@ export async function updateTeacherProfileDB(
 // ── Teacher status (deactivation guarded by active assignments) ────────────────
 
 export async function updateTeacherStatusDB(userId: number, status: 'active' | 'on_leave' | 'inactive'): Promise<{ error?: string; activeAssignments?: number }> {
+  const session = await getSession();
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'OWNER')) return { error: 'Not authorized.' };
+  if (!(await ownsUserId(session, userId))) return { error: 'Not authorized for this user.' };
   try {
     if (status === 'inactive') {
       const res = await query('SELECT COUNT(*)::int as count FROM teacher_class_subjects WHERE teacher_id=$1', [userId]);
@@ -1672,10 +1757,14 @@ export async function fetchProfilePhotoAction(): Promise<string | null> {
 
 // ── LMS / Courses ──────────────────────────────────────────────────────────────
 export async function fetchCoursesDB(gradeLevel?: string): Promise<import('@/lib/types').Course[]> {
+  const session = await getSession();
+  if (!session) return [];
   try {
     let sql = 'SELECT * FROM courses';
     const params: string[] = [];
     if (gradeLevel) { params.push(gradeLevel); sql += ` WHERE grade_level=$${params.length}`; }
+    const branchId = scopeBranch(session);
+    if (branchId) { sql += params.length ? ' AND' : ' WHERE'; params.push(branchId); sql += ` branch_id=$${params.length}`; }
     sql += ' ORDER BY title';
     const res = await query(sql, params);
     return res.rows.map(r => ({ id: r.id, title: r.title, code: r.code, description: r.description, gradeLevel: r.grade_level, teacherName: r.teacher_name, credits: r.credits, learningOutcomes: r.learning_outcomes || [], prerequisites: r.prerequisites || [], isActive: r.is_active }));
@@ -1683,10 +1772,12 @@ export async function fetchCoursesDB(gradeLevel?: string): Promise<import('@/lib
 }
 
 export async function createCourseDB(data: Omit<import('@/lib/types').Course, 'id'>): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' };
   try {
     const id = `crs_${Date.now()}`;
-    await query(`INSERT INTO courses (id, title, code, description, grade_level, teacher_name, credits, learning_outcomes, prerequisites, is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [id, data.title, data.code, data.description, data.gradeLevel, data.teacherName, data.credits, data.learningOutcomes, data.prerequisites, data.isActive]);
+    await query(`INSERT INTO courses (id, title, code, description, grade_level, teacher_name, credits, learning_outcomes, prerequisites, is_active, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [id, data.title, data.code, data.description, data.gradeLevel, data.teacherName, data.credits, data.learningOutcomes, data.prerequisites, data.isActive, scopeBranch(session)]);
     return { id };
   } catch (err: any) { return { error: err?.message || 'Failed to create course.' }; }
 }
@@ -1778,10 +1869,14 @@ export async function deleteCourseMaterialDB(id: string): Promise<{ error?: stri
 
 // Library ────────────────────────────────────────────────────────────────────
 export async function fetchLibraryBooksDB(category?: string): Promise<import('@/lib/types').LibraryBook[]> {
+  const session = await getSession();
+  if (!session) return [];
   try {
     let sql = 'SELECT * FROM library_books';
     const params: string[] = [];
     if (category) { params.push(category); sql += ` WHERE category=$${params.length}`; }
+    const branchId = scopeBranch(session);
+    if (branchId) { sql += params.length ? ' AND' : ' WHERE'; params.push(branchId); sql += ` branch_id=$${params.length}`; }
     sql += ' ORDER BY title';
     const res = await query(sql, params);
     return res.rows.map(r => ({ id: r.id, title: r.title, author: r.author, isbn: r.isbn, category: r.category, publisher: r.publisher, publishYear: r.publish_year, totalCopies: r.total_copies, availableCopies: r.available_copies, rackNumber: r.rack_number, barcode: r.barcode, isDigital: r.is_digital, digitalUrl: r.digital_url, status: r.status }));
@@ -1789,10 +1884,12 @@ export async function fetchLibraryBooksDB(category?: string): Promise<import('@/
 }
 
 export async function createLibraryBookDB(data: Omit<import('@/lib/types').LibraryBook, 'id'>): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' };
   try {
     const id = `lb_${Date.now()}`;
-    await query(`INSERT INTO library_books (id, title, author, isbn, category, publisher, publish_year, total_copies, available_copies, rack_number, barcode, is_digital, digital_url, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [id, data.title, data.author, data.isbn, data.category, data.publisher, data.publishYear, data.totalCopies, data.availableCopies, data.rackNumber, data.barcode, data.isDigital, data.digitalUrl, data.status]);
+    await query(`INSERT INTO library_books (id, title, author, isbn, category, publisher, publish_year, total_copies, available_copies, rack_number, barcode, is_digital, digital_url, status, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [id, data.title, data.author, data.isbn, data.category, data.publisher, data.publishYear, data.totalCopies, data.availableCopies, data.rackNumber, data.barcode, data.isDigital, data.digitalUrl, data.status, scopeBranch(session)]);
     return { id };
   } catch (err: any) { return { error: err?.message || 'Failed.' }; }
 }
@@ -1847,14 +1944,20 @@ export async function deleteLibraryBookDB(id: string): Promise<{ error?: string 
 
 // Hostel ──────────────────────────────────────────────────────────────────────
 export async function fetchHostelsDB(): Promise<import('@/lib/types').Hostel[]> {
-  try { const res = await query('SELECT * FROM hostels ORDER BY name'); return res.rows.map(r => ({ id: r.id, name: r.name, type: r.type, wardenName: r.warden_name, contactPhone: r.contact_phone, totalRooms: r.total_rooms, totalBeds: r.total_beds, address: r.address })); } catch { return []; }
+  const session = await getSession();
+  if (!session) return [];
+  const branchId = scopeBranch(session);
+  const sql = branchId ? 'SELECT * FROM hostels WHERE branch_id=$1 ORDER BY name' : 'SELECT * FROM hostels ORDER BY name';
+  try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, name: r.name, type: r.type, wardenName: r.warden_name, contactPhone: r.contact_phone, totalRooms: r.total_rooms, totalBeds: r.total_beds, address: r.address })); } catch { return []; }
 }
 
 export async function createHostelDB(data: Omit<import('@/lib/types').Hostel, 'id'>): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' };
   try {
     const id = `hst_${Date.now()}`;
-    await query(`INSERT INTO hostels (id, name, type, warden_name, contact_phone, total_rooms, total_beds, address) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [id, data.name, data.type, data.wardenName, data.contactPhone, data.totalRooms, data.totalBeds, data.address]);
+    await query(`INSERT INTO hostels (id, name, type, warden_name, contact_phone, total_rooms, total_beds, address, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, data.name, data.type, data.wardenName, data.contactPhone, data.totalRooms, data.totalBeds, data.address, scopeBranch(session)]);
     return { id };
   } catch { return { error: 'Failed.' }; }
 }
@@ -1886,11 +1989,20 @@ export async function allocateHostelDB(data: Omit<import('@/lib/types').HostelAl
 }
 
 export async function fetchHostelAllocationsDB(hostelId?: string): Promise<import('@/lib/types').HostelAllocation[]> {
+  const session = await getSession();
+  if (!session) return [];
   try {
-    let sql = 'SELECT * FROM hostel_allocations';
+    // hostel_allocations has no branch_id of its own — scope indirectly via
+    // hostels.branch_id when listing across all hostels (a specific
+    // hostelId is already a scoped lookup by the caller).
+    const branchId = hostelId ? null : scopeBranch(session);
+    let sql = branchId ? 'SELECT ha.* FROM hostel_allocations ha JOIN hostels h ON h.id = ha.hostel_id' : 'SELECT * FROM hostel_allocations ha';
+    const conditions: string[] = [];
     const params: string[] = [];
-    if (hostelId) { params.push(hostelId); sql += ` WHERE hostel_id=$${params.length}`; }
-    sql += ' ORDER BY start_date DESC';
+    if (hostelId) { params.push(hostelId); conditions.push(`ha.hostel_id=$${params.length}`); }
+    if (branchId) { params.push(branchId); conditions.push(`h.branch_id=$${params.length}`); }
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY ha.start_date DESC';
     const res = await query(sql, params);
     return res.rows.map(r => ({ id: r.id, hostelId: r.hostel_id, hostelName: r.hostel_name, roomId: r.room_id, roomNumber: r.room_number, studentId: r.student_id, studentName: r.student_name, startDate: r.start_date, endDate: r.end_date, status: r.status, feeAmount: r.fee_amount, feePaid: r.fee_paid }));
   } catch { return []; }
@@ -1898,14 +2010,20 @@ export async function fetchHostelAllocationsDB(hostelId?: string): Promise<impor
 
 // Transport ───────────────────────────────────────────────────────────────────
 export async function fetchTransportRoutesDB(): Promise<import('@/lib/types').TransportRoute[]> {
-  try { const res = await query('SELECT * FROM transport_routes ORDER BY route_name'); return res.rows.map(r => ({ id: r.id, routeName: r.route_name, startPoint: r.start_point, endPoint: r.end_point, stops: r.stops || [], distance: r.distance, feeAmount: r.fee_amount, isActive: r.is_active })); } catch { return []; }
+  const session = await getSession();
+  if (!session) return [];
+  const branchId = scopeBranch(session);
+  const sql = branchId ? 'SELECT * FROM transport_routes WHERE branch_id=$1 ORDER BY route_name' : 'SELECT * FROM transport_routes ORDER BY route_name';
+  try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, routeName: r.route_name, startPoint: r.start_point, endPoint: r.end_point, stops: r.stops || [], distance: r.distance, feeAmount: r.fee_amount, isActive: r.is_active })); } catch { return []; }
 }
 
 export async function createTransportRouteDB(data: Omit<import('@/lib/types').TransportRoute, 'id'>): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' };
   try {
     const id = `tr_${Date.now()}`;
-    await query(`INSERT INTO transport_routes (id, route_name, start_point, end_point, stops, distance, fee_amount, is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [id, data.routeName, data.startPoint, data.endPoint, JSON.stringify(data.stops), data.distance, data.feeAmount, data.isActive]);
+    await query(`INSERT INTO transport_routes (id, route_name, start_point, end_point, stops, distance, fee_amount, is_active, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, data.routeName, data.startPoint, data.endPoint, JSON.stringify(data.stops), data.distance, data.feeAmount, data.isActive, scopeBranch(session)]);
     return { id };
   } catch { return { error: 'Failed.' }; }
 }
@@ -1925,7 +2043,9 @@ export async function fetchTransportVehiclesDB(routeId?: string): Promise<import
 export async function fetchEmployeesDB(): Promise<import('@/lib/types').EmployeeRecord[]> {
   const session = await getSession();
   if (!session) return [];
-  try { const res = await query('SELECT * FROM employees ORDER BY name'); return res.rows.map(r => ({ id: r.id, userId: r.user_id, name: r.name, email: r.email, phone: r.phone, department: r.department, designation: r.designation, employmentType: r.employment_type, joiningDate: r.joining_date, cnic: r.cnic, address: r.address, emergencyContact: r.emergency_contact, emergencyPhone: r.emergency_phone, qualification: r.qualification, experience: r.experience, status: r.status, bankName: r.bank_name, bankAccount: r.bank_account, profilePhoto: r.profile_photo, payScaleId: r.pay_scale_id ?? null })); } catch { return []; }
+  const branchId = scopeBranch(session);
+  const sql = branchId ? 'SELECT * FROM employees WHERE branch_id=$1 ORDER BY name' : 'SELECT * FROM employees ORDER BY name';
+  try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, userId: r.user_id, name: r.name, email: r.email, phone: r.phone, department: r.department, designation: r.designation, employmentType: r.employment_type, joiningDate: r.joining_date, cnic: r.cnic, address: r.address, emergencyContact: r.emergency_contact, emergencyPhone: r.emergency_phone, qualification: r.qualification, experience: r.experience, status: r.status, bankName: r.bank_name, bankAccount: r.bank_account, profilePhoto: r.profile_photo, payScaleId: r.pay_scale_id ?? null })); } catch { return []; }
 }
 
 // Every staff member (teaching or not) is fundamentally a `users` row —
@@ -1937,22 +2057,27 @@ export async function createStaffEmployeeDB(
   data: Omit<import('@/lib/types').EmployeeRecord, 'id' | 'userId' | 'name' | 'email'>
 ): Promise<{ error?: string; userId?: number }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can add staff.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can add staff.' };
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) return { error: 'Email already in use.' };
     const passwordHash = await bcrypt.hash(password, 12);
+    const branchId = scopeBranch(session);
     const user = await prisma.user.create({ data: { name, email, passwordHash, role: 'EMPLOYEE' } });
+    // branch_id isn't in the Prisma model (added via raw ALTER, like
+    // status/custom_role_id) — set it with a follow-up raw UPDATE.
+    if (branchId) await query('UPDATE users SET branch_id=$1 WHERE id=$2', [branchId, user.id]);
     const id = `emp_${Date.now()}`;
-    await query(`INSERT INTO employees (id, user_id, name, email, phone, department, designation, employment_type, joining_date, cnic, address, emergency_contact, emergency_phone, qualification, experience, status, bank_name, bank_account, profile_photo, pay_scale_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
-      [id, user.id, name, email, data.phone, data.department, data.designation, data.employmentType, data.joiningDate, data.cnic, data.address, data.emergencyContact, data.emergencyPhone, data.qualification, data.experience, data.status, data.bankName, data.bankAccount, data.profilePhoto, (data as any).payScaleId || null]);
+    await query(`INSERT INTO employees (id, user_id, name, email, phone, department, designation, employment_type, joining_date, cnic, address, emergency_contact, emergency_phone, qualification, experience, status, bank_name, bank_account, profile_photo, pay_scale_id, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+      [id, user.id, name, email, data.phone, data.department, data.designation, data.employmentType, data.joiningDate, data.cnic, data.address, data.emergencyContact, data.emergencyPhone, data.qualification, data.experience, data.status, data.bankName, data.bankAccount, data.profilePhoto, (data as any).payScaleId || null, branchId]);
     return { userId: user.id };
   } catch (err: any) { return { error: err?.message || 'Failed to create staff member.' }; }
 }
 
 export async function updateEmployeeDB(userId: number, data: Partial<Omit<import('@/lib/types').EmployeeRecord, 'id' | 'userId'>>): Promise<{ error?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can edit staff.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can edit staff.' };
+  if (!(await ownsUserId(session, userId))) return { error: 'Not authorized for this user.' };
   try {
     const fields: string[] = []; const vals: any[] = []; let i = 1;
     const colMap: Record<string, string> = { phone: 'phone', department: 'department', designation: 'designation', employmentType: 'employment_type', joiningDate: 'joining_date', cnic: 'cnic', address: 'address', emergencyContact: 'emergency_contact', emergencyPhone: 'emergency_phone', qualification: 'qualification', experience: 'experience', status: 'status', bankName: 'bank_name', bankAccount: 'bank_account', profilePhoto: 'profile_photo', payScaleId: 'pay_scale_id' };
@@ -1981,7 +2106,8 @@ export async function updateEmployeeDB(userId: number, data: Partial<Omit<import
 
 export async function deleteEmployeeDB(userId: number): Promise<{ error?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can remove staff.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can remove staff.' };
+  if (!(await ownsUserId(session, userId))) return { error: 'Not authorized for this user.' };
   try { await query('DELETE FROM employees WHERE user_id=$1', [userId]); return {}; }
   catch { return { error: 'Failed to remove staff member.' }; }
 }
@@ -1992,11 +2118,16 @@ export async function fetchStaffDirectoryDB(): Promise<{ userId: number; name: s
   const session = await getSession();
   if (!session) return [];
   try {
+    const branchId = scopeBranch(session);
+    const params: string[] = [];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = ' AND u.branch_id=$1'; }
     const res = await query(
       `SELECT u.id as user_id, u.name, u.role, e.department, e.designation, e.pay_scale_id
        FROM users u JOIN employees e ON e.user_id = u.id
-       WHERE u.role IN ('ADMIN','TEACHER','EMPLOYEE')
-       ORDER BY u.name`
+       WHERE u.role IN ('ADMIN','TEACHER','EMPLOYEE')${branchFilter}
+       ORDER BY u.name`,
+      params
     );
     return res.rows.map(r => ({ userId: r.user_id, name: r.name, role: r.role, department: r.department, designation: r.designation, payScaleId: r.pay_scale_id }));
   } catch { return []; }
@@ -2006,12 +2137,19 @@ export async function fetchLeaveRequestsDB(employeeId?: number): Promise<import(
   const session = await getSession();
   if (!session) return [];
   // Non-admins may only see their own leave requests (self-service).
-  if (session.role !== 'ADMIN') employeeId = session.userId;
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'OWNER') employeeId = session.userId;
   try {
-    let sql = 'SELECT * FROM leave_requests';
+    // leave_requests has no branch_id of its own — scope indirectly via
+    // employees.branch_id when the caller is viewing everyone's (not just
+    // their own self-service list).
+    const branchId = employeeId === undefined ? scopeBranch(session) : null;
+    let sql = branchId ? 'SELECT lr.* FROM leave_requests lr JOIN employees e ON e.user_id = lr.employee_id' : 'SELECT * FROM leave_requests lr';
+    const conditions: string[] = [];
     const params: any[] = [];
-    if (employeeId !== undefined) { params.push(employeeId); sql += ` WHERE employee_id=$${params.length}`; }
-    sql += ' ORDER BY applied_at DESC';
+    if (employeeId !== undefined) { params.push(employeeId); conditions.push(`lr.employee_id=$${params.length}`); }
+    if (branchId) { params.push(branchId); conditions.push(`e.branch_id=$${params.length}`); }
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY lr.applied_at DESC';
     const res = await query(sql, params);
     return res.rows.map(r => ({ id: r.id, employeeId: r.employee_id, employeeName: r.employee_name, leaveType: r.leave_type, startDate: r.start_date, endDate: r.end_date, totalDays: r.total_days, reason: r.reason, status: r.status, approvedBy: r.approved_by, appliedAt: r.applied_at }));
   } catch { return []; }
@@ -2032,9 +2170,11 @@ export async function createLeaveRequestDB(data: Omit<import('@/lib/types').Leav
 
 export async function approveLeaveDB(id: string, approvedBy: string): Promise<{ error?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can approve leave.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can approve leave.' };
   try {
     const leaveRes = await query('SELECT employee_id, start_date, end_date FROM leave_requests WHERE id=$1', [id]);
+    if (leaveRes.rows.length === 0) return { error: 'Leave request not found.' };
+    if (!(await ownsUserId(session, leaveRes.rows[0].employee_id))) return { error: 'Not authorized for this employee.' };
     await query('UPDATE leave_requests SET status=$1, approved_by=$2 WHERE id=$3', ['Approved', approvedBy, id]);
 
     // Missing link this session added: an approved leave now feeds the
@@ -2061,8 +2201,14 @@ export async function approveLeaveDB(id: string, approvedBy: string): Promise<{ 
 
 export async function rejectLeaveDB(id: string): Promise<{ error?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can reject leave.' };
-  try { await query("UPDATE leave_requests SET status='Rejected' WHERE id=$1", [id]); return {}; } catch { return { error: 'Failed.' }; }
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can reject leave.' };
+  try {
+    const leaveRes = await query('SELECT employee_id FROM leave_requests WHERE id=$1', [id]);
+    if (leaveRes.rows.length === 0) return { error: 'Leave request not found.' };
+    if (!(await ownsUserId(session, leaveRes.rows[0].employee_id))) return { error: 'Not authorized for this employee.' };
+    await query("UPDATE leave_requests SET status='Rejected' WHERE id=$1", [id]);
+    return {};
+  } catch { return { error: 'Failed.' }; }
 }
 
 // Performance ─────────────────────────────────────────────────────────────────
@@ -2070,10 +2216,19 @@ export async function fetchPerformanceEvaluationsDB(employeeId?: number): Promis
   const session = await getSession();
   if (!session) return [];
   try {
-    let sql = 'SELECT * FROM performance_evaluations';
+    // performance_evaluations has no branch_id of its own — scope indirectly
+    // via employees.branch_id (this previously had no scoping or auth
+    // restriction at all beyond being logged in — any authenticated user
+    // could read every employee's ratings/feedback across every branch).
+    let sql = 'SELECT pe.* FROM performance_evaluations pe';
+    const branchId = scopeBranch(session);
+    if (branchId) sql += ' JOIN employees e ON e.user_id = pe.employee_id';
+    const conditions: string[] = [];
     const params: any[] = [];
-    if (employeeId !== undefined) { params.push(employeeId); sql += ` WHERE employee_id=$${params.length}`; }
-    sql += ' ORDER BY evaluation_date DESC';
+    if (employeeId !== undefined) { params.push(employeeId); conditions.push(`pe.employee_id=$${params.length}`); }
+    if (branchId) { params.push(branchId); conditions.push(`e.branch_id=$${params.length}`); }
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY pe.evaluation_date DESC';
     const res = await query(sql, params);
     return res.rows.map(r => ({ id: r.id, employeeId: r.employee_id, employeeName: r.employee_name, evaluatorName: r.evaluator_name, evaluationDate: r.evaluation_date, rating: r.rating, feedback: r.feedback, goals: r.goals, overallScore: r.overall_score }));
   } catch { return []; }
@@ -2081,7 +2236,8 @@ export async function fetchPerformanceEvaluationsDB(employeeId?: number): Promis
 
 export async function createPerformanceEvaluationDB(data: Omit<import('@/lib/types').PerformanceEvaluation, 'id'>): Promise<{ error?: string; id?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can record a performance evaluation.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can record a performance evaluation.' };
+  if (!(await ownsUserId(session, data.employeeId))) return { error: 'Not authorized for this employee.' };
   try {
     const id = `pe_${Date.now()}`;
     await query(`INSERT INTO performance_evaluations (id, employee_id, employee_name, evaluator_name, evaluation_date, rating, feedback, goals, overall_score) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -2095,14 +2251,22 @@ export async function fetchSalaryStructuresDB(): Promise<import('@/lib/types').S
   const session = await getSession();
   if (!session) return [];
   try {
-    const res = await query('SELECT * FROM salary_structures ORDER BY employee_name');
+    // salary_structures has no branch_id of its own — scope indirectly via
+    // employees.branch_id (previously any authenticated user could read
+    // every employee's salary breakdown across every branch).
+    const branchId = scopeBranch(session);
+    const sql = branchId
+      ? 'SELECT ss.* FROM salary_structures ss JOIN employees e ON e.user_id = ss.employee_id WHERE e.branch_id=$1 ORDER BY ss.employee_name'
+      : 'SELECT * FROM salary_structures ORDER BY employee_name';
+    const res = await query(sql, branchId ? [branchId] : []);
     return res.rows.map(r => ({ id: r.id, name: r.name, employeeId: r.employee_id, employeeName: r.employee_name, basicSalary: r.basic_salary, allowances: r.allowances || [], deductions: r.deductions || [], totalSalary: r.total_salary, isActive: r.is_active }));
   } catch { return []; }
 }
 
 export async function createSalaryStructureDB(data: Omit<import('@/lib/types').SalaryStructure, 'id'>): Promise<{ error?: string; id?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can create a salary structure.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can create a salary structure.' };
+  if (!(await ownsUserId(session, data.employeeId))) return { error: 'Not authorized for this employee.' };
   try {
     const id = `ss_${Date.now()}`;
     await query(`INSERT INTO salary_structures (id, name, employee_id, employee_name, basic_salary, allowances, deductions, total_salary, is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -2113,8 +2277,11 @@ export async function createSalaryStructureDB(data: Omit<import('@/lib/types').S
 
 export async function updateSalaryStructureDB(id: string, data: Partial<Omit<import('@/lib/types').SalaryStructure, 'id' | 'employeeId' | 'employeeName'>>): Promise<{ error?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can edit a salary structure.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can edit a salary structure.' };
   try {
+    const structRes = await query('SELECT employee_id FROM salary_structures WHERE id=$1', [id]);
+    if (structRes.rows.length === 0) return { error: 'Salary structure not found.' };
+    if (!(await ownsUserId(session, structRes.rows[0].employee_id))) return { error: 'Not authorized for this employee.' };
     const fields: string[] = []; const vals: any[] = []; let i = 1;
     if (data.name !== undefined) { fields.push(`name=$${i++}`); vals.push(data.name); }
     if (data.basicSalary !== undefined) { fields.push(`basic_salary=$${i++}`); vals.push(data.basicSalary); }
@@ -2131,7 +2298,8 @@ export async function updateSalaryStructureDB(id: string, data: Partial<Omit<imp
 
 export async function generatePayslipDB(data: Omit<import('@/lib/types').Payslip, 'id'>): Promise<{ error?: string; id?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can generate a payslip.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can generate a payslip.' };
+  if (!(await ownsUserId(session, data.employeeId))) return { error: 'Not authorized for this employee.' };
   try {
     const id = `ps_${Date.now()}`;
     await query(`INSERT INTO payslips (id, employee_id, employee_name, month, year, basic_salary, allowances, deductions, gross_pay, total_deductions, net_pay, tax_amount, overtime_pay, status, generated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
@@ -2145,9 +2313,12 @@ export async function generatePayslipDB(data: Omit<import('@/lib/types').Payslip
 // without one — the manual one-by-one flow is the norm in budget school ERPs.
 export async function bulkGeneratePayslipsDB(month: string, year: number): Promise<{ error?: string; generated?: number; skipped?: number }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can generate payslips.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can generate payslips.' };
   try {
-    const structures = await query('SELECT * FROM salary_structures WHERE is_active = true');
+    const branchId = scopeBranch(session);
+    const structures = branchId
+      ? await query('SELECT ss.* FROM salary_structures ss JOIN employees e ON e.user_id = ss.employee_id WHERE ss.is_active = true AND e.branch_id=$1', [branchId])
+      : await query('SELECT * FROM salary_structures WHERE is_active = true');
     const existing = await query('SELECT employee_id FROM payslips WHERE month=$1 AND year=$2', [month, year]);
     const already = new Set(existing.rows.map((r: any) => r.employee_id));
     let generated = 0, skipped = 0;
@@ -2169,21 +2340,30 @@ export async function bulkGeneratePayslipsDB(month: string, year: number): Promi
 
 export async function markPayslipPaidDB(id: string): Promise<{ error?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can mark a payslip paid.' };
-  try { await query("UPDATE payslips SET status='Paid' WHERE id=$1", [id]); return {}; }
-  catch { return { error: 'Failed.' }; }
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can mark a payslip paid.' };
+  try {
+    const payslipRes = await query('SELECT employee_id FROM payslips WHERE id=$1', [id]);
+    if (payslipRes.rows.length === 0) return { error: 'Payslip not found.' };
+    if (!(await ownsUserId(session, payslipRes.rows[0].employee_id))) return { error: 'Not authorized for this employee.' };
+    await query("UPDATE payslips SET status='Paid' WHERE id=$1", [id]);
+    return {};
+  } catch { return { error: 'Failed.' }; }
 }
 
 export async function fetchPayslipsDB(employeeId?: number): Promise<import('@/lib/types').Payslip[]> {
   const session = await getSession();
   if (!session) return [];
   // Non-admins may only see their own payslips (self-service), never anyone else's.
-  if (session.role !== 'ADMIN') employeeId = session.userId;
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'OWNER') employeeId = session.userId;
   try {
-    let sql = 'SELECT * FROM payslips';
+    const branchId = employeeId === undefined ? scopeBranch(session) : null;
+    let sql = branchId ? 'SELECT p.* FROM payslips p JOIN employees e ON e.user_id = p.employee_id' : 'SELECT * FROM payslips p';
+    const conditions: string[] = [];
     const params: any[] = [];
-    if (employeeId !== undefined) { params.push(employeeId); sql += ` WHERE employee_id=$${params.length}`; }
-    sql += ' ORDER BY year DESC, month DESC';
+    if (employeeId !== undefined) { params.push(employeeId); conditions.push(`p.employee_id=$${params.length}`); }
+    if (branchId) { params.push(branchId); conditions.push(`e.branch_id=$${params.length}`); }
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY p.year DESC, p.month DESC';
     const res = await query(sql, params);
     return res.rows.map(r => ({ id: r.id, employeeId: r.employee_id, employeeName: r.employee_name, month: r.month, year: r.year, basicSalary: r.basic_salary, allowances: r.allowances || [], deductions: r.deductions || [], grossPay: r.gross_pay, totalDeductions: r.total_deductions, netPay: r.net_pay, taxAmount: r.tax_amount, overtimePay: r.overtime_pay, status: r.status, generatedAt: r.generated_at }));
   } catch { return []; }
@@ -2249,14 +2429,20 @@ export async function approveScholarshipDB(appId: string, approvedBy: string): P
 
 // Discipline ──────────────────────────────────────────────────────────────────
 export async function fetchIncidentsDB(): Promise<import('@/lib/types').IncidentReport[]> {
-  try { const res = await query('SELECT * FROM incident_reports ORDER BY incident_date DESC'); return res.rows.map(r => ({ id: r.id, studentId: r.student_id, studentName: r.student_name, class: r.class, reportedBy: r.reported_by, incidentDate: r.incident_date, incidentType: r.incident_type, description: r.description, severity: r.severity, location: r.location, witnesses: r.witnesses, status: r.status, actionTaken: r.action_taken, resolvedAt: r.resolved_at })); } catch { return []; }
+  const session = await getSession();
+  if (!session) return [];
+  const branchId = scopeBranch(session);
+  const sql = branchId ? 'SELECT * FROM incident_reports WHERE branch_id=$1 ORDER BY incident_date DESC' : 'SELECT * FROM incident_reports ORDER BY incident_date DESC';
+  try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, studentId: r.student_id, studentName: r.student_name, class: r.class, reportedBy: r.reported_by, incidentDate: r.incident_date, incidentType: r.incident_type, description: r.description, severity: r.severity, location: r.location, witnesses: r.witnesses, status: r.status, actionTaken: r.action_taken, resolvedAt: r.resolved_at })); } catch { return []; }
 }
 
 export async function createIncidentDB(data: Omit<import('@/lib/types').IncidentReport, 'id'>): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' };
   try {
     const id = `inc_${Date.now()}`;
-    await query(`INSERT INTO incident_reports (id, student_id, student_name, class, reported_by, incident_date, incident_type, description, severity, location, witnesses, status, action_taken, resolved_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [id, data.studentId, data.studentName, data.class, data.reportedBy, data.incidentDate, data.incidentType, data.description, data.severity, data.location, data.witnesses, data.status, data.actionTaken, data.resolvedAt]);
+    await query(`INSERT INTO incident_reports (id, student_id, student_name, class, reported_by, incident_date, incident_type, description, severity, location, witnesses, status, action_taken, resolved_at, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [id, data.studentId, data.studentName, data.class, data.reportedBy, data.incidentDate, data.incidentType, data.description, data.severity, data.location, data.witnesses, data.status, data.actionTaken, data.resolvedAt, scopeBranch(session)]);
     return { id };
   } catch { return { error: 'Failed.' }; }
 }
@@ -2275,33 +2461,45 @@ export async function updateIncidentStatusDB(id: string, status: string, actionT
 
 // Health ──────────────────────────────────────────────────────────────────────
 export async function fetchMedicalRecordsDB(studentId?: string): Promise<import('@/lib/types').MedicalRecord[]> {
+  const session = await getSession();
+  if (!session) return [];
   try {
     let sql = 'SELECT * FROM medical_records';
     const params: string[] = [];
     if (studentId) { params.push(studentId); sql += ` WHERE student_id=$${params.length}`; }
+    const branchId = scopeBranch(session);
+    if (branchId) { sql += params.length ? ' AND' : ' WHERE'; params.push(branchId); sql += ` branch_id=$${params.length}`; }
     const res = await query(sql, params);
     return res.rows.map(r => ({ id: r.id, studentId: r.student_id, studentName: r.student_name, bloodGroup: r.blood_group, allergies: r.allergies, chronicConditions: r.chronic_conditions, medications: r.medications, emergencyContact: r.emergency_contact, emergencyPhone: r.emergency_phone, insuranceProvider: r.insurance_provider, insuranceNumber: r.insurance_number }));
   } catch { return []; }
 }
 
 export async function upsertMedicalRecordDB(data: import('@/lib/types').MedicalRecord): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' };
   try {
-    await query(`INSERT INTO medical_records (id, student_id, student_name, blood_group, allergies, chronic_conditions, medications, emergency_contact, emergency_phone, insurance_provider, insurance_number) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (student_id) DO UPDATE SET student_name=$3, blood_group=$4, allergies=$5, chronic_conditions=$6, medications=$7, emergency_contact=$8, emergency_phone=$9, insurance_provider=$10, insurance_number=$11`,
-      [data.id, data.studentId, data.studentName, data.bloodGroup, data.allergies, data.chronicConditions, data.medications, data.emergencyContact, data.emergencyPhone, data.insuranceProvider, data.insuranceNumber]);
+    await query(`INSERT INTO medical_records (id, student_id, student_name, blood_group, allergies, chronic_conditions, medications, emergency_contact, emergency_phone, insurance_provider, insurance_number, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (student_id) DO UPDATE SET student_name=$3, blood_group=$4, allergies=$5, chronic_conditions=$6, medications=$7, emergency_contact=$8, emergency_phone=$9, insurance_provider=$10, insurance_number=$11`,
+      [data.id, data.studentId, data.studentName, data.bloodGroup, data.allergies, data.chronicConditions, data.medications, data.emergencyContact, data.emergencyPhone, data.insuranceProvider, data.insuranceNumber, scopeBranch(session)]);
     return {};
   } catch { return { error: 'Failed.' }; }
 }
 
 // Events ──────────────────────────────────────────────────────────────────────
 export async function fetchEventsDB(): Promise<import('@/lib/types').Event[]> {
-  try { const res = await query('SELECT * FROM events ORDER BY start_date DESC'); return res.rows.map(r => ({ id: r.id, title: r.title, description: r.description, category: r.category, startDate: r.start_date, endDate: r.end_date, startTime: r.start_time, endTime: r.end_time, venue: r.venue, organizer: r.organizer, maxParticipants: r.max_participants, registrationDeadline: r.registration_deadline, status: r.status, budget: r.budget, bannerUrl: r.banner_url })); } catch { return []; }
+  const session = await getSession();
+  if (!session) return [];
+  const branchId = scopeBranch(session);
+  const sql = branchId ? 'SELECT * FROM events WHERE branch_id=$1 ORDER BY start_date DESC' : 'SELECT * FROM events ORDER BY start_date DESC';
+  try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, title: r.title, description: r.description, category: r.category, startDate: r.start_date, endDate: r.end_date, startTime: r.start_time, endTime: r.end_time, venue: r.venue, organizer: r.organizer, maxParticipants: r.max_participants, registrationDeadline: r.registration_deadline, status: r.status, budget: r.budget, bannerUrl: r.banner_url })); } catch { return []; }
 }
 
 export async function createEventDB(data: Omit<import('@/lib/types').Event, 'id'>): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' };
   try {
     const id = `evt_${Date.now()}`;
-    await query(`INSERT INTO events (id, title, description, category, start_date, end_date, start_time, end_time, venue, organizer, max_participants, registration_deadline, status, budget, banner_url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-      [id, data.title, data.description, data.category, data.startDate, data.endDate, data.startTime, data.endTime, data.venue, data.organizer, data.maxParticipants, data.registrationDeadline, data.status, data.budget, data.bannerUrl]);
+    await query(`INSERT INTO events (id, title, description, category, start_date, end_date, start_time, end_time, venue, organizer, max_participants, registration_deadline, status, budget, banner_url, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      [id, data.title, data.description, data.category, data.startDate, data.endDate, data.startTime, data.endTime, data.venue, data.organizer, data.maxParticipants, data.registrationDeadline, data.status, data.budget, data.bannerUrl, scopeBranch(session)]);
     return { id };
   } catch { return { error: 'Failed.' }; }
 }
@@ -2317,8 +2515,12 @@ export async function registerForEventDB(data: Omit<import('@/lib/types').EventR
 
 // Alumni ──────────────────────────────────────────────────────────────────────
 export async function fetchAlumniDB(): Promise<import('@/lib/types').Alumni[]> {
+  const session = await getSession();
+  if (!session) return [];
+  const branchId = scopeBranch(session);
+  const sql = branchId ? 'SELECT * FROM alumni WHERE branch_id=$1 ORDER BY graduation_year DESC, name' : 'SELECT * FROM alumni ORDER BY graduation_year DESC, name';
   try {
-    const res = await query('SELECT * FROM alumni ORDER BY graduation_year DESC, name');
+    const res = await query(sql, branchId ? [branchId] : []);
     return res.rows.map(r => ({
       id: r.id, name: r.name, email: r.email, phone: r.phone, graduationYear: r.graduation_year, class: r.class,
       currentOccupation: r.current_occupation, company: r.company, address: r.address, linkedinUrl: r.linkedin_url,
@@ -2330,11 +2532,11 @@ export async function fetchAlumniDB(): Promise<import('@/lib/types').Alumni[]> {
 
 export async function createAlumniDB(data: Omit<import('@/lib/types').Alumni, 'id'>): Promise<{ error?: string; id?: string }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { error: 'Only admins can add alumni.' };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can add alumni.' };
   try {
     const id = `al_${Date.now()}`;
-    await query(`INSERT INTO alumni (id, name, email, phone, graduation_year, class, current_occupation, company, address, linkedin_url, facebook_url, is_donor, donation_amount, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [id, data.name, data.email, data.phone, data.graduationYear, data.class, data.currentOccupation, data.company, data.address, data.linkedinUrl, data.facebookUrl, data.isDonor, data.donationAmount, data.status]);
+    await query(`INSERT INTO alumni (id, name, email, phone, graduation_year, class, current_occupation, company, address, linkedin_url, facebook_url, is_donor, donation_amount, status, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [id, data.name, data.email, data.phone, data.graduationYear, data.class, data.currentOccupation, data.company, data.address, data.linkedinUrl, data.facebookUrl, data.isDonor, data.donationAmount, data.status, scopeBranch(session)]);
     return { id };
   } catch { return { error: 'Failed.' }; }
 }
@@ -2380,17 +2582,19 @@ export async function createResearchProjectDB(data: Omit<import('@/lib/types').R
 export async function fetchOnlineExamsDB(): Promise<import('@/lib/types').OnlineExam[]> {
   const session = await getSession();
   if (!session) return [];
-  try { const res = await query('SELECT * FROM online_exams ORDER BY start_time DESC'); return res.rows.map(r => ({ id: r.id, title: r.title, className: r.class_name, subject: r.subject, duration: r.duration, totalMarks: r.total_marks, passingMarks: r.passing_marks, startTime: r.start_time, endTime: r.end_time, instructions: r.instructions, proctoringEnabled: r.proctoring_enabled, shuffleQuestions: r.shuffle_questions, status: r.status, examSubjectId: r.exam_subject_id ?? null })); } catch { return []; }
+  const branchId = scopeBranch(session);
+  const sql = branchId ? 'SELECT * FROM online_exams WHERE branch_id=$1 ORDER BY start_time DESC' : 'SELECT * FROM online_exams ORDER BY start_time DESC';
+  try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, title: r.title, className: r.class_name, subject: r.subject, duration: r.duration, totalMarks: r.total_marks, passingMarks: r.passing_marks, startTime: r.start_time, endTime: r.end_time, instructions: r.instructions, proctoringEnabled: r.proctoring_enabled, shuffleQuestions: r.shuffle_questions, status: r.status, examSubjectId: r.exam_subject_id ?? null })); } catch { return []; }
 }
 
 export async function createOnlineExamDB(data: Omit<import('@/lib/types').OnlineExam, 'id'>): Promise<{ error?: string; id?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can create exams.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can create exams.' };
   try {
     const id = `oe_${Date.now()}`;
-    await query(`INSERT INTO online_exams (id, title, class_name, subject, duration, total_marks, passing_marks, start_time, end_time, instructions, proctoring_enabled, shuffle_questions, status, exam_subject_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [id, data.title, data.className, data.subject, data.duration, data.totalMarks, data.passingMarks, data.startTime, data.endTime, data.instructions, data.proctoringEnabled, data.shuffleQuestions, data.status, data.examSubjectId || null]);
+    await query(`INSERT INTO online_exams (id, title, class_name, subject, duration, total_marks, passing_marks, start_time, end_time, instructions, proctoring_enabled, shuffle_questions, status, exam_subject_id, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [id, data.title, data.className, data.subject, data.duration, data.totalMarks, data.passingMarks, data.startTime, data.endTime, data.instructions, data.proctoringEnabled, data.shuffleQuestions, data.status, data.examSubjectId || null, scopeBranch(session)]);
     return { id };
   } catch { return { error: 'Failed.' }; }
 }
@@ -2661,9 +2865,13 @@ export async function submitOnlineExamAttemptDB(attemptId: string): Promise<{ er
 export async function fetchOnlineExamAttemptsDB(examId: string): Promise<OnlineExamAttemptView[]> {
   const session = await getSession();
   if (!session) return [];
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') return [];
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return [];
   try {
-    const res = await query('SELECT * FROM online_exam_attempts WHERE exam_id=$1 ORDER BY submitted_at DESC NULLS LAST, started_at DESC', [examId]);
+    const branchId = scopeBranch(session);
+    const sql = branchId
+      ? 'SELECT a.* FROM online_exam_attempts a JOIN students s ON s.id = a.student_id WHERE a.exam_id=$1 AND s.branch_id=$2 ORDER BY a.submitted_at DESC NULLS LAST, a.started_at DESC'
+      : 'SELECT * FROM online_exam_attempts WHERE exam_id=$1 ORDER BY submitted_at DESC NULLS LAST, started_at DESC';
+    const res = await query(sql, branchId ? [examId, branchId] : [examId]);
     return res.rows.map(mapOnlineExamAttempt);
   } catch { return []; }
 }
@@ -2693,11 +2901,20 @@ export async function gradeOnlineExamAnswerDB(attemptId: string, questionId: str
 
 // Certificates ────────────────────────────────────────────────────────────────
 export async function fetchCertificateRecordsDB(studentId?: string): Promise<import('@/lib/types').CertificateRecord[]> {
+  const session = await getSession();
+  if (!session) return [];
   try {
-    let sql = 'SELECT * FROM certificate_records';
+    // certificate_records has no branch_id of its own — scope indirectly via
+    // students.branch_id when listing everyone's (a specific studentId is
+    // already a scoped lookup by the caller).
+    const branchId = studentId ? null : scopeBranch(session);
+    let sql = branchId ? 'SELECT cr.* FROM certificate_records cr JOIN students s ON s.id = cr.student_id' : 'SELECT * FROM certificate_records cr';
+    const conditions: string[] = [];
     const params: string[] = [];
-    if (studentId) { params.push(studentId); sql += ` WHERE student_id=$${params.length}`; }
-    sql += ' ORDER BY issued_date DESC';
+    if (studentId) { params.push(studentId); conditions.push(`cr.student_id=$${params.length}`); }
+    if (branchId) { params.push(branchId); conditions.push(`s.branch_id=$${params.length}`); }
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY cr.issued_date DESC';
     const res = await query(sql, params);
     return res.rows.map(r => ({ id: r.id, studentId: r.student_id, studentName: r.student_name, certificateType: r.certificate_type, certificateNumber: r.certificate_number, issuedDate: r.issued_date, issuedBy: r.issued_by, verified: r.verified, verificationCode: r.verification_code, documentUrl: r.document_url }));
   } catch { return []; }

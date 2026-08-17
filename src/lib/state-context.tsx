@@ -1,28 +1,27 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, startTransition } from "react";
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef, startTransition } from "react";
 import {
-  fetchDBState, updateSchoolInfoDB, addStudentDB, updateStudentDB, deleteStudentDB,
+  fetchDBState, updateSchoolInfoDB,
   addClassDB, updateClassDB, deleteClassDB, addSubjectDB,
   updateSubjectDB, deleteSubjectDB, addFeeCategoryDB, updateFeeCategoryDB, deleteFeeCategoryDB,
   addAcademicTermDB, updateAcademicTermDB, setActiveTermDB, generateFeeVouchersDB, payFeeVoucherDB,
   applyFeeDiscountDB, recordPartialPaymentDB,
   addFeeStructureDB, updateFeeStructureDB, deleteFeeStructureDB,
   updateFeePaymentDB, regenerateVoucherDB,
-  saveAttendanceDB, saveExamResultsDB, updateExamAIResultsDB, addNotificationDB, markNotificationReadDB,
   updateApplicationStatusDB,
 } from "../app/actions/db";
 import { approveAdmissionWithAccountsDB } from "../app/actions/admissions";
+import { useNotifications } from "./notifications-context";
+import { useAttendance } from "./attendance-context";
+import { useExams } from "./exams-context";
+import { useStudents } from "./students-context";
 
 import {
   UserRole,
   SchoolInfo,
-  StudentRecord,
   ClassSection,
   FeeRecord,
-  AttendanceRecord,
-  ExamRecord,
-  NotificationRecord,
   Subject,
   FeeCategory,
   FeeStructure,
@@ -37,11 +36,7 @@ import {
   defaultFeeCategories,
   defaultFeeStructures,
   defaultAcademicTerms,
-  defaultStudents,
   defaultFeeRecords,
-  defaultAttendance,
-  defaultExams,
-  defaultNotifications,
 } from "./default-data";
 
 export {
@@ -51,11 +46,7 @@ export {
   defaultFeeCategories,
   defaultFeeStructures,
   defaultAcademicTerms,
-  defaultStudents,
   defaultFeeRecords,
-  defaultAttendance,
-  defaultExams,
-  defaultNotifications,
 };
 
 interface StateContextType {
@@ -64,10 +55,6 @@ interface StateContextType {
   setActiveRole: (role: UserRole) => void;
   schoolInfo: SchoolInfo;
   updateSchoolInfo: (info: SchoolInfo) => void;
-  students: StudentRecord[];
-  addStudent: (student: Omit<StudentRecord, "id" | "admissionNumber">) => StudentRecord;
-  updateStudent: (student: StudentRecord) => void;
-  deleteStudent: (id: string) => void;
   classes: ClassSection[];
   addClass: (classItem: Omit<ClassSection, "id">) => void;
   updateClass: (c: ClassSection) => void;
@@ -84,14 +71,6 @@ interface StateContextType {
   addFeeStructure: (fs: Omit<FeeStructure, "id">) => void;
   updateFeeStructure: (fs: FeeStructure) => void;
   deleteFeeStructure: (id: string) => void;
-  attendance: AttendanceRecord[];
-  saveAttendance: (records: Omit<AttendanceRecord, "id">[]) => void;
-  exams: ExamRecord[];
-  saveExamResults: (exam: Omit<ExamRecord, "id">) => string;
-  updateExamAIResults: (examId: string, strengths: string, weaknesses: string, studentRecs: { studentName: string; recommendations: string }[]) => void;
-  notifications: NotificationRecord[];
-  addNotification: (title: string, message: string, recipientRole: UserRole, recipientEmail?: string) => void;
-  markNotificationRead: (id: string) => void;
   // New setup entities
   subjects: Subject[];
   addSubject: (subject: Omit<Subject, "id">) => void;
@@ -106,7 +85,7 @@ interface StateContextType {
   updateAcademicTerm: (term: AcademicTerm) => void;
   setActiveTerm: (id: string) => void;
   applications: AdmissionApplication[];
-  approveApplication: (id: string, classId?: string, sectionId?: string) => void;
+  approveApplication: (id: string, classId?: string, sectionId?: string, remarks?: string) => void;
   rejectApplication: (id: string, notes?: string) => void;
   setApplicationUnderReview: (id: string) => void;
 }
@@ -125,18 +104,18 @@ const syncDB = (fn: () => Promise<unknown>) => {
 export function StateProvider({ children }: { children: React.ReactNode }) {
   const [activeRole,    setActiveRole]    = useState<UserRole>("ADMIN");
   const [schoolInfo,    setSchoolInfo]    = useState<SchoolInfo>(defaultSchoolInfo);
-  const [students,      setStudents]      = useState<StudentRecord[]>(defaultStudents);
   const [classes,       setClasses]       = useState<ClassSection[]>(defaultClasses);
   const [subjects,      setSubjects]      = useState<Subject[]>(defaultSubjects);
   const [feeCategories,  setFeeCategories]  = useState<FeeCategory[]>(defaultFeeCategories);
   const [feeStructures,  setFeeStructures]  = useState<FeeStructure[]>(defaultFeeStructures);
   const [academicTerms,  setAcademicTerms]  = useState<AcademicTerm[]>(defaultAcademicTerms);
   const [feeRecords,     setFeeRecords]     = useState<FeeRecord[]>(defaultFeeRecords);
-  const [attendance,    setAttendance]    = useState<AttendanceRecord[]>(defaultAttendance);
-  const [exams,         setExams]         = useState<ExamRecord[]>(defaultExams);
-  const [notifications, setNotifications] = useState<NotificationRecord[]>(defaultNotifications);
   const [applications,  setApplications]  = useState<AdmissionApplication[]>([]);
   const [isLoaded,      setIsLoaded]      = useState(false);
+  const { addNotification, setNotificationsFromDB } = useNotifications();
+  const { setAttendanceFromDB } = useAttendance();
+  const { setExamsFromDB } = useExams();
+  const { students, appendStudent, setStudentsFromDB } = useStudents();
 
   // ── Load from localStorage or DB ──────────────────────────────────────────────
   useEffect(() => {
@@ -146,18 +125,25 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
       try {
         const dbState = await fetchDBState();
         if (dbState) {
+          // Previously these only overwrote the hardcoded demo defaults when
+          // the DB array was non-empty, treating "successfully fetched, zero
+          // rows" the same as "fetch didn't run" — which meant a Principal
+          // whose branch legitimately has zero fee records (etc.) would see
+          // the ~480-row demo dataset instead of their real (empty) data.
+          // Once dbState exists at all, every array from it is authoritative,
+          // empty or not.
           if (dbState.schoolInfo) setSchoolInfo(dbState.schoolInfo);
-          if (dbState.students.length > 0) setStudents(dbState.students);
-          if (dbState.classes.length > 0) setClasses(dbState.classes);
-          if (dbState.subjects.length > 0) setSubjects(dbState.subjects);
-          if (dbState.feeCategories.length > 0) setFeeCategories(dbState.feeCategories);
-          if (dbState.feeStructures && dbState.feeStructures.length > 0) setFeeStructures(dbState.feeStructures);
-          if (dbState.academicTerms.length > 0) setAcademicTerms(dbState.academicTerms);
-          if (dbState.feeRecords.length > 0) setFeeRecords(dbState.feeRecords);
-          if (dbState.attendance.length > 0) setAttendance(dbState.attendance);
-          if (dbState.exams.length > 0) setExams(dbState.exams);
-          if (dbState.notifications.length > 0) setNotifications(dbState.notifications);
-          if (dbState.applications && dbState.applications.length > 0) setApplications(dbState.applications);
+          setStudentsFromDB(dbState.students);
+          setClasses(dbState.classes);
+          setSubjects(dbState.subjects);
+          setFeeCategories(dbState.feeCategories);
+          if (dbState.feeStructures) setFeeStructures(dbState.feeStructures);
+          setAcademicTerms(dbState.academicTerms);
+          setFeeRecords(dbState.feeRecords);
+          setAttendanceFromDB(dbState.attendance);
+          setExamsFromDB(dbState.exams);
+          setNotificationsFromDB(dbState.notifications);
+          if (dbState.applications) setApplications(dbState.applications);
 
           const storedRole = localStorage.getItem("sc_activeRole");
           if (storedRole) setActiveRole(storedRole as UserRole);
@@ -177,29 +163,21 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
 
       const storedRole    = localStorage.getItem("sc_activeRole");
       const storedSchool  = load("sc_schoolInfo");
-      const storedStudents       = load("sc_students");
       const storedClasses        = load("sc_classes");
       const storedSubjects       = load("sc_subjects");
       const storedFeeCategories  = load("sc_feeCategories");
       const storedFeeStructures  = load("sc_feeStructures");
       const storedAcademicTerms  = load("sc_academicTerms");
       const storedFees           = load("sc_feeRecords");
-      const storedAttendance     = load("sc_attendance");
-      const storedExams          = load("sc_exams");
-      const storedNotifications  = load("sc_notifications");
 
       if (storedRole)           setActiveRole(storedRole as UserRole);
       if (storedSchool)         setSchoolInfo(storedSchool);
-      if (storedStudents)       setStudents(storedStudents);
       if (storedClasses)        setClasses(storedClasses);
       if (storedSubjects)       setSubjects(storedSubjects);
       if (storedFeeCategories)  setFeeCategories(storedFeeCategories);
       if (storedFeeStructures)  setFeeStructures(storedFeeStructures);
       if (storedAcademicTerms)  setAcademicTerms(storedAcademicTerms);
       if (storedFees)           setFeeRecords(storedFees);
-      if (storedAttendance)     setAttendance(storedAttendance);
-      if (storedExams)          setExams(storedExams);
-      if (storedNotifications)  setNotifications(storedNotifications);
 
       setIsLoaded(true);
     };
@@ -207,41 +185,31 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // ── Save to localStorage ────────────────────────────────────────────────
+  // This is only an offline fallback cache (the DB via syncDB is the source of
+  // truth), so it doesn't need to happen synchronously on every keystroke-level
+  // mutation. Debounced so a burst of rapid updates (e.g. bulk attendance save,
+  // typing in a form) coalesces into a single serialize+write instead of one
+  // full JSON.stringify of every array per state change.
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!isLoaded || typeof window === "undefined") return;
-    localStorage.setItem("sc_activeRole",     activeRole);
-    localStorage.setItem("sc_schoolInfo",     JSON.stringify(schoolInfo));
-    localStorage.setItem("sc_students",       JSON.stringify(students));
-    localStorage.setItem("sc_classes",        JSON.stringify(classes));
-    localStorage.setItem("sc_subjects",       JSON.stringify(subjects));
-    localStorage.setItem("sc_feeCategories",  JSON.stringify(feeCategories));
-    localStorage.setItem("sc_feeStructures",  JSON.stringify(feeStructures));
-    localStorage.setItem("sc_academicTerms",  JSON.stringify(academicTerms));
-    localStorage.setItem("sc_feeRecords",     JSON.stringify(feeRecords));
-    localStorage.setItem("sc_attendance",     JSON.stringify(attendance));
-    localStorage.setItem("sc_exams",          JSON.stringify(exams));
-    localStorage.setItem("sc_notifications",  JSON.stringify(notifications));
-  }, [activeRole, schoolInfo, students, classes, subjects, feeCategories, feeStructures, academicTerms, feeRecords, attendance, exams, notifications, isLoaded]);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      localStorage.setItem("sc_activeRole",     activeRole);
+      localStorage.setItem("sc_schoolInfo",     JSON.stringify(schoolInfo));
+      localStorage.setItem("sc_classes",        JSON.stringify(classes));
+      localStorage.setItem("sc_subjects",       JSON.stringify(subjects));
+      localStorage.setItem("sc_feeCategories",  JSON.stringify(feeCategories));
+      localStorage.setItem("sc_feeStructures",  JSON.stringify(feeStructures));
+      localStorage.setItem("sc_academicTerms",  JSON.stringify(academicTerms));
+      localStorage.setItem("sc_feeRecords",     JSON.stringify(feeRecords));
+    }, 400);
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+  }, [activeRole, schoolInfo, classes, subjects, feeCategories, feeStructures, academicTerms, feeRecords, isLoaded]);
 
   // ── Helpers ─────────────────────────────────────────────────────────────
-
-  const addNotification = (title: string, message: string, recipientRole: UserRole, recipientEmail?: string) => {
-    const notif: NotificationRecord = {
-      id: `n_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      title, message,
-      date: new Date().toISOString().split("T")[0],
-      recipientRole,
-      recipientEmail,
-      read: false,
-    };
-    setNotifications(prev => [notif, ...prev]);
-    syncDB(() => addNotificationDB(notif));
-  };
-
-  const markNotificationRead = (id: string) => {
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
-    syncDB(() => markNotificationReadDB(id));
-  }
 
   // Notifies the specific student (by their own login email) and, if on file,
   // their parent — used for fee/result events so each family only sees their own.
@@ -258,25 +226,6 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
     addNotification("School Profile Updated", `${info.name} configuration saved successfully.`, "ADMIN");
     syncDB(() => updateSchoolInfoDB(info));
   };
-
-  // ── Students ────────────────────────────────────────────────────────────
-  const addStudent = (data: Omit<StudentRecord, "id" | "admissionNumber">): StudentRecord => {
-    const id  = `s${Date.now()}`;
-    const adm = `ADM-${new Date().getFullYear()}-${String(students.length + 1).padStart(3, "0")}`;
-    const st: StudentRecord = { ...data, id, admissionNumber: adm };
-    setStudents(prev => [...prev, st]);
-    addNotification("New Admission", `${data.name} enrolled in ${data.class}-${data.section}.`, "ADMIN");
-    syncDB(() => addStudentDB(st));
-    return st;
-  };
-  const updateStudent = (s: StudentRecord) => {
-    setStudents(prev => prev.map(x => x.id === s.id ? s : x));
-    syncDB(() => updateStudentDB(s));
-  }
-  const deleteStudent = (id: string) => {
-    setStudents(prev => prev.map(x => x.id === id ? { ...x, status: "Inactive" as any } : x));
-    syncDB(() => deleteStudentDB(id));
-  }
 
   // ── Classes ─────────────────────────────────────────────────────────────
   const addClass = (item: Omit<ClassSection, "id">) => {
@@ -516,15 +465,15 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
     syncDB(() => updateApplicationStatusDB(id, "Under Review"));
   };
 
-  const approveApplication = (id: string, classId?: string, sectionId?: string) => {
+  const approveApplication = (id: string, classId?: string, sectionId?: string, remarks?: string) => {
     const app = applications.find(a => a.id === id);
     if (!app) return;
-    setApplications(prev => prev.map(a => a.id === id ? { ...a, status: "Approved" } : a));
+    setApplications(prev => prev.map(a => a.id === id ? { ...a, status: "Approved", adminNotes: remarks || a.adminNotes } : a));
 
     startTransition(async () => {
-      const result = await approveAdmissionWithAccountsDB(id, classId, sectionId);
+      const result = await approveAdmissionWithAccountsDB(id, classId, sectionId, remarks);
       if (result.studentRecord) {
-        setStudents(prev => [...prev, result.studentRecord!]);
+        appendStudent(result.studentRecord);
       }
     });
 
@@ -548,67 +497,30 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
     syncDB(() => updateApplicationStatusDB(id, "Rejected", notes));
   };
 
-  // ── Attendance ──────────────────────────────────────────────────────────
-  const saveAttendance = (records: Omit<AttendanceRecord, "id">[]) => {
-    const ids  = records.map(r => r.studentId);
-    const date = records[0]?.date;
-    const withId: AttendanceRecord[] = records.map((r, i) => ({ ...r, id: `att_${Date.now()}_${i}` }));
-    setAttendance(prev => [...prev.filter(a => !(a.date === date && ids.includes(a.studentId))), ...withId]);
-    records.forEach(r => {
-      if (r.status === "Absent") {
-        addNotification("Absence Alert", `${r.studentName} was marked Absent on ${r.date}.`, "ADMIN");
-      }
-    });
-    syncDB(() => saveAttendanceDB(withId));
-  };
-
-  // ── Exams ───────────────────────────────────────────────────────────────
-  const saveExamResults = (data: Omit<ExamRecord, "id">) => {
-    const id = `e${exams.length + 1}_${Date.now()}`;
-    const ex: ExamRecord = { ...data, id };
-    setExams(prev => [...prev, ex]);
-    data.studentResults.forEach(res => {
-      notifyStudentAndParent(res.studentId, "Results Published", `${res.studentName} scored ${res.score}/100 in ${data.examName}.`);
-    });
-    syncDB(() => saveExamResultsDB(ex));
-    return id;
-  };
-
-  const updateExamAIResults = (examId: string, strengths: string, weaknesses: string, recs: { studentName: string; recommendations: string }[]) => {
-    setExams(prev => prev.map(ex => {
-      if (ex.id !== examId) return ex;
-      addNotification("AI Study Guide Ready", `Personalized study plans for ${ex.examName} are now available.`, "STUDENT");
-      return {
-        ...ex,
-        commonStrengths: strengths,
-        commonWeaknesses: weaknesses,
-        studentResults: ex.studentResults.map(res => {
-          const rec = recs.find(r => r.studentName.toLowerCase() === res.studentName.toLowerCase());
-          return rec ? { ...res, recommendations: rec.recommendations } : res;
-        }),
-      };
-    }));
-    syncDB(() => updateExamAIResultsDB(examId, strengths, weaknesses, recs));
-  };
+  // Memoized so a re-render of StateProvider with unchanged state (e.g. caused
+  // by a parent re-render) doesn't hand every consumer of useAppState() a new
+  // object reference — which would otherwise force all of them to re-render
+  // even though nothing they read actually changed.
+  const value = useMemo<StateContextType>(() => ({
+    isDbLoaded: isLoaded,
+    activeRole, setActiveRole,
+    schoolInfo, updateSchoolInfo,
+    classes, addClass, updateClass, deleteClass,
+    subjects, addSubject, updateSubject, deleteSubject,
+    feeCategories, addFeeCategory, updateFeeCategory, deleteFeeCategory,
+    feeStructures, addFeeStructure, updateFeeStructure, deleteFeeStructure,
+    academicTerms, addAcademicTerm, updateAcademicTerm, setActiveTerm,
+    feeRecords, generateFeeVouchers, payFeeVoucher, applyDiscount, recordPartialPayment, sendFeeReminders,
+    updateFeePayment, regenerateVoucher,
+    applications, approveApplication, rejectApplication, setApplicationUnderReview,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [
+    isLoaded, activeRole, schoolInfo, classes, subjects, feeCategories,
+    feeStructures, academicTerms, feeRecords, applications,
+  ]);
 
   return (
-    <StateContext.Provider value={{
-      isDbLoaded: isLoaded,
-      activeRole, setActiveRole,
-      schoolInfo, updateSchoolInfo,
-      students, addStudent, updateStudent, deleteStudent,
-      classes, addClass, updateClass, deleteClass,
-      subjects, addSubject, updateSubject, deleteSubject,
-      feeCategories, addFeeCategory, updateFeeCategory, deleteFeeCategory,
-      feeStructures, addFeeStructure, updateFeeStructure, deleteFeeStructure,
-      academicTerms, addAcademicTerm, updateAcademicTerm, setActiveTerm,
-      feeRecords, generateFeeVouchers, payFeeVoucher, applyDiscount, recordPartialPayment, sendFeeReminders,
-      updateFeePayment, regenerateVoucher,
-      applications, approveApplication, rejectApplication, setApplicationUnderReview,
-      attendance, saveAttendance,
-      exams, saveExamResults, updateExamAIResults,
-      notifications, addNotification, markNotificationRead,
-    }}>
+    <StateContext.Provider value={value}>
       {children}
     </StateContext.Provider>
   );

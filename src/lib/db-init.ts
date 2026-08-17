@@ -23,6 +23,23 @@ export const initializeDatabase = async () => {
   try {
     // 1. Create Tables
     await query(`
+      -- Multi-branch/multi-campus support. "classes" is the scoping anchor for
+      -- most academic data (enrollments/timetable/attendance/exams all cascade
+      -- from class_id), so most modules scope via a JOIN back to
+      -- classes.branch_id rather than needing their own branch_id column.
+      -- users/employees/students/admission_applications get their own column
+      -- since they don't always cascade through an active class.
+      CREATE TABLE IF NOT EXISTS branches (
+        id VARCHAR(50) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        code VARCHAR(20) UNIQUE,
+        address TEXT,
+        phone VARCHAR(50),
+        principal_user_id INTEGER,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS school_info (
         id SERIAL PRIMARY KEY,
         name VARCHAR(255),
@@ -83,6 +100,20 @@ export const initializeDatabase = async () => {
         parent_email VARCHAR(255),
         email VARCHAR(255)
       );
+
+      -- Fixed 4-slot document checklist per student (Birth Certificate,
+      -- CNIC/B-Form, Leaving Certificate, Photograph), upserted by
+      -- (student_id, document_type) so re-uploading a type replaces it.
+      CREATE TABLE IF NOT EXISTS student_documents (
+        id VARCHAR(50) PRIMARY KEY,
+        student_id VARCHAR(50) NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+        document_type VARCHAR(50) NOT NULL,
+        file_name VARCHAR(255),
+        file_data TEXT NOT NULL,
+        uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        uploaded_by VARCHAR(255)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_student_documents_unique ON student_documents(student_id, document_type);
 
       CREATE TABLE IF NOT EXISTS fee_records (
         id VARCHAR(50) PRIMARY KEY,
@@ -312,6 +343,20 @@ export const initializeDatabase = async () => {
         admin_notes TEXT
       );
 
+      -- Same fixed-checklist pattern as student_documents, but keyed by
+      -- admission application (no FK to students — the applicant isn't a
+      -- student yet).
+      CREATE TABLE IF NOT EXISTS admission_documents (
+        id VARCHAR(50) PRIMARY KEY,
+        application_id VARCHAR(50) NOT NULL REFERENCES admission_applications(id) ON DELETE CASCADE,
+        document_type VARCHAR(50) NOT NULL,
+        file_name VARCHAR(255),
+        file_data TEXT NOT NULL,
+        uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        uploaded_by VARCHAR(255)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_admission_documents_unique ON admission_documents(application_id, document_type);
+
       -- DEPRECATED (retired from all UI as of the Academics/Examinations
       -- consolidation): class_compilations, exam_sessions, exam_marks,
       -- teacher_subject_assignments, result_positions, and the bare exams
@@ -506,6 +551,12 @@ export const initializeDatabase = async () => {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INT NOT NULL DEFAULT 0;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_role_id VARCHAR(20);
+      -- Multi-branch: NULL for OWNER (sees every branch) and for legacy rows
+      -- until backfilled below. Everyone else is scoped to exactly one branch.
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE admission_applications ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
 
       -- Custom roles: an admin-defined named permission profile layered on top
       -- of one of the four base roles. base_role keeps login/session/middleware
@@ -545,7 +596,12 @@ export const initializeDatabase = async () => {
       -- parent_phone/contact already lives here and every existing WhatsApp send
       -- path (absence alerts, fee reminders) already keys off studentId — adding
       -- consent here keeps one lookup path instead of a second join.
-      ALTER TABLE students ADD COLUMN IF NOT EXISTS whatsapp_opt_in BOOLEAN NOT NULL DEFAULT false;
+      -- Students default to opted-in (school policy: WhatsApp alerts are on by
+      -- default; parents can opt out from the student record) — both for new
+      -- rows (column default) and for rows that existed before this changed.
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS whatsapp_opt_in BOOLEAN NOT NULL DEFAULT true;
+      ALTER TABLE students ALTER COLUMN whatsapp_opt_in SET DEFAULT true;
+      UPDATE students SET whatsapp_opt_in = true WHERE whatsapp_opt_in = false AND whatsapp_opt_out_at IS NULL;
       ALTER TABLE students ADD COLUMN IF NOT EXISTS whatsapp_opt_in_at TIMESTAMPTZ;
       ALTER TABLE students ADD COLUMN IF NOT EXISTS whatsapp_opt_out_at TIMESTAMPTZ;
       ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS whatsapp_opt_in BOOLEAN NOT NULL DEFAULT false;
@@ -571,15 +627,21 @@ export const initializeDatabase = async () => {
       -- flip status to 'APPROVED' (Settings > WhatsApp Templates) before
       -- notificationService.send() will use it. meta_template_name defaults
       -- to the same slug; edit it if the approved Meta template is named differently.
+      -- language is 'en' (plain "English"), not 'en_US' ("English (US)") —
+      -- Meta treats these as distinct template translations; sending with the
+      -- wrong one fails with error 132001 ("Template name does not exist in
+      -- the translation") even though the template itself is Active in Meta
+      -- Business Manager. Match whatever locale the template was actually
+      -- created under there.
       INSERT INTO whatsapp_templates (id, name, meta_template_name, language, category, status, description, variables) VALUES
-        ('wat_student_absence', 'STUDENT_ABSENCE', 'student_absence', 'en_US', 'UTILITY', 'PENDING', 'Sent to a parent when their child is marked absent.', '["parentName","studentName","date"]'),
-        ('wat_fee_reminder', 'FEE_REMINDER', 'fee_reminder', 'en_US', 'UTILITY', 'PENDING', 'Sent ahead of a fee due date.', '["parentName","studentName","amount","dueDate"]'),
-        ('wat_fee_overdue', 'FEE_OVERDUE', 'fee_overdue', 'en_US', 'UTILITY', 'PENDING', 'Sent when a fee voucher is past due.', '["parentName","studentName","amount","dueDate"]'),
-        ('wat_exam_reminder', 'EXAM_REMINDER', 'exam_reminder', 'en_US', 'UTILITY', 'PENDING', 'Sent ahead of an exam.', '["studentName","examName","date"]'),
-        ('wat_ptm_reminder', 'PTM_REMINDER', 'ptm_reminder', 'en_US', 'UTILITY', 'PENDING', 'Parent-teacher meeting reminder.', '["parentName","studentName","date","time"]'),
-        ('wat_school_announcement', 'SCHOOL_ANNOUNCEMENT', 'school_announcement', 'en_US', 'MARKETING', 'PENDING', 'General school announcement broadcast.', '["title","message"]'),
-        ('wat_teacher_meeting', 'TEACHER_MEETING', 'teacher_meeting', 'en_US', 'UTILITY', 'PENDING', 'Staff meeting notification to a teacher.', '["teacherName","date","time"]'),
-        ('wat_event_reminder', 'EVENT_REMINDER', 'event_reminder', 'en_US', 'UTILITY', 'PENDING', 'Sent ahead of a school event.', '["recipientName","eventName","date"]')
+        ('wat_student_absence', 'STUDENT_ABSENCE', 'student_absence', 'en', 'UTILITY', 'PENDING', 'Sent to a parent when their child is marked absent.', '["parentName","studentName","date"]'),
+        ('wat_fee_reminder', 'FEE_REMINDER', 'fee_reminder', 'en', 'UTILITY', 'PENDING', 'Sent ahead of a fee due date.', '["parentName","studentName","amount","dueDate"]'),
+        ('wat_fee_overdue', 'FEE_OVERDUE', 'fee_overdue', 'en', 'UTILITY', 'PENDING', 'Sent when a fee voucher is past due.', '["parentName","studentName","amount","dueDate"]'),
+        ('wat_exam_reminder', 'EXAM_REMINDER', 'exam_reminder', 'en', 'UTILITY', 'PENDING', 'Sent ahead of an exam.', '["studentName","examName","date"]'),
+        ('wat_ptm_reminder', 'PTM_REMINDER', 'ptm_reminder', 'en', 'UTILITY', 'PENDING', 'Parent-teacher meeting reminder.', '["parentName","studentName","date","time"]'),
+        ('wat_school_announcement', 'SCHOOL_ANNOUNCEMENT', 'school_announcement', 'en', 'MARKETING', 'PENDING', 'General school announcement broadcast.', '["title","message"]'),
+        ('wat_teacher_meeting', 'TEACHER_MEETING', 'teacher_meeting', 'en', 'UTILITY', 'PENDING', 'Staff meeting notification to a teacher.', '["teacherName","date","time"]'),
+        ('wat_event_reminder', 'EVENT_REMINDER', 'event_reminder', 'en', 'UTILITY', 'PENDING', 'Sent ahead of a school event.', '["recipientName","eventName","date"]')
       ON CONFLICT (name) DO NOTHING;
 
       ALTER TABLE alumni ADD COLUMN IF NOT EXISTS source_student_id VARCHAR(50) REFERENCES students(id);
@@ -710,6 +772,7 @@ export const initializeDatabase = async () => {
       -- Student promotion: graduating-class flag, promotion outcome, batch audit trail.
       ALTER TABLE classes ADD COLUMN IF NOT EXISTS is_graduating BOOLEAN DEFAULT false;
       ALTER TABLE student_promotions ADD COLUMN IF NOT EXISTS outcome VARCHAR(20) DEFAULT 'promoted';
+      ALTER TABLE student_promotions ADD COLUMN IF NOT EXISTS remarks TEXT;
 
       CREATE TABLE IF NOT EXISTS promotion_batches (
         id VARCHAR(50) PRIMARY KEY,
@@ -874,6 +937,7 @@ export const initializeDatabase = async () => {
       
       -- HR tables
       CREATE TABLE IF NOT EXISTS employees (id VARCHAR(50) PRIMARY KEY, user_id INT UNIQUE, name VARCHAR(255), email VARCHAR(255) UNIQUE, phone VARCHAR(50), department VARCHAR(100), designation VARCHAR(100), employment_type VARCHAR(50), joining_date VARCHAR(50), cnic VARCHAR(50), address TEXT, emergency_contact VARCHAR(255), emergency_phone VARCHAR(50), qualification VARCHAR(255), experience INT, status VARCHAR(50) DEFAULT 'Active', bank_name VARCHAR(255), bank_account VARCHAR(100), profile_photo TEXT);
+      ALTER TABLE employees ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
       CREATE TABLE IF NOT EXISTS leave_requests (id VARCHAR(50) PRIMARY KEY, employee_id INT, employee_name VARCHAR(255), leave_type VARCHAR(50), start_date VARCHAR(50), end_date VARCHAR(50), total_days INT, reason TEXT, status VARCHAR(50) DEFAULT 'Pending', approved_by VARCHAR(255), applied_at VARCHAR(50));
       CREATE TABLE IF NOT EXISTS performance_evaluations (id VARCHAR(50) PRIMARY KEY, employee_id INT, employee_name VARCHAR(255), evaluator_name VARCHAR(255), evaluation_date VARCHAR(50), rating INT, feedback TEXT, goals TEXT, overall_score FLOAT DEFAULT 0);
       CREATE TABLE IF NOT EXISTS contract_records (id VARCHAR(50) PRIMARY KEY, employee_id INT, start_date VARCHAR(50), end_date VARCHAR(50), contract_type VARCHAR(100), documents TEXT DEFAULT '', status VARCHAR(50) DEFAULT 'Active');
@@ -952,7 +1016,27 @@ export const initializeDatabase = async () => {
       
       -- Alumni tables
       CREATE TABLE IF NOT EXISTS alumni (id VARCHAR(50) PRIMARY KEY, name VARCHAR(255), email VARCHAR(255), phone VARCHAR(50), graduation_year INT, class VARCHAR(100), current_occupation VARCHAR(255), company VARCHAR(255) DEFAULT '', address TEXT DEFAULT '', linkedin_url TEXT, facebook_url TEXT, is_donor BOOLEAN DEFAULT false, donation_amount INT DEFAULT 0, status VARCHAR(50) DEFAULT 'Active');
-      
+
+      -- Phase 6 multi-branch scoping: these facility/records tables don't
+      -- reliably cascade from an existing branch-scoped anchor (alumni's
+      -- source_student_id is nullable — most seeded/walk-in alumni have
+      -- none — and incident_reports/medical_records's student_id isn't
+      -- joined in their current fetch queries), so each gets its own direct
+      -- branch_id column rather than relying on an indirect join.
+      ALTER TABLE courses ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE library_books ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE hostels ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE transport_routes ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE incident_reports ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE medical_records ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE alumni ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      -- Announcements have no reliable existing FK to a scoped table
+      -- (target_class is free text, not a real class_id) — direct column.
+      ALTER TABLE announcements ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      -- online_exams.class_name is free text (no class_id FK) — direct column.
+      ALTER TABLE online_exams ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+
       -- Placement tables
       CREATE TABLE IF NOT EXISTS job_postings (id VARCHAR(50) PRIMARY KEY, company_name VARCHAR(255), company_logo TEXT, title VARCHAR(255), description TEXT, requirements TEXT, location VARCHAR(255), salary_range VARCHAR(100), job_type VARCHAR(50), application_deadline VARCHAR(50), posted_at VARCHAR(50), status VARCHAR(50) DEFAULT 'Active', contact_email VARCHAR(255));
       CREATE TABLE IF NOT EXISTS job_applications (id VARCHAR(50) PRIMARY KEY, job_id VARCHAR(50), student_id VARCHAR(50), student_name VARCHAR(255), class VARCHAR(100), resume TEXT DEFAULT '', cover_letter TEXT, status VARCHAR(50) DEFAULT 'Pending', applied_at VARCHAR(50));
@@ -1463,6 +1547,12 @@ export const initializeDatabase = async () => {
           const secRes = await query("SELECT id FROM sections WHERE class_id = $1 AND name = 'A'", [classId]);
           sectionId = secRes.rows[0]?.id;
         }
+        // section_id is NOT NULL on enrollments — a class with no matching
+        // section (e.g. seeded without one) must be skipped, not attempted,
+        // or this single bad row throws and silently aborts every remaining
+        // statement in initializeDatabase() (including unrelated migrations
+        // that happen to run after this block).
+        if (!sectionId) { console.log(`  Skipping ${s.name} – no section found for class "${s.class}"`); continue; }
 
         const rollRes = await query("SELECT COALESCE(MAX(roll_number),0)+1 as next FROM enrollments WHERE class_id=$1", [classId]);
         const rollNumber = parseInt(rollRes.rows[0]?.next || '1', 10);
@@ -1477,6 +1567,51 @@ export const initializeDatabase = async () => {
 
     // ── Fix legacy class name variants (e.g. "Class 11" → "Grade 11") ──
     await query("UPDATE students SET class = 'Grade 11' WHERE class = 'Class 11'");
+
+    // ── Multi-branch backfill ──────────────────────────────────────────
+    // The Postgres "UserRole" enum type predates OWNER/PRINCIPAL — add them
+    // before anything below (or any future login/create) can use those role
+    // values. Must run as its own statement — ALTER TYPE ... ADD VALUE
+    // cannot be combined with other statements in the same query.
+    try {
+      await query(`ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'OWNER'`);
+    } catch (e) { console.error('Failed to add OWNER to UserRole enum:', e); }
+    try {
+      await query(`ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'PRINCIPAL'`);
+    } catch (e) { console.error('Failed to add PRINCIPAL to UserRole enum:', e); }
+
+    // Ensure at least one branch exists, then backfill every pre-existing
+    // row on the anchor tables so single-branch installs keep working
+    // unmodified (everything just belongs to "Main Campus").
+    const branchCountRes = await query("SELECT COUNT(*) FROM branches");
+    if (parseInt(branchCountRes.rows[0].count) === 0) {
+      await query(
+        "INSERT INTO branches (id, name, code, is_active) VALUES ($1,$2,$3,true)",
+        ['branch-main', 'Main Campus', 'MAIN']
+      );
+    }
+    const mainBranchRes = await query("SELECT id FROM branches ORDER BY created_at ASC LIMIT 1");
+    const mainBranchId = mainBranchRes.rows[0]?.id || 'branch-main';
+    // OWNER rows are intentionally left NULL (unscoped) — only backfill
+    // non-owner users.
+    await query("UPDATE users SET branch_id=$1 WHERE branch_id IS NULL AND role != 'OWNER'", [mainBranchId]);
+    await query("UPDATE classes SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+    await query("UPDATE employees SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+    await query("UPDATE students SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+    await query("UPDATE admission_applications SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+    // Phase 6 modules (facility/records tables added later than the core set above).
+    try {
+      await query("UPDATE courses SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+      await query("UPDATE library_books SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+      await query("UPDATE hostels SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+      await query("UPDATE transport_routes SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+      await query("UPDATE incident_reports SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+      await query("UPDATE medical_records SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+      await query("UPDATE events SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+      await query("UPDATE alumni SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+    await query("UPDATE announcements SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+    await query("UPDATE online_exams SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+    } catch (e) { console.error('Phase 6 branch backfill failed:', e); }
 
     console.log('Database initialization completed successfully.');
   } catch (err) {

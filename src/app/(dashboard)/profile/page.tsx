@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { getSessionProfileDB, changePasswordDB, fetchPayslipsDB, fetchLeaveRequestsDB, createLeaveRequestDB } from "@/app/actions/features";
 import type { Payslip, LeaveRequest } from "@/lib/types";
+import { formatDatePK } from "@/lib/date-format";
 import { User, Mail, Shield, Calendar, KeyRound, Eye, EyeOff, Receipt, CalendarDays, Plus, Loader2 } from "lucide-react";
 
 const LEAVE_TYPES = ["Sick", "Casual", "Annual", "Maternity", "Paternity", "Unpaid"] as const;
@@ -277,7 +278,7 @@ export default function ProfilePage() {
                   {leaveRequests.map(lr => (
                     <div key={lr.id} className="flex items-center justify-between border-b border-secondary/30 py-2 last:border-0">
                       <div>
-                        <p className="font-medium text-sm">{lr.leaveType} — {lr.startDate} to {lr.endDate}</p>
+                        <p className="font-medium text-sm">{lr.leaveType} — {formatDatePK(lr.startDate)} to {formatDatePK(lr.endDate)}</p>
                         <p className="text-xs text-muted-foreground">{lr.totalDays} day(s)</p>
                       </div>
                       <Badge className={leaveStatusBadge[lr.status]}>{lr.status}</Badge>

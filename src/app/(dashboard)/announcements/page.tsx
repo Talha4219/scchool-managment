@@ -31,7 +31,7 @@ export default function AnnouncementsPage() {
 
   // Real logged-in role — NOT the legacy `activeRole` demo role-switcher
   // (defaults to "ADMIN", never synced to the actual session).
-  const [activeRole, setSessionRole] = useState<"ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE" | null>(null);
+  const [activeRole, setSessionRole] = useState<"ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE" | "OWNER" | "PRINCIPAL" | null>(null);
   const [sessionUserId, setSessionUserId] = useState<number | null>(null);
   const [sessionName, setSessionName] = useState<string | null>(null);
   useEffect(() => {
@@ -47,7 +47,7 @@ export default function AnnouncementsPage() {
   const [adminClasses, setAdminClasses] = useState<{ id: string; name: string }[]>([]);
   const [teacherClasses, setTeacherClasses] = useState<{ id: string; name: string }[]>([]);
   useEffect(() => {
-    if (activeRole === "ADMIN") {
+    if ((activeRole === "ADMIN" || activeRole === "PRINCIPAL")) {
       fetchAcademicYearsDB().then(years => {
         const active = years.find(y => y.isActive) || years[0];
         if (active) fetchClassesDB(active.id).then(setAdminClasses);
@@ -70,14 +70,14 @@ export default function AnnouncementsPage() {
   const load = useCallback(async () => {
     if (!activeRole) return;
     setLoading(true);
-    const data = await fetchAnnouncementsDB(activeRole === "ADMIN" ? undefined : activeRole, sessionUserId ?? undefined);
+    const data = await fetchAnnouncementsDB((activeRole === "ADMIN" || activeRole === "PRINCIPAL") ? undefined : activeRole, sessionUserId ?? undefined);
     setAnnouncements(data);
     setLoading(false);
   }, [activeRole, sessionUserId]);
 
   useEffect(() => { load(); }, [load]);
 
-  const canCreate = activeRole === "ADMIN" || activeRole === "TEACHER";
+  const canCreate = (activeRole === "ADMIN" || activeRole === "PRINCIPAL") || activeRole === "TEACHER";
 
   const handleCreate = async () => {
     if (!form.title.trim() || !form.content.trim()) {
@@ -86,7 +86,7 @@ export default function AnnouncementsPage() {
     const res = await createAnnouncementDB({
       title: form.title, content: form.content,
       date: new Date().toISOString().split("T")[0],
-      authorId: String(sessionUserId ?? "1"), authorName: sessionName || (activeRole === "ADMIN" ? "Admin" : "Teacher"),
+      authorId: String(sessionUserId ?? "1"), authorName: sessionName || ((activeRole === "ADMIN" || activeRole === "PRINCIPAL") ? "Admin" : "Teacher"),
       targetRole: form.targetRole === "ALL" ? null : form.targetRole,
       targetClass: form.targetClass || null,
       priority: form.priority,
@@ -148,7 +148,7 @@ export default function AnnouncementsPage() {
                     </Select>
                   </div>
                 </div>
-                {(activeRole === "ADMIN" || activeRole === "TEACHER") && (
+                {((activeRole === "ADMIN" || activeRole === "PRINCIPAL") || activeRole === "TEACHER") && (
                   <div className="space-y-1">
                     <Label>
                       {activeRole === "TEACHER" ? "Target Class (assigned only)" : "Specific Class (optional)"}
@@ -156,7 +156,7 @@ export default function AnnouncementsPage() {
                     <Select value={form.targetClass} onValueChange={v => setForm(f => ({ ...f, targetClass: v === "ALL" ? "" : v }))}>
                       <SelectTrigger><SelectValue placeholder="All classes" /></SelectTrigger>
                       <SelectContent>
-                        {activeRole === "ADMIN" && <SelectItem value="ALL">All classes</SelectItem>}
+                        {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && <SelectItem value="ALL">All classes</SelectItem>}
                         {classOptions.length === 0 && (
                           <div className="px-2 py-3 text-xs text-muted-foreground text-center">
                             {activeRole === "TEACHER" ? "No classes assigned to you yet." : "No classes found."}
@@ -200,7 +200,7 @@ export default function AnnouncementsPage() {
                     <p className="text-sm text-muted-foreground leading-relaxed">{a.content}</p>
                     <p className="text-xs text-muted-foreground mt-2">By {a.authorName} · {a.date}</p>
                   </div>
-                  {activeRole === "ADMIN" && (
+                  {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
                     <Button size="icon" variant="ghost" className="h-8 w-8 text-red-400 hover:text-red-600 hover:bg-red-50 shrink-0" onClick={() => handleDelete(a.id)}>
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>

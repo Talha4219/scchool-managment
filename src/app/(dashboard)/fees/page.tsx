@@ -73,7 +73,7 @@ export default function FeesPage() {
   // Real logged-in role/email — NOT the legacy `activeRole` demo role-switcher
   // (that state defaults to "ADMIN" and is never synced to the actual session,
   // which was letting real students see the full admin fee ledger/controls).
-  const [activeRole, setSessionRole] = useState<"ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE" | null>(null);
+  const [activeRole, setSessionRole] = useState<"ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE" | "OWNER" | "PRINCIPAL" | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   useEffect(() => {
     getSession().then(s => { setSessionRole((s?.role as any) ?? null); setSessionEmail(s?.email ?? null); });
@@ -678,7 +678,7 @@ export default function FeesPage() {
               <Download className="h-4 w-4" /> Download Report
             </Button>
           )}
-          {activeRole === "ADMIN" && (
+          {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
             <Dialog open={isGenerateOpen} onOpenChange={(open) => {
               setIsGenerateOpen(open);
               if (open) setGenLineItems([{ description: generateData.feeType, amount: "3000" }]);
@@ -941,16 +941,16 @@ export default function FeesPage() {
       <Tabs defaultValue="vouchers">
         <TabsList className="mb-4 flex-wrap h-auto gap-1">
           <TabsTrigger value="vouchers" className="gap-2"><FileText className="h-4 w-4" /> Voucher Ledger</TabsTrigger>
-          {activeRole === "ADMIN" && (
+          {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
             <TabsTrigger value="structures" className="gap-2"><Layers className="h-4 w-4" /> Fee Structures</TabsTrigger>
           )}
-          {activeRole === "ADMIN" && (
+          {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
             <TabsTrigger value="defaulters" className="gap-2">
               <Users className="h-4 w-4" /> Defaulters
               {defaulters.length > 0 && <Badge className="ml-1 h-5 px-1.5 bg-red-500 text-white text-[10px]">{defaulters.length}</Badge>}
             </TabsTrigger>
           )}
-          {activeRole === "ADMIN" && (
+          {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
             <TabsTrigger value="reports" className="gap-2"><BarChart3 className="h-4 w-4" /> Reports</TabsTrigger>
           )}
         </TabsList>
@@ -1038,7 +1038,7 @@ export default function FeesPage() {
                                   <CreditCard className="h-3 w-3" /> Pay
                                 </Button>
                               )}
-                              {activeRole === "ADMIN" && v.status !== "Paid" && (
+                              {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && v.status !== "Paid" && (
                                 <>
                                   <Button onClick={() => handleMarkPaidDirect(v)} size="sm" variant="outline"
                                     className="h-7 text-primary border-primary hover:bg-primary/5 gap-1 text-xs">
@@ -1054,7 +1054,7 @@ export default function FeesPage() {
                                   </Button>
                                 </>
                               )}
-                              {activeRole === "ADMIN" && (
+                              {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
                                 <Button onClick={() => {
                                   setRegenTarget(v);
                                   setRegenData({ month: v.month || new Date().toISOString().slice(0, 7), dueDate: v.dueDate });
@@ -1073,7 +1073,7 @@ export default function FeesPage() {
                                   <Receipt className="h-3 w-3" />
                                 </Button>
                               )}
-                              {v.status === "Paid" && activeRole === "ADMIN" && (
+                              {v.status === "Paid" && (activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
                                 <Button onClick={() => {
                                   setUpdatePayTarget(v);
                                   setUpdatePayForm({ method: v.paymentMethod || "Cash", date: v.paymentDate || "" });
@@ -1104,7 +1104,7 @@ export default function FeesPage() {
         </TabsContent>
 
         {/* ── Fee Structures Tab ── */}
-        {activeRole === "ADMIN" && (
+        {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
           <TabsContent value="structures">
             <Card className="border-none shadow-sm">
               <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
@@ -1175,7 +1175,7 @@ export default function FeesPage() {
         )}
 
         {/* ── Defaulters Tab ── */}
-        {activeRole === "ADMIN" && (
+        {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
           <TabsContent value="defaulters">
             <Card className="border-none shadow-sm overflow-hidden">
               <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
@@ -1252,7 +1252,7 @@ export default function FeesPage() {
         )}
 
         {/* ── Reports Tab ── */}
-        {activeRole === "ADMIN" && (
+        {(activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
           <TabsContent value="reports">
             <div className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

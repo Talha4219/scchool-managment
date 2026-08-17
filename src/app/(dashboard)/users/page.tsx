@@ -22,6 +22,8 @@ import {
   fetchPendingUsersDB, approveUserDB, rejectUserDB, fetchCustomRolesDB,
   deactivateUserDB, reactivateUserDB, type CustomRole,
 } from "@/app/actions/features";
+import { fetchBranchesDB, type BranchRecord } from "@/app/actions/branches";
+import { getSession } from "@/app/actions/auth";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -45,7 +47,9 @@ type PendingUser = {
   } | null;
 };
 
-const SYSTEM_ROLES = ["ADMIN", "TEACHER", "STUDENT", "PARENT", "EMPLOYEE"] as const;
+const SYSTEM_ROLES = ["ADMIN", "TEACHER", "STUDENT", "PARENT", "EMPLOYEE", "OWNER", "PRINCIPAL"] as const;
+// A branch picker only makes sense for roles that actually get scoped to one.
+const BRANCH_SCOPED_ROLES = new Set(["ADMIN", "TEACHER", "EMPLOYEE", "PRINCIPAL"]);
 
 const roleBadge: Record<string, string> = {
   ADMIN: "bg-blue-100 text-blue-800",
@@ -82,9 +86,11 @@ export default function UsersPage() {
 
   // Forms — a role field value is either a bare system role ("TEACHER") or
   // "custom:<id>" for a custom role; split apart right before hitting the DB.
-  const [createForm, setCreateForm] = useState({ name: "", email: "", password: "", roleValue: "STUDENT" });
+  const [createForm, setCreateForm] = useState({ name: "", email: "", password: "", roleValue: "STUDENT", branchId: "" });
   const [editRoleValue, setEditRoleValue] = useState("STUDENT");
   const [newPassword, setNewPassword] = useState("");
+  const [branches, setBranches] = useState<BranchRecord[]>([]);
+  const [isOwner, setIsOwner] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -96,6 +102,14 @@ export default function UsersPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    getSession().then(s => {
+      setIsOwner(s?.role === "OWNER");
+      // Only OWNER manages multiple branches — everyone else (a Principal
+      // creating staff within their own branch) never needs to pick one.
+      if (s?.role === "OWNER") fetchBranchesDB().then(setBranches);
+    });
+  }, []);
 
   if (activeRole !== "ADMIN") {
     if (!permsLoaded) return null;
@@ -131,11 +145,11 @@ export default function UsersPage() {
       toast({ title: "Missing fields", variant: "destructive" }); return;
     }
     const { role, customRoleId } = parseRoleValue(createForm.roleValue);
-    const res = await createUserDB(createForm.name, createForm.email, createForm.password, role as any, customRoleId);
+    const res = await createUserDB(createForm.name, createForm.email, createForm.password, role as any, customRoleId, createForm.branchId || null);
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
     toast({ title: "User created successfully." });
     setCreateOpen(false);
-    setCreateForm({ name: "", email: "", password: "", roleValue: "STUDENT" });
+    setCreateForm({ name: "", email: "", password: "", roleValue: "STUDENT", branchId: "" });
     load();
   };
 
@@ -251,6 +265,17 @@ export default function UsersPage() {
                 <div className="space-y-1"><Label>Role</Label>
                   <RoleSelect value={createForm.roleValue} onChange={v => setCreateForm(f => ({ ...f, roleValue: v }))} />
                 </div>
+                {isOwner && BRANCH_SCOPED_ROLES.has(createForm.roleValue) && (
+                  <div className="space-y-1">
+                    <Label>Branch</Label>
+                    <Select value={createForm.branchId} onValueChange={v => setCreateForm(f => ({ ...f, branchId: v }))}>
+                      <SelectTrigger><SelectValue placeholder="Select branch" /></SelectTrigger>
+                      <SelectContent>
+                        {branches.map(b => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
               </div>
               <DialogFooter><Button onClick={handleCreate}>Create User</Button></DialogFooter>
             </DialogContent>

@@ -220,6 +220,8 @@ enum UserRole {
   STUDENT
   PARENT
   EMPLOYEE
+  OWNER
+  PRINCIPAL
 }
 
 // ── Academic Core ──────────────────────────────────────────────────────────────

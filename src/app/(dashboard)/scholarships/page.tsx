@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -48,7 +49,8 @@ function formatDate(d: string) {
 }
 
 export default function ScholarshipsPage() {
-  const { activeRole, schoolInfo, students } = useAppState();
+  const { activeRole, schoolInfo } = useAppState();
+  const { students } = useStudents();
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
   const [scholarships, setScholarships] = useState<Scholarship[]>([]);
@@ -424,7 +426,7 @@ export default function ScholarshipsPage() {
                         <Badge variant="outline" className={`${APP_STATUS_COLORS[a.status] ?? ""} text-xs`}>{a.status}</Badge>
                       </TableCell>
                       <TableCell>
-                        {a.status === "Pending" && activeRole === "ADMIN" && (
+                        {a.status === "Pending" && (activeRole === "ADMIN" || activeRole === "PRINCIPAL") && (
                           <div className="flex items-center gap-1">
                             <Button size="sm" className="h-7 w-7 p-0 bg-green-600 hover:bg-green-700 text-white"
                               onClick={() => handleApprove(a)}><CheckCircle2 className="h-3.5 w-3.5" /></Button>

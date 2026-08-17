@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -37,7 +37,7 @@ function readAsDataURL(file: File): Promise<string> {
 }
 
 export default function AssignmentsPage() {
-  const { students } = useAppState();
+  const { students } = useStudents();
   const { toast } = useToast();
   const confirm = useConfirm();
   const { can, loaded: permsLoaded } = usePermission();

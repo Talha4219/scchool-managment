@@ -2,6 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
+import { useNotifications } from "@/lib/notifications-context";
+import { useAttendance } from "@/lib/attendance-context";
+import { useExams } from "@/lib/exams-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -14,7 +18,11 @@ import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 
 export default function CommunicationsPage() {
-  const { students, attendance, exams, addNotification, activeRole } = useAppState();
+  const { activeRole } = useAppState();
+  const { students } = useStudents();
+  const { addNotification } = useNotifications();
+  const { attendance } = useAttendance();
+  const { exams } = useExams();
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
 

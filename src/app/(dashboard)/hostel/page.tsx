@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -29,7 +30,8 @@ import {
 } from "lucide-react";
 
 export default function HostelPage() {
-  const { students, schoolInfo } = useAppState();
+  const { schoolInfo } = useAppState();
+  const { students } = useStudents();
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
 

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -23,21 +24,15 @@ import {
   fetchTransportRoutesDB, createTransportRouteDB,
   fetchTransportVehiclesDB,
 } from "@/app/actions/features";
-import { defaultTransportRoutes } from "@/lib/default-data";
 import type { TransportRoute, TransportVehicle, TransportAllocation } from "@/lib/types";
 import {
   MapPin, Bus, Users, Plus, Pencil, RefreshCw, Route, ArrowLeftRight,
   DollarSign, Truck, User, Phone, Calendar, ShieldCheck, Gauge,
 } from "lucide-react";
 
-const defaultVehicles: TransportVehicle[] = [
-  { id: "veh-1", vehicleNumber: "LEA-2026-001", type: "Bus", capacity: 40, routeId: "route-1", driverName: "Mr. Muhammad Saleem", driverPhone: "0300-1112233", registrationDate: "2025-01-15", fitnessExpiry: "2027-01-15", insuranceExpiry: "2027-01-15", isActive: true },
-  { id: "veh-2", vehicleNumber: "LEA-2026-002", type: "Bus", capacity: 40, routeId: "route-2", driverName: "Mr. Abdul Rehman", driverPhone: "0301-2223344", registrationDate: "2025-03-20", fitnessExpiry: "2027-03-20", insuranceExpiry: "2027-03-20", isActive: true },
-  { id: "veh-3", vehicleNumber: "LEA-2026-003", type: "Van", capacity: 15, routeId: "route-3", driverName: "Mr. Tariq Mahmood", driverPhone: "0302-3334455", registrationDate: "2025-06-10", fitnessExpiry: "2027-06-10", insuranceExpiry: "2027-06-10", isActive: true },
-];
-
 export default function TransportPage() {
-  const { students, schoolInfo } = useAppState();
+  const { schoolInfo } = useAppState();
+  const { students } = useStudents();
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
 
@@ -61,12 +56,10 @@ export default function TransportPage() {
     setLoading(true);
     try {
       const r = await fetchTransportRoutesDB();
-      setRoutes(r.length > 0 ? r : defaultTransportRoutes);
+      setRoutes(r);
       if (r.length > 0 && !selectedRouteId) setSelectedRouteId(r[0].id);
-      else if (r.length === 0 && !selectedRouteId && defaultTransportRoutes.length > 0) setSelectedRouteId(defaultTransportRoutes[0].id);
     } catch {
-      setRoutes(defaultTransportRoutes);
-      if (!selectedRouteId && defaultTransportRoutes.length > 0) setSelectedRouteId(defaultTransportRoutes[0].id);
+      setRoutes([]);
     }
     setLoading(false);
   };
@@ -75,7 +68,7 @@ export default function TransportPage() {
 
   useEffect(() => {
     if (!selectedRouteId) { setVehicles([]); setAllocations([]); return; }
-    fetchTransportVehiclesDB(selectedRouteId).then(v => setVehicles(v.length > 0 ? v : defaultVehicles.filter(dv => dv.routeId === selectedRouteId)));
+    fetchTransportVehiclesDB(selectedRouteId).then(setVehicles);
   }, [selectedRouteId]);
 
   const selectedRoute = routes.find(r => r.id === selectedRouteId);

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -21,7 +22,8 @@ import type { ParentRecord } from "@/lib/types";
 import { Plus, Search, MoreHorizontal, Edit2, UserX, UserCheck, Trash2, Link2, Lock, UserCircle } from "lucide-react";
 
 export default function ParentsPage() {
-  const { activeRole, students } = useAppState();
+  const { activeRole } = useAppState();
+  const { students } = useStudents();
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
 

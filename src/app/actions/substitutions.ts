@@ -8,23 +8,8 @@
 // slot can have a different (or no) substitute on each date it's actually missed.
 
 import { query } from "@/lib/db";
-import { getSession } from "./auth";
 import { notify } from "./features";
-
-type Role = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE';
-
-async function requireRole(...roles: Role[]): Promise<{ session: NonNullable<Awaited<ReturnType<typeof getSession>>> } | { error: string }> {
-  const session = await getSession();
-  if (!session) return { error: 'Not authenticated.' };
-  if (!roles.includes(session.role as Role)) return { error: 'You are not authorized to perform this action.' };
-  return { session };
-}
-
-async function requireSession(): Promise<{ session: NonNullable<Awaited<ReturnType<typeof getSession>>> } | { error: string }> {
-  const session = await getSession();
-  if (!session) return { error: 'Not authenticated.' };
-  return { session };
-}
+import { requireRole, requireSession, scopeBranch } from "@/lib/auth-scope";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -192,11 +177,16 @@ export async function clearAutoSubstitutionsForTeacherDateDB(teacherId: number, 
 export async function fetchSubstitutionsForDateDB(date: string, opts?: { teacherId?: number }): Promise<SubstitutionRecord[]> {
   const auth = await requireSession();
   if ('error' in auth) return [];
-  const scopedTeacherId = auth.session.role === 'ADMIN' ? opts?.teacherId : auth.session.userId;
+  const scopedTeacherId = (auth.session.role === 'ADMIN' || auth.session.role === 'PRINCIPAL' || auth.session.role === 'OWNER') ? opts?.teacherId : auth.session.userId;
   try {
+    // timetable_entries (this legacy demo table, distinct from the real
+    // relational `timetables`) has no class_id/branch_id — scope via the
+    // original teacher's branch instead.
     let sql = `${SELECT_WITH_NAMES} WHERE ts.date=$1`;
     const params: any[] = [date];
     if (scopedTeacherId !== undefined) { params.push(scopedTeacherId); sql += ` AND ts.substitute_teacher_id=$${params.length}`; }
+    const branchId = scopeBranch(auth.session);
+    if (branchId) { params.push(branchId); sql += ` AND ot.branch_id=$${params.length}`; }
     sql += ` ORDER BY (ts.status='unfilled') DESC, te.start_time`;
     const res = await query(sql, params);
     return res.rows.map(mapRow);
@@ -235,7 +225,13 @@ export async function fetchEligibleSubstitutesDB(substitutionId: string): Promis
       ...absentToday.rows.map((r: any) => r.user_id),
     ]);
 
-    const teachers = await query(`SELECT id, name FROM users WHERE role='TEACHER' ORDER BY name`);
+    // Only ever consider teachers in the substitution's own branch — a
+    // cross-branch teacher can't physically cover the class.
+    const branchId = scopeBranch(auth.session);
+    const teachersSql = branchId
+      ? `SELECT id, name FROM users WHERE role='TEACHER' AND branch_id=$1 ORDER BY name`
+      : `SELECT id, name FROM users WHERE role='TEACHER' ORDER BY name`;
+    const teachers = await query(teachersSql, branchId ? [branchId] : []);
     return teachers.rows.filter((r: any) => !excluded.has(r.id)).map((r: any) => ({ userId: r.id, name: r.name }));
   } catch { return []; }
 }

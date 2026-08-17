@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { Subject, FeeCategory, AcademicTerm, Section, GradeScaleItem } from "@/lib/types";
 import { fetchAllSectionsDB, createSectionDB, updateSectionDB, deleteSectionDB } from "@/app/actions/academic-core";
 import { fetchUsersDB } from "@/app/actions/features";
@@ -671,7 +672,7 @@ function NotificationChannelsTab() {
 // ─── TAB 10 – Attendance Devices (biometric/RFID) ──────────────────────────
 
 function AttendanceDevicesTab() {
-  const { students } = useAppState();
+  const { students } = useStudents();
   const { toast } = useToast();
   const confirm = useConfirm();
 

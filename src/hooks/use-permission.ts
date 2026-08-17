@@ -19,10 +19,12 @@ export function usePermission() {
         // session JWT) so it applies immediately without a re-login.
         const cr = await fetchMyCustomRoleIdDB();
         setCustomRoleId(cr);
-        // A custom role narrows an ADMIN's automatic bypass too — assigning
-        // one is the point at which the school wants that person restricted
-        // to an explicit permission set instead of everything.
-        if (session.role === "ADMIN" && !cr) {
+        // A custom role narrows an ADMIN's/PRINCIPAL's automatic bypass too —
+        // assigning one is the point at which the school wants that person
+        // restricted to an explicit permission set instead of everything.
+        // PRINCIPAL = "Admin, branch-scoped": same permission bypass, data
+        // scoping is enforced separately by scopeBranch() in each action.
+        if ((session.role === "ADMIN" || session.role === "PRINCIPAL") && !cr) {
           setLoaded(true);
           return;
         }
@@ -35,7 +37,7 @@ export function usePermission() {
 
   const can = useCallback(
     (permission: string) => {
-      if (role === "ADMIN" && !customRoleId) return true;
+      if ((role === "ADMIN" || role === "PRINCIPAL") && !customRoleId) return true;
       return perms[permission] === true;
     },
     [role, customRoleId, perms]

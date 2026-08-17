@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,7 +20,6 @@ import { useToast } from "@/hooks/use-toast";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 import { LibraryBook, BookIssue } from "@/lib/types";
-import { defaultLibraryBooks } from "@/lib/default-data";
 import {
   fetchLibraryBooksDB, createLibraryBookDB, deleteLibraryBookDB,
   fetchBookIssuesDB, issueBookDB, returnBookDB, payBookFineDB,
@@ -38,7 +38,8 @@ const blankBook: Omit<LibraryBook, "id"> = {
 };
 
 export default function LibraryPage() {
-  const { activeRole, students } = useAppState();
+  const { activeRole } = useAppState();
+  const { students } = useStudents();
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
 
@@ -56,7 +57,7 @@ export default function LibraryPage() {
   const [issueStudentId, setIssueStudentId] = useState("");
   const [issueDueDate, setIssueDueDate] = useState("");
 
-  const isLibrarian = activeRole === "ADMIN" || activeRole === "TEACHER";
+  const isLibrarian = (activeRole === "ADMIN" || activeRole === "PRINCIPAL") || activeRole === "TEACHER";
   const isStudent = activeRole === "STUDENT";
 
   const loadData = async () => {
@@ -65,16 +66,7 @@ export default function LibraryPage() {
       fetchLibraryBooksDB(),
       isStudent ? fetchBookIssuesDB(students[0]?.id) : fetchBookIssuesDB(),
     ]);
-    setBooks(
-      booksData.length > 0
-        ? booksData
-        : defaultLibraryBooks.map((b) => ({
-            ...b,
-            isDigital: false,
-            digitalUrl: "",
-            status: "Available" as const,
-          }))
-    );
+    setBooks(booksData);
     setIssues(issuesData);
     setLoading(false);
   };

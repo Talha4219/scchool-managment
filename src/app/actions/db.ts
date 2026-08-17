@@ -10,19 +10,11 @@ import {
   AcademicTerm, FeeRecord, AttendanceRecord, ExamRecord, NotificationRecord,
   AdmissionApplication, FeeStructure,
 } from '../../lib/types';
-
-type Role = 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE';
-
 // Every mutation in this file runs behind one of these — role gating used to live
 // only in the React components that called them, so a raw request to the server
 // action endpoint bypassed it entirely. See audit finding "Three core server-action
 // files have zero session/role checks".
-async function requireRole(...roles: Role[]): Promise<{ session: NonNullable<Awaited<ReturnType<typeof getSession>>> } | { error: string }> {
-  const session = await getSession();
-  if (!session) return { error: 'Not authenticated.' };
-  if (!roles.includes(session.role as Role)) return { error: 'You are not authorized to perform this action.' };
-  return { session };
-}
+import { requireRole, scopeBranch } from '../../lib/auth-scope';
 
 // Helper to convert db rows to frontend objects
 const mapRowToSchoolInfo = (row: any): SchoolInfo => ({
@@ -196,23 +188,35 @@ export async function fetchDBState() {
   }
 
   try {
+    // Multi-branch scoping: OWNER (or a legacy pre-branch session) sees
+    // everything; every other role only sees rows belonging to their branch.
+    // fee_records/attendance don't carry their own branch_id — they're
+    // scoped indirectly via a student-id subquery against the students
+    // table, which does.
+    const branchId = scopeBranch(session);
     const [
       schoolRes, studentsRes, classesRes, sectionsRes, subjectsRes,
       feeCatRes, feeStrRes, termsRes, feeRecRes, attRes, examRes, notifRes, appsRes,
     ] = await Promise.all([
       query('SELECT * FROM school_info LIMIT 1'),
-      query('SELECT * FROM students'),
-      query('SELECT * FROM classes'),
+      branchId ? query('SELECT * FROM students WHERE branch_id=$1', [branchId]) : query('SELECT * FROM students'),
+      branchId ? query('SELECT * FROM classes WHERE branch_id=$1', [branchId]) : query('SELECT * FROM classes'),
       query('SELECT * FROM sections'),
       query('SELECT * FROM subjects'),
       query('SELECT * FROM fee_categories'),
       query('SELECT * FROM fee_structures').catch(() => ({ rows: [] })),
       query('SELECT * FROM academic_terms'),
-      query('SELECT * FROM fee_records'),
-      query('SELECT * FROM attendance'),
+      branchId
+        ? query('SELECT * FROM fee_records WHERE student_id IN (SELECT id FROM students WHERE branch_id=$1)', [branchId])
+        : query('SELECT * FROM fee_records'),
+      branchId
+        ? query('SELECT * FROM attendance WHERE student_id IN (SELECT id FROM students WHERE branch_id=$1)', [branchId])
+        : query('SELECT * FROM attendance'),
       query('SELECT * FROM exams'),
       query('SELECT * FROM notifications'),
-      query('SELECT * FROM admission_applications ORDER BY submitted_at DESC').catch(() => ({ rows: [] })),
+      branchId
+        ? query('SELECT * FROM admission_applications WHERE branch_id=$1 ORDER BY submitted_at DESC', [branchId]).catch(() => ({ rows: [] }))
+        : query('SELECT * FROM admission_applications ORDER BY submitted_at DESC').catch(() => ({ rows: [] })),
     ]);
 
     return {
@@ -256,9 +260,9 @@ export async function addStudentDB(st: StudentRecord) {
 
   // NOTE: `class` and `section` columns are DEPRECATED — use enrollments table for grade/section assignment
   await query(
-    `INSERT INTO students (id, name, admission_number, class, section, parent_name, status, parent_email, email, profile_photo)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [st.id, st.name, st.admissionNumber, st.class, st.section, st.parentName, st.status, st.parentEmail, st.email, st.profilePhoto || null]
+    `INSERT INTO students (id, name, admission_number, class, section, parent_name, status, parent_email, email, profile_photo, branch_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [st.id, st.name, st.admissionNumber, st.class, st.section, st.parentName, st.status, st.parentEmail, st.email, st.profilePhoto || null, scopeBranch(auth.session)]
   );
   return st;
 }

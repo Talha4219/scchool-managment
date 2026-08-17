@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { getSession } from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -220,7 +221,8 @@ function MaterialsDialog({ course, canManage, trigger }: { course: Course; canMa
 }
 
 export default function LMSPage() {
-  const { activeRole, students, classes } = useAppState();
+  const { activeRole, classes } = useAppState();
+  const { students } = useStudents();
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
 
@@ -249,7 +251,7 @@ export default function LMSPage() {
   useEffect(() => { loadCourses(); }, []);
   useEffect(() => { getSession().then(s => setSessionEmail(s?.email ?? null)); }, []);
 
-  const isAdmin = activeRole === "ADMIN";
+  const isAdmin = (activeRole === "ADMIN" || activeRole === "PRINCIPAL");
   const isTeacher = activeRole === "TEACHER";
   const isStudent = activeRole === "STUDENT";
 

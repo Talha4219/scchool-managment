@@ -7,6 +7,7 @@ import { Search, Bell, MessageSquare, Zap, LogOut, User, Settings, ShieldAlert, 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useAppState } from "@/lib/state-context";
+import { useNotifications } from "@/lib/notifications-context";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -39,7 +40,8 @@ const SidebarCollapseCtx = createContext<{ collapsed: boolean; toggle: () => voi
 export const useSidebarCollapse = () => useContext(SidebarCollapseCtx);
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { isDbLoaded, activeRole, setActiveRole, notifications, markNotificationRead, schoolInfo } = useAppState();
+  const { isDbLoaded, activeRole, setActiveRole, schoolInfo } = useAppState();
+  const { notifications, markNotificationRead } = useNotifications();
   const { t, tn } = useLanguage();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sessionRole, setSessionRole] = useState<string | null>(null);

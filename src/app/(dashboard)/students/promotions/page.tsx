@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { getSession } from "@/app/actions/auth";
 import {
   fetchAcademicYearsDB, fetchClassesDB, fetchSectionsByClassDB,
@@ -10,6 +10,9 @@ import {
 import type { AcademicYear, ClassItem, SectionItem } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { GraduationCap, ArrowRight, ChevronLeft, CheckCircle2, AlertTriangle, History } from "lucide-react";
@@ -17,7 +20,12 @@ import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 
 type Outcome = "promoted" | "retained" | "withdrawn";
-type Step = "source" | "target" | "review" | "result";
+type Step = "setup" | "review" | "result";
+
+// Required-field marker — the site-wide convention: red asterisk on the
+// label, paired with a disabled-until-valid button instead of a toast that
+// only fires after the user has already tried to submit.
+const Req = () => <span className="text-destructive">*</span>;
 
 export default function PromotionsPage() {
   const { can, loaded } = usePermission();
@@ -28,7 +36,7 @@ export default function PromotionsPage() {
   useEffect(() => { getSession().then(s => { setSessionUserId(s?.userId ?? null); setSessionName(s?.name ?? null); }); }, []);
 
   const [years, setYears] = useState<AcademicYear[]>([]);
-  const [step, setStep] = useState<Step>("source");
+  const [step, setStep] = useState<Step>("setup");
 
   // Source
   const [fromYearId, setFromYearId] = useState("");
@@ -45,10 +53,14 @@ export default function PromotionsPage() {
   const [toClassId, setToClassId] = useState("");
   const [toSections, setToSections] = useState<SectionItem[]>([]);
   const [toSectionId, setToSectionId] = useState("");
+  const [toSectionAutoPicked, setToSectionAutoPicked] = useState(false);
 
   // Review
   const [candidates, setCandidates] = useState<PromotionCandidate[]>([]);
   const [outcomes, setOutcomes] = useState<Record<string, Outcome>>({});
+  const [batchRemarks, setBatchRemarks] = useState("");
+  const [rowNoteOpen, setRowNoteOpen] = useState<Record<string, boolean>>({});
+  const [rowRemarks, setRowRemarks] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<BulkPromotionResult | null>(null);
 
@@ -75,24 +87,29 @@ export default function PromotionsPage() {
     if (toClassId) fetchSectionsByClassDB(toClassId).then(setToSections);
     else setToSections([]);
     setToSectionId("");
+    setToSectionAutoPicked(false);
   }, [toClassId]);
 
-  const goToTarget = () => {
-    if (!fromClassId || !fromSectionId) { toast({ title: "Select a source class and section.", variant: "destructive" }); return; }
-    setStep("target");
-  };
+  // Same-section convenience: once the target class's sections load, if one
+  // shares the source section's name (the common "9-A -> 10-A" case), pick
+  // it automatically — still fully editable, this just saves the click.
+  useEffect(() => {
+    if (toSectionAutoPicked || !toSections.length || !fromSections.length || !fromSectionId) return;
+    const fromName = fromSections.find(s => s.id === fromSectionId)?.name;
+    const match = fromName && toSections.find(s => s.name === fromName);
+    if (match) { setToSectionId(match.id); setToSectionAutoPicked(true); }
+  }, [toSections, fromSections, fromSectionId, toSectionAutoPicked]);
+
+  const setupValid = isGraduating
+    ? !!(fromClassId && fromSectionId && toYearId)
+    : !!(fromClassId && fromSectionId && toYearId && toClassId && toSectionId);
 
   const goToReview = async () => {
-    if (!isGraduating && (!toClassId || !toSectionId || !toYearId)) {
-      toast({ title: "Select a target academic year, class, and section.", variant: "destructive" }); return;
-    }
-    if (isGraduating && !toYearId) {
-      toast({ title: "Select the academic year this batch graduates into.", variant: "destructive" }); return;
-    }
     const res = await fetchPromotionCandidatesDB(fromClassId, fromSectionId);
     setCandidates(res.candidates);
     setSourceClassName(res.className);
     setOutcomes(Object.fromEntries(res.candidates.map(c => [c.enrollmentId, "promoted" as Outcome])));
+    setBatchRemarks(""); setRowNoteOpen({}); setRowRemarks({});
     if (res.candidates.length === 0) { toast({ title: "No active students in this section.", variant: "destructive" }); return; }
     setStep("review");
   };
@@ -101,11 +118,13 @@ export default function PromotionsPage() {
     setSubmitting(true);
     const decisions: PromotionDecision[] = candidates.map(c => ({
       enrollmentId: c.enrollmentId, studentId: c.studentId, outcome: outcomes[c.enrollmentId] || "promoted",
+      remarks: rowNoteOpen[c.enrollmentId] ? (rowRemarks[c.enrollmentId] || undefined) : undefined,
     }));
     const res = await bulkPromoteStudentsDB({
       fromClassId, fromSectionId, fromAcademicYearId: fromYearId,
       toClassId: isGraduating ? undefined : toClassId, toSectionId: isGraduating ? undefined : toSectionId, toAcademicYearId: toYearId,
       isGraduating, decisions, promotedByUserId: sessionUserId || undefined, promotedByName: sessionName || undefined,
+      batchRemarks: batchRemarks || undefined,
     });
     setSubmitting(false);
     setResult(res);
@@ -115,8 +134,8 @@ export default function PromotionsPage() {
   const loadHistory = async () => { setHistory(await fetchPromotionBatchesDB()); setHistoryOpen(true); };
 
   const resetAll = () => {
-    setStep("source"); setFromClassId(""); setToClassId(""); setIsGraduating(false);
-    setCandidates([]); setOutcomes({}); setResult(null);
+    setStep("setup"); setFromClassId(""); setToClassId(""); setIsGraduating(false);
+    setCandidates([]); setOutcomes({}); setResult(null); setBatchRemarks(""); setRowNoteOpen({}); setRowRemarks({});
   };
 
   const summary = { promoted: 0, retained: 0, withdrawn: 0 };
@@ -137,83 +156,78 @@ export default function PromotionsPage() {
 
       {/* Step indicator */}
       <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
-        {(["source", "target", "review", "result"] as Step[]).map((s, i) => (
+        {(["setup", "review", "result"] as Step[]).map((s, i) => (
           <div key={s} className="flex items-center gap-2">
             <span className={`h-6 w-6 rounded-full flex items-center justify-center ${step === s ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground"}`}>{i + 1}</span>
-            <span className={step === s ? "text-foreground" : ""}>{s === "source" ? "Source" : s === "target" ? "Target" : s === "review" ? "Review" : "Result"}</span>
-            {i < 3 && <ArrowRight className="h-3 w-3" />}
+            <span className={step === s ? "text-foreground" : ""}>{s === "setup" ? "Setup" : s === "review" ? "Review" : "Result"}</span>
+            {i < 2 && <ArrowRight className="h-3 w-3" />}
           </div>
         ))}
       </div>
 
-      {step === "source" && (
-        <div className="soft-card p-6 space-y-4 max-w-xl">
-          <h3 className="text-sm font-bold text-foreground">Select the section to promote</h3>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-1"><label className="text-xs text-muted-foreground">Academic Year</label>
-              <Select value={fromYearId} onValueChange={setFromYearId}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>{years.map(y => <SelectItem key={y.id} value={y.id}>{y.name}</SelectItem>)}</SelectContent>
-              </Select>
+      {step === "setup" && (
+        <div className="soft-card p-6 space-y-5 max-w-3xl">
+          <div className="grid sm:grid-cols-2 gap-5">
+            <div className="space-y-3">
+              <h3 className="text-sm font-bold text-foreground">From</h3>
+              <div className="space-y-1"><Label className="text-xs text-muted-foreground">Academic Year <Req /></Label>
+                <Select value={fromYearId} onValueChange={setFromYearId}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{years.map(y => <SelectItem key={y.id} value={y.id}>{y.name}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1"><Label className="text-xs text-muted-foreground">Class <Req /></Label>
+                <Select value={fromClassId} onValueChange={v => { setFromClassId(v); setIsGraduating(!!fromClasses.find(c => c.id === v)?.isGraduating); }}>
+                  <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                  <SelectContent>{fromClasses.map(c => <SelectItem key={c.id} value={c.id}>{c.name}{c.isGraduating ? " (Graduating)" : ""}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1"><Label className="text-xs text-muted-foreground">Section <Req /></Label>
+                <Select value={fromSectionId} onValueChange={setFromSectionId} disabled={!fromClassId}>
+                  <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                  <SelectContent>{fromSections.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
             </div>
-            <div className="space-y-1"><label className="text-xs text-muted-foreground">Class</label>
-              <Select value={fromClassId} onValueChange={v => { setFromClassId(v); setIsGraduating(!!fromClasses.find(c => c.id === v)?.isGraduating); }}>
-                <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                <SelectContent>{fromClasses.map(c => <SelectItem key={c.id} value={c.id}>{c.name}{c.isGraduating ? " (Graduating)" : ""}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1"><label className="text-xs text-muted-foreground">Section</label>
-              <Select value={fromSectionId} onValueChange={setFromSectionId} disabled={!fromClassId}>
-                <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                <SelectContent>{fromSections.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
-              </Select>
+
+            <div className="space-y-3">
+              <h3 className="text-sm font-bold text-foreground">{isGraduating ? "Graduation" : "To"}</h3>
+              <div className="space-y-1"><Label className="text-xs text-muted-foreground">{isGraduating ? "Graduation Year" : "Academic Year"} <Req /></Label>
+                <Select value={toYearId} onValueChange={setToYearId}>
+                  <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                  <SelectContent>{years.map(y => <SelectItem key={y.id} value={y.id}>{y.name}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              {!isGraduating && (
+                <>
+                  <div className="space-y-1"><Label className="text-xs text-muted-foreground">Class <Req /></Label>
+                    <Select value={toClassId} onValueChange={setToClassId} disabled={!toYearId}>
+                      <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                      <SelectContent>{toClasses.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">
+                      Section <Req /> {toSectionAutoPicked && <span className="text-primary font-normal">· auto-matched</span>}
+                    </Label>
+                    <Select value={toSectionId} onValueChange={v => { setToSectionId(v); setToSectionAutoPicked(false); }} disabled={!toClassId}>
+                      <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                      <SelectContent>{toSections.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                </>
+              )}
             </div>
           </div>
+
           {isGraduating && (
             <div className="flex items-start gap-2 rounded-lg bg-primary/10 border border-primary/20 p-2.5">
               <GraduationCap className="h-4 w-4 text-primary shrink-0 mt-0.5" />
               <p className="text-xs text-foreground">This class is marked as graduating — students promoted from here will be moved to Alumni instead of a next class.</p>
             </div>
           )}
-          <div className="flex justify-end"><Button onClick={goToTarget}>Next</Button></div>
-        </div>
-      )}
-
-      {step === "target" && (
-        <div className="soft-card p-6 space-y-4 max-w-xl">
-          <h3 className="text-sm font-bold text-foreground">{isGraduating ? "Confirm graduation year" : "Select the target class"}</h3>
-          {isGraduating ? (
-            <div className="space-y-1 max-w-xs"><label className="text-xs text-muted-foreground">Academic Year (graduation year)</label>
-              <Select value={toYearId} onValueChange={setToYearId}>
-                <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                <SelectContent>{years.map(y => <SelectItem key={y.id} value={y.id}>{y.name}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-1"><label className="text-xs text-muted-foreground">Academic Year</label>
-                <Select value={toYearId} onValueChange={setToYearId}>
-                  <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                  <SelectContent>{years.map(y => <SelectItem key={y.id} value={y.id}>{y.name}</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1"><label className="text-xs text-muted-foreground">Class</label>
-                <Select value={toClassId} onValueChange={setToClassId} disabled={!toYearId}>
-                  <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                  <SelectContent>{toClasses.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1"><label className="text-xs text-muted-foreground">Section</label>
-                <Select value={toSectionId} onValueChange={setToSectionId} disabled={!toClassId}>
-                  <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                  <SelectContent>{toSections.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-            </div>
-          )}
-          <div className="flex justify-between">
-            <Button variant="ghost" className="gap-1" onClick={() => setStep("source")}><ChevronLeft className="h-3.5 w-3.5" /> Back</Button>
-            <Button onClick={goToReview}>Next: Review Roster</Button>
+          <div className="flex justify-end">
+            <Button disabled={!setupValid} onClick={goToReview}>Next: Review Roster</Button>
           </div>
         </div>
       )}
@@ -228,6 +242,16 @@ export default function PromotionsPage() {
               <Badge className="bg-destructive/15 text-destructive">{summary.withdrawn} Withdrawn</Badge>
             </div>
           </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Batch Remarks (optional — applies to every student below unless overridden)</Label>
+            <Textarea
+              value={batchRemarks} onChange={e => setBatchRemarks(e.target.value)}
+              placeholder="e.g. Promoted per Term 2 result meeting"
+              className="text-sm min-h-[60px]"
+            />
+          </div>
+
           <div className="max-h-[420px] overflow-y-auto rounded-2xl border border-border">
             <table className="w-full text-sm">
               <thead className="bg-secondary/40 text-xs text-muted-foreground sticky top-0">
@@ -236,9 +260,27 @@ export default function PromotionsPage() {
               <tbody className="divide-y divide-border">
                 {candidates.map(c => (
                   <tr key={c.enrollmentId}>
-                    <td className="px-4 py-2 text-muted-foreground">{c.rollNumber}</td>
-                    <td className="px-4 py-2 font-medium text-foreground">{c.studentName}</td>
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-4 py-2 text-muted-foreground align-top">{c.rollNumber}</td>
+                    <td className="px-4 py-2 font-medium text-foreground align-top">
+                      {c.studentName}
+                      {rowNoteOpen[c.enrollmentId] ? (
+                        <Input
+                          value={rowRemarks[c.enrollmentId] || ""}
+                          onChange={e => setRowRemarks(prev => ({ ...prev, [c.enrollmentId]: e.target.value }))}
+                          placeholder="Note for this student"
+                          className="h-7 text-xs mt-1 max-w-xs"
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setRowNoteOpen(prev => ({ ...prev, [c.enrollmentId]: true }))}
+                          className="block text-[11px] text-primary hover:underline mt-0.5"
+                        >
+                          + Note
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-right align-top">
                       <Select value={outcomes[c.enrollmentId]} onValueChange={v => setOutcomes(prev => ({ ...prev, [c.enrollmentId]: v as Outcome }))}>
                         <SelectTrigger className="h-8 w-36 ml-auto text-xs"><SelectValue /></SelectTrigger>
                         <SelectContent>
@@ -254,7 +296,7 @@ export default function PromotionsPage() {
             </table>
           </div>
           <div className="flex justify-between">
-            <Button variant="ghost" className="gap-1" onClick={() => setStep("target")}><ChevronLeft className="h-3.5 w-3.5" /> Back</Button>
+            <Button variant="ghost" className="gap-1" onClick={() => setStep("setup")}><ChevronLeft className="h-3.5 w-3.5" /> Back</Button>
             <Button onClick={handleConfirm} disabled={submitting}>{submitting ? "Processing..." : `Confirm ${candidates.length} Students`}</Button>
           </div>
         </div>

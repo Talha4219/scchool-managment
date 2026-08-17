@@ -30,6 +30,7 @@ import {
 import { fetchStaffDirectoryDB } from "@/app/actions/features";
 import { getSession } from "@/app/actions/auth";
 import type { AcademicYear, ClassItem, SectionItem, Enrollment } from "@/lib/types";
+import { formatDatePK } from "@/lib/date-format";
 import { UserCheck, AlertTriangle, LogOut } from "lucide-react";
 
 const ATT_STATUS_OPTIONS = ["Present", "Absent", "Late", "Leave", "Half Day"] as const;
@@ -740,7 +741,7 @@ function MyAttendanceTab() {
           <TableBody>
             {history.map(h => (
               <TableRow key={h.id}>
-                <TableCell>{h.date}</TableCell>
+                <TableCell>{formatDatePK(h.date)}</TableCell>
                 <TableCell><span className={`px-2 py-0.5 rounded-md text-xs font-medium border ${STATUS_COLORS[h.status] || ""}`}>{h.status}</span></TableCell>
                 <TableCell className="text-muted-foreground text-sm">{h.remarks || "—"}</TableCell>
               </TableRow>

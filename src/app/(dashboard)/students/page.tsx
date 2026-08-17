@@ -3,9 +3,11 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,7 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, UserPlus, GraduationCap, Users, Filter, Pencil, ArrowUpDown, History, RefreshCw, Download } from "lucide-react";
+import { Plus, Search, UserPlus, GraduationCap, Users, Filter, Pencil, ArrowUpDown, History, RefreshCw, Download, FileText, Trash2, Upload, Eye } from "lucide-react";
 import { exportToCsv } from "@/lib/export-csv";
 import {
   fetchAcademicYearsDB, fetchClassesDB, fetchSectionsByClassDB,
@@ -25,6 +27,12 @@ import {
   graduateStudentToAlumniDB,
 } from "@/app/actions/academic-core";
 import { resetStudentPasswordDB } from "@/app/actions/db";
+import {
+  fetchStudentDocumentsDB, uploadStudentDocumentDB, deleteStudentDocumentDB,
+  type StudentDocumentRecord,
+} from "@/app/actions/student-documents";
+
+const STUDENT_DOCUMENT_TYPES = ['Birth Certificate', 'CNIC/B-Form', 'Leaving Certificate', 'Photograph'] as const;
 import { fetchStudentWhatsAppPrefsAction, setStudentWhatsAppOptInAction } from "@/app/actions/whatsapp-notifications";
 import { getSession } from "@/app/actions/auth";
 import { usePermission } from "@/hooks/use-permission";
@@ -34,7 +42,8 @@ import type { AcademicYear, ClassItem, SectionItem, Enrollment } from "@/lib/typ
 export default function StudentsPage() {
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
-  const { addStudent, updateStudent, students: legacyStudents, activeRole } = useAppState();
+  const { activeRole } = useAppState();
+  const { addStudent, updateStudent, students: legacyStudents } = useStudents();
 
   // Editing a student — including resetting their portal password — is an
   // admin-only capability. The legacy `activeRole` demo toggle isn't tied to
@@ -234,6 +243,7 @@ export default function StudentsPage() {
   const [promoteClassId, setPromoteClassId] = useState("");
   const [promoteSectionId, setPromoteSectionId] = useState("");
   const [promoteSections, setPromoteSections] = useState<SectionItem[]>([]);
+  const [promoteRemarks, setPromoteRemarks] = useState("");
   const [promoting, setPromoting] = useState(false);
 
   useEffect(() => {
@@ -258,7 +268,7 @@ export default function StudentsPage() {
       toSectionId: promoteSectionId,
       toAcademicYearId: activeYearId,
       isGraduating: false,
-      decisions: [{ enrollmentId: promoteTarget.id, studentId: promoteTarget.studentId, outcome: "promoted" }],
+      decisions: [{ enrollmentId: promoteTarget.id, studentId: promoteTarget.studentId, outcome: "promoted", remarks: promoteRemarks || undefined }],
     });
     setPromoting(false);
     if (result?.error || (result?.failed && result.failed.length > 0)) {
@@ -267,6 +277,7 @@ export default function StudentsPage() {
       toast({ title: "Student promoted successfully" });
       setPromoteOpen(false);
       setPromoteTarget(null);
+      setPromoteRemarks("");
       loadEnrollments();
     }
   };
@@ -343,6 +354,60 @@ export default function StudentsPage() {
     const promotions = await fetchPromotionsDB(enr.studentId);
     setHistoryData(promotions);
     setHistoryOpen(true);
+  };
+
+  // ── Documents Dialog ──────────────────────────────────────────────────────
+  const [docsOpen, setDocsOpen] = useState(false);
+  const [docsStudentId, setDocsStudentId] = useState("");
+  const [docsStudentName, setDocsStudentName] = useState("");
+  const [docsData, setDocsData] = useState<StudentDocumentRecord[]>([]);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [docsUploadingType, setDocsUploadingType] = useState<string | null>(null);
+
+  const loadDocuments = async (studentId: string) => {
+    const docs = await fetchStudentDocumentsDB(studentId);
+    setDocsData(docs);
+  };
+
+  const openDocuments = async (enr: Enrollment) => {
+    setDocsStudentId(enr.studentId);
+    setDocsStudentName(enr.studentName || "");
+    setDocsData([]);
+    setDocsOpen(true);
+    setDocsLoading(true);
+    await loadDocuments(enr.studentId);
+    setDocsLoading(false);
+  };
+
+  const handleDocumentUpload = (documentType: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      setDocsUploadingType(documentType);
+      const res = await uploadStudentDocumentDB(docsStudentId, documentType, file.name, reader.result as string);
+      if (res.success) {
+        await loadDocuments(docsStudentId);
+        toast({ title: `${documentType} uploaded` });
+      } else {
+        toast({ title: "Upload failed", description: res.message, variant: "destructive" });
+      }
+      setDocsUploadingType(null);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  const [viewDoc, setViewDoc] = useState<StudentDocumentRecord | null>(null);
+
+  const handleDocumentDelete = async (id: string, documentType: string) => {
+    const res = await deleteStudentDocumentDB(id);
+    if (res.success) {
+      await loadDocuments(docsStudentId);
+      toast({ title: `${documentType} deleted` });
+    } else {
+      toast({ title: "Delete failed", description: res.message, variant: "destructive" });
+    }
   };
 
   const filtered = displayEnrollments.filter(e => {
@@ -638,6 +703,11 @@ export default function StudentsPage() {
                       <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => openHistory(enr)}>
                         <History className="h-3 w-3 mr-1" /> History
                       </Button>
+                      {isAdmin && (
+                        <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => openDocuments(enr)}>
+                          <FileText className="h-3 w-3 mr-1" /> Documents
+                        </Button>
+                      )}
                       {enr.status === "Active" && (
                         <>
                           <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => {
@@ -830,7 +900,7 @@ export default function StudentsPage() {
       </Dialog>
 
       {/* Promote Dialog */}
-      <Dialog open={promoteOpen} onOpenChange={o => { setPromoteOpen(o); if (!o) setPromoteTarget(null); }}>
+      <Dialog open={promoteOpen} onOpenChange={o => { setPromoteOpen(o); if (!o) { setPromoteTarget(null); setPromoteRemarks(""); } }}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Promote Student</DialogTitle></DialogHeader>
           {promoteTarget && (
@@ -858,10 +928,17 @@ export default function StudentsPage() {
                   </SelectContent>
                 </Select>
               </div>
+              <div><Label>Remarks (optional)</Label>
+                <Textarea
+                  value={promoteRemarks} onChange={e => setPromoteRemarks(e.target.value)}
+                  placeholder="e.g. Promoted per Term 2 result meeting"
+                  className="text-sm min-h-[60px]"
+                />
+              </div>
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setPromoteOpen(false); setPromoteTarget(null); }}>Cancel</Button>
+            <Button variant="outline" onClick={() => { setPromoteOpen(false); setPromoteTarget(null); setPromoteRemarks(""); }}>Cancel</Button>
             <Button onClick={handlePromote} disabled={promoting}>{promoting ? "Promoting..." : "Promote"}</Button>
           </DialogFooter>
         </DialogContent>
@@ -957,6 +1034,82 @@ export default function StudentsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setHistoryOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Documents Dialog */}
+      <Dialog open={docsOpen} onOpenChange={o => { setDocsOpen(o); if (!o) { setDocsData([]); setDocsStudentId(""); } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>Documents — {docsStudentName}</DialogTitle></DialogHeader>
+          <div className="space-y-2 max-h-96 overflow-y-auto">
+            {docsLoading && <p className="text-sm text-[#94A3B8] text-center py-8">Loading…</p>}
+            {!docsLoading && STUDENT_DOCUMENT_TYPES.map(docType => {
+              const doc = docsData.find(d => d.documentType === docType);
+              const inputId = `doc-upload-${docType.replace(/[^a-zA-Z0-9]/g, "-")}`;
+              return (
+                <div key={docType} className="flex items-center gap-3 p-3 rounded-lg border border-[#E5E7EB]">
+                  {doc ? (
+                    <button type="button" onClick={() => setViewDoc(doc)} className="flex-shrink-0">
+                      <img src={doc.fileData} alt="" className="h-10 w-10 rounded object-cover border border-[#E5E7EB] hover:opacity-80" />
+                    </button>
+                  ) : (
+                    <div className="h-10 w-10 rounded bg-[#F1F5F9] flex items-center justify-center flex-shrink-0">
+                      <FileText className="h-4 w-4 text-[#94A3B8]" />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium">{docType}</p>
+                    {doc ? (
+                      <p className="text-xs text-[#94A3B8] truncate">{doc.fileName} · {new Date(doc.uploadedAt).toLocaleDateString()}</p>
+                    ) : (
+                      <p className="text-xs text-[#94A3B8]">Not uploaded</p>
+                    )}
+                  </div>
+                  {doc && (
+                    <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setViewDoc(doc)}>
+                      <Eye className="h-3 w-3 mr-1" /> View
+                    </Button>
+                  )}
+                  <Label htmlFor={inputId} className="cursor-pointer">
+                    <span className="inline-flex items-center gap-1 text-xs text-[#2563EB] hover:underline">
+                      {docsUploadingType === docType ? "Uploading…" : (
+                        <><Upload className="h-3 w-3" /> {doc ? "Replace" : "Upload"}</>
+                      )}
+                    </span>
+                  </Label>
+                  <Input id={inputId} type="file" accept="image/*,application/pdf" className="hidden" onChange={handleDocumentUpload(docType)} disabled={!!docsUploadingType} />
+                  {doc && (
+                    <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-red-600 hover:text-red-700" onClick={() => handleDocumentDelete(doc.id, docType)}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDocsOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Document Preview Dialog */}
+      <Dialog open={!!viewDoc} onOpenChange={o => { if (!o) setViewDoc(null); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader><DialogTitle>{viewDoc?.documentType}</DialogTitle></DialogHeader>
+          {viewDoc && (
+            <div className="space-y-2">
+              {viewDoc.fileData.startsWith("data:application/pdf") ? (
+                <iframe src={viewDoc.fileData} className="w-full h-[70vh] rounded-lg border border-[#E5E7EB]" />
+              ) : (
+                <img src={viewDoc.fileData} alt={viewDoc.documentType} className="w-full max-h-[70vh] object-contain rounded-lg border border-[#E5E7EB] bg-[#F8FAFC]" />
+              )}
+              <p className="text-xs text-[#94A3B8]">{viewDoc.fileName} · Uploaded {new Date(viewDoc.uploadedAt).toLocaleDateString()}{viewDoc.uploadedBy ? ` by ${viewDoc.uploadedBy}` : ""}</p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewDoc(null)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

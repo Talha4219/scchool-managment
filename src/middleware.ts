@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { decrypt } from "@/lib/auth";
 
-const PROTECTED_ROUTES = ["/dashboard", "/parent", "/admissions", "/attendance", "/classes", "/communications", "/exams", "/fees", "/settings", "/students", "/teachers", "/parents", "/results", "/announcements", "/profile", "/users", "/timetable", "/assignments", "/lms", "/library", "/messages", "/hostel", "/hr", "/payroll", "/accounting", "/scholarships", "/discipline", "/events", "/alumni", "/inventory", "/procurement", "/reports"];
+const PROTECTED_ROUTES = ["/dashboard", "/parent", "/admissions", "/attendance", "/classes", "/communications", "/exams", "/fees", "/settings", "/students", "/teachers", "/parents", "/results", "/announcements", "/profile", "/users", "/timetable", "/assignments", "/lms", "/library", "/messages", "/hostel", "/hr", "/payroll", "/accounting", "/scholarships", "/discipline", "/events", "/alumni", "/inventory", "/procurement", "/reports", "/owner"];
 const PUBLIC_ROUTES = ["/login", "/"];
 
 export async function middleware(request: NextRequest) {
@@ -31,10 +31,20 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/parent", request.url));
   }
 
-  // Admin-only routes — redirect STUDENT and TEACHER away
+  // Admin-only routes — redirect STUDENT and TEACHER away. PRINCIPAL = "Admin,
+  // branch-scoped" (same page access, data scoped separately at the query
+  // layer), so it's treated as admin-equivalent here too. OWNER manages
+  // branches from /owner rather than any one branch's operational pages, but
+  // isn't blocked from viewing them either.
   const adminOnlyRoutes = ["/users", "/settings", "/admissions", "/classes", "/teachers", "/parents", "/hr", "/payroll", "/accounting", "/scholarships", "/discipline", "/alumni", "/inventory", "/procurement"];
   const isAdminOnly = adminOnlyRoutes.some(r => pathname.startsWith(r));
-  if (isAdminOnly && session?.role !== "ADMIN") {
+  if (isAdminOnly && session?.role !== "ADMIN" && session?.role !== "PRINCIPAL" && session?.role !== "OWNER") {
+    return NextResponse.redirect(new URL("/dashboard", request.url));
+  }
+
+  // Owner-only: cross-branch management isn't meaningful for anyone scoped
+  // to a single branch.
+  if (pathname.startsWith("/owner") && session?.role !== "OWNER") {
     return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 

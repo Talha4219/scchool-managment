@@ -58,7 +58,7 @@ export default function ProcurementPage() {
   const [receiptForm, setReceiptForm] = useState({ poId: "", receivedDate: new Date().toISOString().split("T")[0], receivedBy: "", notes: "" });
   const [receiptItems, setReceiptItems] = useState<{ name: string; quantityReceived: number; condition: string }[]>([]);
 
-  const isAdmin = activeRole === "ADMIN";
+  const isAdmin = (activeRole === "ADMIN" || activeRole === "PRINCIPAL");
 
   const loadData = async () => {
     setLoading(true);

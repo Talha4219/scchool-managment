@@ -2,16 +2,8 @@
 
 import { randomBytes, createHash } from "crypto";
 import { query, checkDbConnection } from "@/lib/db";
-import { getSession } from "./auth";
 import { checkInByCardUid, checkInByStaffCardUid, type CheckInResult } from "@/lib/attendance-checkin";
-
-type Role = "ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE";
-async function requireRole(...roles: Role[]) {
-  const session = await getSession();
-  if (!session) return { error: "Not authenticated." } as const;
-  if (!roles.includes(session.role as Role)) return { error: "Not authorized." } as const;
-  return { session } as const;
-}
+import { requireRole } from "@/lib/auth-scope";
 
 // ── Device API keys (Settings → Attendance Devices, ADMIN only) ────────────
 

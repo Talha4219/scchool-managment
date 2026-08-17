@@ -8,6 +8,7 @@ import { prisma } from '../../lib/prisma';
 import { checkSectionCapacityDB } from './academic-core';
 import { getSession } from './auth';
 import { logServerError } from '../../lib/error-log';
+import { scopeBranch } from '../../lib/auth-scope';
 
 export async function getSchoolInfoAction(): Promise<{ name: string; academicYear: string }> {
   try {
@@ -39,13 +40,21 @@ export async function submitAdmissionApplicationAction(
     const isOnline = await checkDbConnection();
     if (isOnline) {
       await initializeDatabase();
+      // The public apply form has no branch picker yet (each branch would
+      // need its own apply link, e.g. /apply?branch=<id> — not built in this
+      // pass), so every application defaults to whichever branch was seeded
+      // first ("Main Campus" on a fresh install). Admins/Principals can
+      // still see and process it; a future pass can add a real per-branch
+      // apply link/selector.
+      const branchRes = await query('SELECT id FROM branches ORDER BY created_at ASC LIMIT 1');
+      const branchId = branchRes.rows[0]?.id || null;
       await query(
         `INSERT INTO admission_applications
          (id, application_id, submitted_at, status, first_name, last_name, date_of_birth,
           gender, nationality, blood_group, applying_for_class, previous_school, previous_grade,
           parent_name, parent_relation, parent_phone, parent_email, parent_cnic, address, city,
-          parent_portal_password_hash, profile_photo, previous_result_filename)
-         VALUES ($1,$2,$3,'Pending',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+          parent_portal_password_hash, profile_photo, previous_result_filename, branch_id)
+         VALUES ($1,$2,$3,'Pending',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
         [
           id, applicationId, submittedAt,
           data.firstName, data.lastName, data.dateOfBirth,
@@ -56,6 +65,7 @@ export async function submitAdmissionApplicationAction(
           passwordHash,
           data.profilePhoto || null,
           data.previousResultFilename || null,
+          branchId,
         ]
       );
     }
@@ -69,15 +79,22 @@ export async function submitAdmissionApplicationAction(
 export async function approveAdmissionWithAccountsDB(
   appId: string,
   classId?: string,
-  sectionId?: string
+  sectionId?: string,
+  remarks?: string
 ): Promise<{ error?: string; studentRecord?: StudentRecord }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN') return { error: 'Only admins can approve admissions.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL') return { error: 'Only admins can approve admissions.' };
   try {
     const appRes = await query('SELECT * FROM admission_applications WHERE id=$1', [appId]);
     if (appRes.rows.length === 0) return { error: 'Application not found' };
     const app = appRes.rows[0];
+
+    // A Principal can only approve applications in their own branch.
+    const scopedBranchId = scopeBranch(session);
+    if (scopedBranchId && app.branch_id && app.branch_id !== scopedBranchId) {
+      return { error: 'This application belongs to a different branch.' };
+    }
 
     // Check section capacity before enrolling
     if (sectionId) {
@@ -116,13 +133,13 @@ export async function approveAdmissionWithAccountsDB(
 
     // Create student record — `class` and `section` kept for legacy page compatibility
     await query(
-      `INSERT INTO students (id, name, admission_number, class, section, parent_name, status, parent_email, email, student_portal_password, profile_photo)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      `INSERT INTO students (id, name, admission_number, class, section, parent_name, status, parent_email, email, student_portal_password, profile_photo, branch_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT (admission_number) DO NOTHING`,
       [studentId, `${app.first_name} ${app.last_name}`, admissionNumber,
        className, sectionName, app.parent_name, 'Active',
        app.parent_email, studentEmail, tempPassword,
-       app.profile_photo || null]
+       app.profile_photo || null, app.branch_id || null]
     );
 
     // Create enrollment record (new academic-core system)
@@ -190,7 +207,7 @@ export async function approveAdmissionWithAccountsDB(
     }
 
     // Mark application approved
-    await query("UPDATE admission_applications SET status='Approved' WHERE id=$1", [appId]);
+    await query("UPDATE admission_applications SET status='Approved', admin_notes=$1 WHERE id=$2", [remarks || null, appId]);
 
     return {
       studentRecord: {
@@ -216,14 +233,15 @@ export async function bulkApproveAdmissionsDB(
   appIds: string[],
   classId: string,
   sectionId?: string,
+  remarks?: string,
 ): Promise<{ approved: number; errors: string[] }> {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') return { approved: 0, errors: ['Only admins can approve admissions.'] };
+  if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { approved: 0, errors: ['Only admins can approve admissions.'] };
   const approved: string[] = [];
   const errors: string[] = [];
 
   for (const appId of appIds) {
-    const result = await approveAdmissionWithAccountsDB(appId, classId, sectionId);
+    const result = await approveAdmissionWithAccountsDB(appId, classId, sectionId, remarks);
     if (result.error) {
       errors.push(`${appId}: ${result.error}`);
     } else {

@@ -4,7 +4,10 @@ export type SessionPayload = {
   userId: number;
   name: string;
   email: string;
-  role: "ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE";
+  role: "ADMIN" | "TEACHER" | "STUDENT" | "PARENT" | "EMPLOYEE" | "OWNER" | "PRINCIPAL";
+  // null for OWNER (sees all branches) and for legacy sessions issued before
+  // multi-branch support — those are treated as unscoped until re-login.
+  branchId: string | null;
 };
 
 const secretKey = process.env.JWT_SECRET || "scholarly-central-super-secret-jwt-key-2026";

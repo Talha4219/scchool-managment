@@ -23,6 +23,8 @@ import {
   fetchPerformanceEvaluationsDB, createPerformanceEvaluationDB,
 } from "@/app/actions/features";
 import type { EmployeeRecord, LeaveRequest, PerformanceEvaluation } from "@/lib/types";
+import { formatDatePK } from "@/lib/date-format";
+import { isValidDateRange } from "@/lib/validation";
 import {
   Users, Briefcase, CalendarCheck, Clock, Plus, Search, CheckCircle2, XCircle,
   Lock, Mail, Phone, Building, UserCircle, BadgeCheck, Loader2, Star, FileText, Download, Pencil, Trash2,
@@ -182,10 +184,12 @@ function LeaveRequestDialog({ open, onOpenChange, onSubmit, staff }: {
   useEffect(() => { if (open) setForm(blank); }, [open]);
 
   const set = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }));
+  const dateRangeValid = isValidDateRange(form.startDate, form.endDate);
+  const canSubmit = !!form.employeeId && !!form.startDate && !!form.endDate && dateRangeValid;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.employeeId) return;
+    if (!canSubmit) return;
     setSaving(true);
     await onSubmit(form as Omit<LeaveRequest, "id">);
     setSaving(false);
@@ -221,12 +225,15 @@ function LeaveRequestDialog({ open, onOpenChange, onSubmit, staff }: {
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>Start Date</Label>
+              <Label>Start Date <span className="text-destructive">*</span></Label>
               <Input type="date" value={form.startDate} onChange={e => set("startDate", e.target.value)} />
             </div>
             <div className="space-y-2">
-              <Label>End Date</Label>
+              <Label>End Date <span className="text-destructive">*</span></Label>
               <Input type="date" value={form.endDate} onChange={e => set("endDate", e.target.value)} />
+              {!dateRangeValid && (
+                <p className="text-xs text-destructive">End date must be on or after the start date.</p>
+              )}
             </div>
           </div>
           <div className="space-y-2">
@@ -239,7 +246,7 @@ function LeaveRequestDialog({ open, onOpenChange, onSubmit, staff }: {
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={saving || !form.employeeId}>
+            <Button type="submit" disabled={saving || !canSubmit}>
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Submit
             </Button>
@@ -614,8 +621,8 @@ export default function HRPage() {
                       <TableCell>
                         <Badge className={leaveTypeColors[lr.leaveType]}>{lr.leaveType}</Badge>
                       </TableCell>
-                      <TableCell className="text-sm">{lr.startDate}</TableCell>
-                      <TableCell className="text-sm">{lr.endDate}</TableCell>
+                      <TableCell className="text-sm">{formatDatePK(lr.startDate)}</TableCell>
+                      <TableCell className="text-sm">{formatDatePK(lr.endDate)}</TableCell>
                       <TableCell>{lr.totalDays}</TableCell>
                       <TableCell className="max-w-[200px] truncate text-sm">{lr.reason}</TableCell>
                       <TableCell>
