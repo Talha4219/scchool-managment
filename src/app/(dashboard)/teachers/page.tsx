@@ -68,16 +68,21 @@ export default function TeachersPage() {
 
   const loadContext = useCallback(async () => {
     setLoading(true);
-    const years = await fetchAcademicYearsDB();
+    // Years and the teacher/profile/payscale/competency batch are
+    // independent of each other — fetch them concurrently instead of
+    // waiting for years→classes to resolve before starting the batch.
+    // Classes itself depends on the active year, so it fires as soon as
+    // years resolves but doesn't block anything else below.
+    const [years, [users, allProfiles, scales, allCompetencies]] = await Promise.all([
+      fetchAcademicYearsDB(),
+      Promise.all([fetchUsersDB(), fetchAllTeacherProfilesDB(), fetchPayScalesDB(), fetchTeacherCompetenciesDB()]),
+    ]);
     setAcademicYears(years);
     const active = years.find(y => y.isActive) || years[0];
     if (active) {
       setActiveYearId(active.id);
-      setClasses(await fetchClassesDB(active.id));
+      fetchClassesDB(active.id).then(setClasses);
     }
-    const [users, allProfiles, scales, allCompetencies] = await Promise.all([
-      fetchUsersDB(), fetchAllTeacherProfilesDB(), fetchPayScalesDB(), fetchTeacherCompetenciesDB(),
-    ]);
     setPayScales(scales);
     setCompetencies(allCompetencies);
     const dbTeachers: TeacherRecord[] = (users as any[]).filter(u => u.role === "TEACHER").map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role }));

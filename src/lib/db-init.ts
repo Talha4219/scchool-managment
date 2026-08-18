@@ -156,6 +156,7 @@ export const initializeDatabase = async () => {
         payment_method VARCHAR(100),
         payment_date VARCHAR(50)
       );
+      CREATE INDEX IF NOT EXISTS idx_fee_records_student ON fee_records(student_id);
 
       CREATE TABLE IF NOT EXISTS attendance (
         id VARCHAR(50) PRIMARY KEY,
@@ -480,10 +481,14 @@ export const initializeDatabase = async () => {
       -- users.id — one class teacher per section, admin-assigned.
       ALTER TABLE sections ADD COLUMN IF NOT EXISTS class_teacher_id INT;
       CREATE TABLE IF NOT EXISTS enrollments (id VARCHAR(50) PRIMARY KEY, student_id VARCHAR(50), class_id VARCHAR(50), section_id VARCHAR(50), academic_year_id VARCHAR(50), roll_number INT DEFAULT 0, status VARCHAR(20) DEFAULT 'Active', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
+      CREATE INDEX IF NOT EXISTS idx_enrollments_student ON enrollments(student_id);
+      CREATE INDEX IF NOT EXISTS idx_enrollments_class ON enrollments(class_id);
+      CREATE INDEX IF NOT EXISTS idx_enrollments_section ON enrollments(section_id);
       CREATE TABLE IF NOT EXISTS student_promotions (id VARCHAR(50) PRIMARY KEY, student_id VARCHAR(50), from_class_id VARCHAR(50), from_section_id VARCHAR(50), to_class_id VARCHAR(50), to_section_id VARCHAR(50), academic_year_id VARCHAR(50), promoted_by VARCHAR(255), promoted_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS teacher_class_subjects (id VARCHAR(50) PRIMARY KEY, teacher_id INT, class_id VARCHAR(50), section_id VARCHAR(50), subject_id VARCHAR(50), academic_year_id VARCHAR(50));
       CREATE TABLE IF NOT EXISTS term_exams (id VARCHAR(50) PRIMARY KEY, name VARCHAR(255), exam_type VARCHAR(50), class_id VARCHAR(50), section_id VARCHAR(50), academic_year_id VARCHAR(50), start_date VARCHAR(50), end_date VARCHAR(50), status VARCHAR(50) DEFAULT 'Scheduled');
       CREATE TABLE IF NOT EXISTS exam_subjects (id VARCHAR(50) PRIMARY KEY, exam_id VARCHAR(50), subject_id VARCHAR(50), total_marks INT DEFAULT 100, passing_marks INT DEFAULT 33, teacher_id INT);
+      CREATE INDEX IF NOT EXISTS idx_exam_subjects_exam ON exam_subjects(exam_id);
       CREATE TABLE IF NOT EXISTS marks_entries (id VARCHAR(50) PRIMARY KEY, exam_subject_id VARCHAR(50), student_id VARCHAR(50), marks_obtained INT DEFAULT 0, grade VARCHAR(10), remarks TEXT);
       CREATE TABLE IF NOT EXISTS results (id VARCHAR(50) PRIMARY KEY, exam_id VARCHAR(50), student_id VARCHAR(50), total_marks INT DEFAULT 0, obtained_marks INT DEFAULT 0, percentage NUMERIC(5,2) DEFAULT 0, grade VARCHAR(10), position INT, status VARCHAR(50) DEFAULT 'Pending');
       CREATE TABLE IF NOT EXISTS report_cards (id VARCHAR(50) PRIMARY KEY, student_id VARCHAR(50), academic_year_id VARCHAR(50), exam_results JSONB DEFAULT '[]', generated_at VARCHAR(50), total_percentage NUMERIC(5,2) DEFAULT 0, overall_grade VARCHAR(10), class_position INT, class_total INT, class_name VARCHAR(100), section_name VARCHAR(100), remarks TEXT);
@@ -498,6 +503,11 @@ export const initializeDatabase = async () => {
       ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'manual';
       ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'manual';
       ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ;
+      CREATE INDEX IF NOT EXISTS idx_attendance_sessions_class ON attendance_sessions(class_id);
+      CREATE INDEX IF NOT EXISTS idx_attendance_sessions_section ON attendance_sessions(section_id);
+      CREATE INDEX IF NOT EXISTS idx_attendance_sessions_date ON attendance_sessions(date);
+      CREATE INDEX IF NOT EXISTS idx_attendance_records_session ON attendance_records(session_id);
+      CREATE INDEX IF NOT EXISTS idx_attendance_records_student ON attendance_records(student_id);
 
       -- Biometric/RFID device integration: one card/badge UID or biometric
       -- template reference per student, and a set of API keys issued to
@@ -598,6 +608,8 @@ export const initializeDatabase = async () => {
       ALTER TABLE classes ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
       ALTER TABLE students ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
       ALTER TABLE admission_applications ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      CREATE INDEX IF NOT EXISTS idx_classes_branch ON classes(branch_id);
+      CREATE INDEX IF NOT EXISTS idx_students_branch ON students(branch_id);
 
       -- Custom roles: an admin-defined named permission profile layered on top
       -- of one of the four base roles. base_role keeps login/session/middleware
@@ -819,6 +831,7 @@ Please review and approve in the school management dashboard.')
         notes TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
+      CREATE INDEX IF NOT EXISTS idx_fee_payments_fee_record ON fee_payments(fee_record_id);
 
       -- Online fee payments (JazzCash / EasyPaisa hosted-checkout gateways).
       -- One row per initiated attempt; the gateway's signed callback flips it
