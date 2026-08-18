@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 import { Search, Send, Plus, MessageSquare } from "lucide-react";
@@ -41,11 +42,14 @@ export default function MessagesPage() {
   const [contactsOpen, setContactsOpen] = useState(false);
   const [contacts, setContacts] = useState<MessagingContact[]>([]);
   const [contactSearch, setContactSearch] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => { getSession().then(s => setSessionUserId(s?.userId ?? null)); }, []);
 
   const loadConversations = useCallback(async () => {
-    setConversations(await fetchConversationsDB());
+    const data = await fetchConversationsDB();
+    setConversations(data);
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -118,6 +122,36 @@ export default function MessagesPage() {
 
   if (!permsLoaded) return null;
   if (!can("messages.view")) return <Unauthorized />;
+
+  if (loading) {
+    return (
+      <div className="h-[calc(100vh-140px)] flex gap-4">
+        <div className="w-80 shrink-0 soft-card flex flex-col overflow-hidden">
+          <div className="p-4 border-b border-border flex items-center justify-between gap-2">
+            <Skeleton className="h-5 w-24" />
+            <Skeleton className="h-8 w-8 rounded-full" />
+          </div>
+          <div className="p-3">
+            <Skeleton className="h-9 w-full rounded-xl" />
+          </div>
+          <div className="px-2 pb-2 space-y-2">
+            {[1, 2, 3, 4, 5].map(i => (
+              <div key={i} className="p-3 rounded-2xl flex items-center gap-3">
+                <Skeleton className="h-9 w-9 rounded-full shrink-0" />
+                <div className="flex-1 space-y-1.5">
+                  <Skeleton className="h-3.5 w-2/3" />
+                  <Skeleton className="h-3 w-1/2" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="flex-1 soft-card flex items-center justify-center">
+          <Skeleton className="h-10 w-10 rounded-full" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-[calc(100vh-140px)] flex gap-4">

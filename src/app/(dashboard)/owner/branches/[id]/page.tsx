@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Unauthorized } from "@/components/unauthorized";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ArrowLeft, Building2, Users, GraduationCap, Wallet, CalendarCheck, Save, Check } from "lucide-react";
 
 const RS = (n: number) => `Rs ${Math.round(n).toLocaleString()}`;
@@ -119,7 +120,49 @@ export default function BranchProfilePage() {
   };
 
   if (authorized === false) return <Unauthorized />;
-  if (loading || authorized === null) return <p className="text-sm text-muted-foreground text-center py-12">Loading…</p>;
+  if (loading || authorized === null) {
+    return (
+      <div className="space-y-6 max-w-4xl">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-9 w-9 rounded-md" />
+            <Skeleton className="h-10 w-10 rounded-lg" />
+            <div>
+              <Skeleton className="h-6 w-40 mb-1.5" />
+              <Skeleton className="h-3 w-20" />
+            </div>
+            <Skeleton className="h-5 w-16 rounded-full" />
+          </div>
+          <Skeleton className="h-9 w-32 rounded-md" />
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map(i => (
+            <Card key={i} className="border-border"><CardContent className="p-4 space-y-2">
+              <Skeleton className="h-3 w-16" />
+              <Skeleton className="h-6 w-12" />
+            </CardContent></Card>
+          ))}
+        </div>
+        <Card className="border-border"><CardContent className="p-5 flex items-center justify-between">
+          <div>
+            <Skeleton className="h-4 w-16 mb-1.5" />
+            <Skeleton className="h-3 w-24" />
+          </div>
+          <Skeleton className="h-9 w-28 rounded-md" />
+        </CardContent></Card>
+        <Card className="border-border">
+          <CardContent className="p-5 space-y-4">
+            <Skeleton className="h-4 w-28" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => (
+                <div key={i}><Skeleton className="h-3 w-20 mb-1.5" /><Skeleton className="h-10 w-full rounded-md" /></div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
   if (!branch) return <p className="text-sm text-muted-foreground text-center py-12">Branch not found.</p>;
 
   return (

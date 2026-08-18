@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence, Reorder } from "framer-motion";
 import {
   Settings2, Search, ChevronRight, Check, X, Save, RotateCcw,
@@ -20,6 +20,7 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 
 const NAV_ITEMS = [
@@ -156,6 +157,9 @@ export default function DashboardSettingsPage() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activePreset, setActivePreset] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { setLoading(false); }, []);
 
   const [settings, setSettings] = useState({
     dashboardName: "My School Dashboard",
@@ -291,6 +295,45 @@ export default function DashboardSettingsPage() {
   }, [settings]);
 
   const displayTab = searchQuery && filteredNav.length > 0 ? filteredNav[0].id : activeNav;
+
+  if (loading) {
+    return (
+      <div className="flex gap-6">
+        <aside className="hidden lg:flex flex-col w-44 shrink-0 gap-1 pt-1">
+          <Skeleton className="h-9 w-full rounded-xl mb-2" />
+          {Array.from({ length: 9 }).map((_, i) => (
+            <Skeleton key={i} className="h-9 w-full rounded-xl" />
+          ))}
+        </aside>
+        <div className="flex-1 min-w-0 space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <Skeleton className="h-7 w-56 mb-2" />
+              <Skeleton className="h-4 w-72" />
+            </div>
+            <Skeleton className="h-6 w-32 rounded-full" />
+          </div>
+          <Skeleton className="h-10 w-full rounded-xl" />
+          <Skeleton className="h-10 w-full rounded-md" />
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-14 w-32 rounded-xl shrink-0" />
+            ))}
+          </div>
+          <div className="space-y-4">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Card key={i} className="border border-slate-200/80 shadow-sm">
+                <CardContent className="p-5 space-y-3">
+                  <Skeleton className="h-4 w-40" />
+                  <Skeleton className="h-10 w-full max-w-sm rounded-xl" />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex gap-6">

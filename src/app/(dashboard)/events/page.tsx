@@ -14,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
@@ -163,6 +164,67 @@ export default function EventsPage() {
 
   if (!permsLoaded) return null;
   if (!can("events.view")) return <Unauthorized />;
+
+  if (loading) {
+    return (
+      <div className="space-y-8">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <Skeleton className="h-8 w-64 mb-2" />
+            <Skeleton className="h-4 w-96" />
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <Skeleton className="h-10 w-44 rounded-md" />
+            <Skeleton className="h-10 w-36 rounded-md" />
+          </div>
+        </div>
+        <div className="grid gap-6 md:grid-cols-4">
+          {[1, 2, 3, 4].map(i => (
+            <Card key={i} className="border-none shadow-sm">
+              <CardContent className="p-6 flex items-center gap-4">
+                <Skeleton className="h-10 w-10 rounded-full" />
+                <div>
+                  <Skeleton className="h-3 w-24 mb-2" />
+                  <Skeleton className="h-6 w-14" />
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+        <div className="flex gap-1">
+          <Skeleton className="h-9 w-24 rounded-md" />
+          <Skeleton className="h-9 w-32 rounded-md" />
+        </div>
+        <Card className="border-none shadow-sm">
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader className="bg-secondary/20">
+                <TableRow>
+                  {["Event", "Category", "Dates", "Venue", "Organizer", "Participants", "Status", ""].map(h => (
+                    <TableHead key={h} className="font-bold">{h}</TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {[1, 2, 3, 4, 5].map(i => (
+                  <TableRow key={i}>
+                    <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                    <TableCell><Skeleton className="h-5 w-20 rounded-full" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-12" /></TableCell>
+                    <TableCell><Skeleton className="h-5 w-16 rounded-full" /></TableCell>
+                    <TableCell><Skeleton className="h-7 w-16 rounded-md" /></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">

@@ -14,6 +14,7 @@ import { Unauthorized } from "@/components/unauthorized";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { motion } from "framer-motion";
 import { AnimatedCounter } from "@/components/ui/animated-counter";
@@ -88,6 +89,7 @@ export default function ReportsPage() {
   const [enrollments, setEnrollments] = useState<{ className: string }[]>([]);
   const [resultsOverview, setResultsOverview] = useState<{ studentId: string; studentName: string; percentage: number; className: string | null }[]>([]);
   const [attendanceOverview, setAttendanceOverview] = useState<{ status: string; className: string }[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchUsersDB().then(u => setTeacherCount((u as any[]).filter(x => x.role === "TEACHER").length));
@@ -97,7 +99,10 @@ export default function ReportsPage() {
     });
     fetchEnrollmentsDB().then(setEnrollments);
     fetchSchoolResultsOverviewDB().then(setResultsOverview);
-    fetchSchoolAttendanceOverviewDB().then(setAttendanceOverview);
+    Promise.all([fetchSchoolAttendanceOverviewDB()]).then(([att]) => {
+      setAttendanceOverview(att);
+      setLoading(false);
+    });
   }, []);
 
   const activeStudents = useMemo(() => students.filter(s => s.status === "Active"), [students]);
@@ -245,6 +250,39 @@ export default function ReportsPage() {
 
   if (!permsLoaded) return null;
   if (!can("reports.view")) return <Unauthorized />;
+
+  if (loading) {
+    return (
+      <div className="space-y-8">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <Skeleton className="h-8 w-64 mb-2" />
+            <Skeleton className="h-4 w-72" />
+          </div>
+          <Skeleton className="h-10 w-40 rounded-md" />
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          {[1, 2, 3, 4, 5, 6].map(i => (
+            <Card key={i} className="border-none shadow-sm">
+              <CardContent className="p-5">
+                <Skeleton className="h-10 w-10 rounded-xl mb-3" />
+                <Skeleton className="h-3 w-20 mb-1.5" />
+                <Skeleton className="h-6 w-16" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+        <div className="grid gap-6 lg:grid-cols-2">
+          {[1, 2].map(i => (
+            <Card key={i} className="border-none shadow-sm">
+              <CardHeader><Skeleton className="h-4 w-56" /></CardHeader>
+              <CardContent><Skeleton className="h-[300px] w-full rounded-md" /></CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }} className="space-y-8">

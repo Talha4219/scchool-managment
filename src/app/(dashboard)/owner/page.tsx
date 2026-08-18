@@ -26,6 +26,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Unauthorized } from "@/components/unauthorized";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Building2, Users, GraduationCap, Wallet, CalendarCheck, Plus, Crown,
   AlertTriangle, AlertCircle, CheckCircle2, ArrowUpDown, Package, FileWarning,
@@ -207,7 +208,53 @@ export default function OwnerDashboardPage() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-muted-foreground text-center py-12">Loading…</p>
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            {[1, 2, 3, 4, 5, 6].map(i => (
+              <Card key={i} className="border-border">
+                <CardContent className="p-3 flex items-center gap-2.5">
+                  <Skeleton className="h-9 w-9 rounded-lg" />
+                  <div className="min-w-0"><Skeleton className="h-5 w-14 mb-1" /><Skeleton className="h-3 w-16" /></div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+          <Card className="border-border">
+            <CardContent className="p-0">
+              <div className="p-4 pb-0"><Skeleton className="h-4 w-56" /></div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {["School", "Students", "Attendance", "Teacher Att.", "Fee %", "Outstanding", "New Admissions", "Incidents"].map(h => <TableHead key={h}>{h}</TableHead>)}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {[1, 2, 3, 4].map(i => (
+                    <TableRow key={i}>
+                      {[1, 2, 3, 4, 5, 6, 7, 8].map(j => <TableCell key={j}><Skeleton className="h-4 w-14" /></TableCell>)}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[1, 2, 3].map(i => (
+              <Card key={i} className="border-border">
+                <CardContent className="p-5 space-y-4">
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-2">
+                      <Skeleton className="h-9 w-9 rounded-lg" />
+                      <div><Skeleton className="h-4 w-24 mb-1" /><Skeleton className="h-3 w-12" /></div>
+                    </div>
+                    <Skeleton className="h-5 w-14 rounded-full" />
+                  </div>
+                  <Skeleton className="h-9 w-full rounded-md" />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
       ) : branches.length === 0 ? (
         <p className="text-sm text-muted-foreground text-center py-12">No branches yet — add one to get started.</p>
       ) : (

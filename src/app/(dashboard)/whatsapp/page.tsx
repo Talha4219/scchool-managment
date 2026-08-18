@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import {
   MessageSquare, Send, History, LayoutTemplate, ListChecks, RefreshCw,
@@ -25,8 +26,7 @@ import {
   type WhatsAppTemplateRecord, type NotificationHistoryEntry,
 } from "@/app/actions/whatsapp-notifications";
 import type { NotificationType } from "@/lib/notification-service";
-import { fetchClassesDB, fetchSectionsByClassDB, fetchAcademicYearsDB } from "@/app/actions/academic-core";
-import type { ClassItem, SectionItem } from "@/lib/types";
+import { useActiveAcademicYearId, useClasses, useSections } from "@/hooks/use-academic-data";
 
 const statusColor: Record<string, string> = {
   QUEUED: "bg-gray-100 text-gray-600", PROCESSING: "bg-blue-100 text-blue-700",
@@ -50,8 +50,9 @@ function OverviewTab() {
   const { toast } = useToast();
   const [stats, setStats] = useState({ pending: 0, processing: 0, completed: 0, failed: 0, deadLetter: 0 });
   const [processing, setProcessing] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const load = () => { fetchWhatsAppQueueStatsAction().then(setStats); };
+  const load = () => { fetchWhatsAppQueueStatsAction().then(s => { setStats(s); setLoading(false); }); };
   useEffect(() => { load(); }, []);
 
   const handleProcessNow = async () => {
@@ -69,6 +70,29 @@ function OverviewTab() {
     { label: "Failed", value: stats.failed, icon: XCircle, color: "text-red-600 bg-red-50" },
     { label: "Dead Letter", value: stats.deadLetter, icon: XCircle, color: "text-amber-600 bg-amber-50" },
   ];
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Card key={i} className="border-none shadow-sm">
+              <CardContent className="p-4 flex items-center gap-3">
+                <Skeleton className="h-9 w-9 rounded-xl" />
+                <div><Skeleton className="h-6 w-8 mb-1" /><Skeleton className="h-3 w-14" /></div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+        <Card className="border-none shadow-sm">
+          <CardContent className="p-4 flex items-center justify-between">
+            <div className="space-y-1.5"><Skeleton className="h-4 w-32" /><Skeleton className="h-3 w-72" /></div>
+            <Skeleton className="h-9 w-40 rounded-md" />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -102,7 +126,8 @@ function TemplatesTab() {
   const { toast } = useToast();
   const [templates, setTemplates] = useState<WhatsAppTemplateRecord[]>([]);
   const [viewing, setViewing] = useState<WhatsAppTemplateRecord | null>(null);
-  const load = () => { fetchWhatsAppTemplatesAction().then(setTemplates); };
+  const [loading, setLoading] = useState(true);
+  const load = () => { fetchWhatsAppTemplatesAction().then(t => { setTemplates(t); setLoading(false); }); };
   useEffect(() => { load(); }, []);
 
   const handleApprove = async (id: string) => {
@@ -136,7 +161,18 @@ function TemplatesTab() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {templates.map(t => (
+            {loading && Array.from({ length: 5 }).map((_, i) => (
+              <TableRow key={i}>
+                <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                <TableCell><Skeleton className="h-4 w-28" /></TableCell>
+                <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                <TableCell><Skeleton className="h-5 w-16 rounded-full" /></TableCell>
+                <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                <TableCell className="text-right"><Skeleton className="h-7 w-20 ml-auto rounded" /></TableCell>
+              </TableRow>
+            ))}
+            {!loading && templates.map(t => (
               <TableRow key={t.id}>
                 <TableCell className="font-semibold">{t.name}</TableCell>
                 <TableCell className="font-mono text-xs">{t.metaTemplateName}</TableCell>
@@ -321,8 +357,6 @@ function SendTab() {
   const { toast } = useToast();
   const [type, setType] = useState<NotificationType>("SCHOOL_ANNOUNCEMENT");
   const [audienceKind, setAudienceKind] = useState<"CLASS" | "ALL_TEACHERS">("CLASS");
-  const [classes, setClasses] = useState<ClassItem[]>([]);
-  const [sections, setSections] = useState<SectionItem[]>([]);
   const [classId, setClassId] = useState("");
   const [sectionId, setSectionId] = useState("");
   const [variables, setVariables] = useState<Record<string, string>>({});
@@ -331,17 +365,10 @@ function SendTab() {
 
   const template = NOTIFICATION_TYPES.find(t => t.value === type);
 
-  useEffect(() => {
-    fetchAcademicYearsDB().then(years => {
-      const active = years.find((y: any) => y.isActive) || years[0];
-      if (active) fetchClassesDB(active.id).then(setClasses);
-    });
-  }, []);
-  useEffect(() => {
-    if (classId) fetchSectionsByClassDB(classId).then(setSections);
-    else setSections([]);
-    setSectionId("");
-  }, [classId]);
+  const { activeYearId } = useActiveAcademicYearId();
+  const { classes } = useClasses(activeYearId);
+  const { sections } = useSections(classId || undefined);
+  useEffect(() => { setSectionId(""); }, [classId]);
 
   const handleSend = async () => {
     setSending(true);
@@ -435,7 +462,19 @@ export default function WhatsAppAdminPage() {
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   useEffect(() => { getSession().then(s => setIsAdmin(s?.role === "ADMIN" || s?.role === "PRINCIPAL" || s?.role === "OWNER")); }, []);
 
-  if (isAdmin === null) return null;
+  if (isAdmin === null) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <Skeleton className="h-11 w-11 rounded-2xl" />
+          <div><Skeleton className="h-6 w-56 mb-1.5" /><Skeleton className="h-3 w-80" /></div>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-xl" />)}
+        </div>
+      </div>
+    );
+  }
   if (!isAdmin) return <Unauthorized />;
 
   return (

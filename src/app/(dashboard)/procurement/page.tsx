@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { Skeleton } from "@/components/ui/skeleton";
 import { PurchaseRequest, PurchaseItem, PurchaseOrder, GoodsReceipt } from "@/lib/types";
 import { fetchPurchaseRequestsDB, createPurchaseRequestDB, approvePurchaseRequestDB } from "@/app/actions/features";
 import {
@@ -189,6 +190,50 @@ export default function ProcurementPage() {
 
   if (!permsLoaded) return null;
   if (!can("procurement.view")) return <Unauthorized />;
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <Skeleton className="h-8 w-64 mb-2" />
+            <Skeleton className="h-4 w-80" />
+          </div>
+          <div className="flex gap-2">
+            <Skeleton className="h-10 w-28 rounded-md" />
+            <Skeleton className="h-10 w-28 rounded-md" />
+            <Skeleton className="h-10 w-36 rounded-md" />
+          </div>
+        </div>
+        <div className="grid grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} className="p-4 rounded-xl border">
+              <Skeleton className="h-3 w-20 mb-2" />
+              <Skeleton className="h-7 w-10" />
+            </div>
+          ))}
+        </div>
+        <Card className="border-none shadow-sm">
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  {["Requested By", "Department", "Description", "Items", "Total", "Priority", "Status", "Date"].map(h => <TableHead key={h}>{h}</TableHead>)}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {[1, 2, 3, 4, 5].map(i => (
+                  <TableRow key={i}>
+                    {[1, 2, 3, 4, 5, 6, 7, 8].map(j => <TableCell key={j}><Skeleton className="h-4 w-16" /></TableCell>)}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">

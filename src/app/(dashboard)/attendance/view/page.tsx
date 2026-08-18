@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
@@ -72,13 +73,17 @@ export default function AttendanceViewPage() {
   const [historyDates, setHistoryDates] = useState<string[]>([]);
   const [summaries, setSummaries] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(false);
+  const [contextLoading, setContextLoading] = useState(true);
   const [studentSearch, setStudentSearch] = useState("");
 
   const loadContext = useCallback(async () => {
-    const years = await fetchAcademicYearsDB();
+    setContextLoading(true);
+    const [years, cls] = await Promise.all([fetchAcademicYearsDB(), fetchClassesDB()]);
     setAcademicYears(years);
+    setClasses(cls);
     const active = years.find(y => y.isActive) || years[0];
-    if (active) { setActiveYearId(active.id); setClasses(await fetchClassesDB()); }
+    if (active) setActiveYearId(active.id);
+    setContextLoading(false);
   }, []);
 
   useEffect(() => { loadContext(); }, [loadContext]);
@@ -161,6 +166,39 @@ export default function AttendanceViewPage() {
 
   if (!permsLoaded) return null;
   if (!can("attendance.view")) return <Unauthorized />;
+
+  if (contextLoading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <Skeleton className="h-8 w-8 rounded-lg" />
+          <div className="flex items-center gap-3 flex-1">
+            <Skeleton className="h-10 w-10 rounded-xl" />
+            <div>
+              <Skeleton className="h-7 w-52 mb-2" />
+              <Skeleton className="h-4 w-64" />
+            </div>
+          </div>
+        </div>
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex gap-3 items-center flex-wrap">
+              <Skeleton className="h-10 w-40 rounded-md" />
+              <Skeleton className="h-10 w-36 rounded-md" />
+              <Skeleton className="h-10 w-28 rounded-md" />
+              <Skeleton className="h-10 w-36 rounded-md" />
+              <Skeleton className="h-10 w-36 rounded-md" />
+              <Skeleton className="h-9 w-20 rounded-md" />
+            </div>
+          </CardContent>
+        </Card>
+        <div className="text-center py-16">
+          <Skeleton className="h-12 w-12 rounded-full mx-auto mb-3" />
+          <Skeleton className="h-4 w-64 mx-auto" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="space-y-6">

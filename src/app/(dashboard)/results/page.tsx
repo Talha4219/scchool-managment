@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { Skeleton } from "@/components/ui/skeleton";
 import { fetchStudentTermResultsDB, fetchStudentReportCardsDB, fetchGradeScalesDB, fetchTermExamsDB } from "@/app/actions/academic-core";
 import { getSession } from "@/app/actions/auth";
 import { ReportCard } from "@/components/report-card";
@@ -64,8 +65,23 @@ function TeacherResultsView() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <div className="h-7 w-7 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      <div className="space-y-6">
+        <div className="p-4 bg-secondary/10 rounded-xl border flex items-center gap-4">
+          <Skeleton className="h-11 w-11 rounded-full" />
+          <div><Skeleton className="h-4 w-36 mb-1.5" /><Skeleton className="h-3 w-48" /></div>
+          <Skeleton className="h-8 w-40 rounded-md ml-auto" />
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {[1, 2, 3].map(i => (
+            <Card key={i} className="border-none shadow-sm">
+              <CardContent className="p-4">
+                <Skeleton className="h-4 w-24 mb-2" />
+                <Skeleton className="h-3 w-32 mb-2" />
+                <Skeleton className="h-5 w-20 rounded-full" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       </div>
     );
   }
@@ -137,8 +153,26 @@ function ParentResultsView() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <div className="h-7 w-7 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      <div className="space-y-8">
+        {[1, 2].map(i => (
+          <div key={i} className="space-y-4">
+            <div className="p-4 bg-secondary/10 rounded-xl border flex items-center gap-4">
+              <Skeleton className="h-11 w-11 rounded-full" />
+              <div><Skeleton className="h-4 w-36 mb-1.5" /><Skeleton className="h-3 w-48" /></div>
+              <Skeleton className="h-8 w-16 rounded-md ml-auto" />
+            </div>
+            <div className="space-y-3 ml-4">
+              {[1, 2].map(j => (
+                <Card key={j} className="border-none shadow-sm">
+                  <CardContent className="p-4 flex items-start gap-4">
+                    <Skeleton className="h-14 w-14 rounded-xl shrink-0" />
+                    <div className="flex-1 space-y-2"><Skeleton className="h-4 w-32" /><Skeleton className="h-3 w-24" /></div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     );
   }
@@ -301,8 +335,23 @@ function StudentResultsView() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <div className="h-7 w-7 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      <div className="space-y-5">
+        <div className="p-4 bg-secondary/10 rounded-xl border flex items-center gap-4">
+          <Skeleton className="h-11 w-11 rounded-full" />
+          <div><Skeleton className="h-4 w-36 mb-1.5" /><Skeleton className="h-3 w-48" /></div>
+          <Skeleton className="h-8 w-16 rounded-md ml-auto" />
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {[1, 2, 3].map(i => (
+            <Card key={i} className="border-none shadow-sm">
+              <CardContent className="p-4">
+                <Skeleton className="h-4 w-24 mb-2" />
+                <Skeleton className="h-3 w-32 mb-2" />
+                <Skeleton className="h-5 w-20 rounded-full" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       </div>
     );
   }

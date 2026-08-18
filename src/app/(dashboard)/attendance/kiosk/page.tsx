@@ -6,6 +6,7 @@ import { kioskCheckInAction } from "@/app/actions/attendance-devices";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ScanLine, CheckCircle2, XCircle, ArrowLeft, Radio } from "lucide-react";
 
 interface ScanEvent {
@@ -19,6 +20,7 @@ export default function AttendanceKioskPage() {
   const [busy, setBusy] = useState(false);
   const [feed, setFeed] = useState<ScanEvent[]>([]);
   const [flash, setFlash] = useState<"ok" | "err" | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const refocus = useCallback(() => {
     inputRef.current?.focus();
@@ -26,6 +28,7 @@ export default function AttendanceKioskPage() {
 
   useEffect(() => {
     refocus();
+    setLoading(false);
     const interval = setInterval(refocus, 2000);
     return () => clearInterval(interval);
   }, [refocus]);
@@ -60,6 +63,23 @@ export default function AttendanceKioskPage() {
 
   if (!permsLoaded) return null;
   if (!can("attendance.mark")) return <Unauthorized />;
+
+  if (loading) {
+    return (
+      <div className="min-h-[calc(100vh-140px)] flex flex-col items-center justify-center gap-8 py-8">
+        <Skeleton className="h-4 w-40 self-start -mt-4" />
+        <Skeleton className="h-40 w-40 rounded-full" />
+        <div className="text-center space-y-2">
+          <Skeleton className="h-7 w-56 mx-auto" />
+          <Skeleton className="h-4 w-72 mx-auto" />
+        </div>
+        <div className="w-full max-w-md flex gap-2">
+          <Skeleton className="h-11 flex-1 rounded-xl" />
+          <Skeleton className="h-11 w-28 rounded-md" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-[calc(100vh-140px)] flex flex-col items-center justify-center gap-8 py-8">

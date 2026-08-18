@@ -80,9 +80,11 @@ export default function AssignmentsPage() {
     setLoading(true);
 
     if (sessionRole === "TEACHER" && sessionUserId) {
-      const rows = await fetchTeacherAssignmentsDB(sessionUserId);
+      const [rows, data] = await Promise.all([
+        fetchTeacherAssignmentsDB(sessionUserId),
+        fetchAssignmentsDB(undefined, undefined, { teacherId: sessionUserId }),
+      ]);
       setTeacherRows(rows as TeacherAssignmentRow[]);
-      const data = await fetchAssignmentsDB(undefined, undefined, { teacherId: sessionUserId });
       setAssignments(data);
     } else if (sessionRole === "STUDENT" && myStudent) {
       const enrollments = await fetchEnrollmentsDB(undefined, undefined, myStudent.id);

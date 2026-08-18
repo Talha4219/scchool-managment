@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -85,9 +86,12 @@ export default function AdmissionsPage() {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkApproveRemarks, setBulkApproveRemarks] = useState("");
 
+  const [loading, setLoading] = useState(true);
+
   const loadClasses = useCallback(async () => {
     const cls = await fetchClassesDB();
     setClasses(cls);
+    setLoading(false);
   }, []);
 
   useEffect(() => { loadClasses(); }, [loadClasses]);
@@ -234,6 +238,55 @@ export default function AdmissionsPage() {
 
   if (!permsLoaded) return null;
   if (!can("admissions.view")) return <Unauthorized />;
+
+  if (loading) {
+    return (
+      <div className="space-y-8">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <Skeleton className="h-8 w-56 mb-2" />
+            <Skeleton className="h-4 w-96" />
+          </div>
+          <Skeleton className="h-10 w-40 rounded-md" />
+        </div>
+        <Card className="border-none shadow-sm overflow-hidden">
+          <CardHeader className="border-b border-secondary/50">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <Skeleton className="h-10 w-full md:w-72 rounded-md" />
+              <div className="flex gap-1 flex-wrap">
+                {[1, 2, 3, 4, 5].map(i => <Skeleton key={i} className="h-8 w-16 rounded-md" />)}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader className="bg-secondary/20">
+                <TableRow>
+                  {["", "App ID", "Applicant", "Class", "Parent Email", "Submitted", "Status", ""].map((h, i) => (
+                    <TableHead key={i} className="font-bold py-4">{h}</TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {[1, 2, 3, 4, 5].map(i => (
+                  <TableRow key={i}>
+                    <TableCell><Skeleton className="h-4 w-4" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                    <TableCell><div className="flex items-center gap-2"><Skeleton className="h-8 w-8 rounded-full" /><Skeleton className="h-4 w-28" /></div></TableCell>
+                    <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell className="text-center"><Skeleton className="h-5 w-20 rounded-full mx-auto" /></TableCell>
+                    <TableCell><Skeleton className="h-7 w-24 rounded-md" /></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">

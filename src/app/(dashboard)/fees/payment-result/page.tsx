@@ -6,6 +6,7 @@ import Link from "next/link";
 import { CheckCircle2, XCircle, AlertTriangle, Loader2, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { fetchOnlinePaymentByTxnRefAction, type OnlinePaymentRecord } from "@/app/actions/payments";
 
 const STATUS_COPY: Record<string, { icon: typeof CheckCircle2; color: string; title: string; body: string }> = {
@@ -22,13 +23,33 @@ function PaymentResultContent() {
   const txnRef = searchParams.get("txnRef") || "";
   const gateway = searchParams.get("gateway") || "";
   const [record, setRecord] = useState<OnlinePaymentRecord | null>(null);
+  const [loading, setLoading] = useState(!!txnRef);
 
   useEffect(() => {
-    if (txnRef) fetchOnlinePaymentByTxnRefAction(txnRef).then(setRecord);
+    if (!txnRef) { setLoading(false); return; }
+    setLoading(true);
+    fetchOnlinePaymentByTxnRefAction(txnRef).then(setRecord).finally(() => setLoading(false));
   }, [txnRef]);
 
   const copy = STATUS_COPY[status] || STATUS_COPY.error;
   const Icon = copy.icon;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[70vh] px-4">
+        <Card className="max-w-md w-full border-none shadow-lg">
+          <CardContent className="p-8 text-center">
+            <Skeleton className="h-16 w-16 rounded-full mx-auto mb-5" />
+            <Skeleton className="h-5 w-40 mx-auto mb-2" />
+            <Skeleton className="h-4 w-full mb-1" />
+            <Skeleton className="h-4 w-3/4 mx-auto mb-6" />
+            <Skeleton className="h-16 w-full rounded-lg mb-6" />
+            <Skeleton className="h-10 w-full rounded-md" />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center justify-center min-h-[70vh] px-4">

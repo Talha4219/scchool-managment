@@ -38,6 +38,7 @@ import {
 import { fetchStaffAttendanceSummaryDB, fetchStaffAttendanceDB } from "@/app/actions/staff-attendance";
 import { fetchSubstitutionsForDateDB, fetchPendingSubstitutionApprovalCountDB, type SubstitutionRecord } from "@/app/actions/substitutions";
 import { useLanguage } from "@/hooks/use-language";
+import useSWR from "swr";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -471,14 +472,6 @@ export default function DashboardPage() {
   const [sessionRole, setSessionRole] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState<string | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
-  const [users, setUsers] = useState<any[]>([]);
-  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
-  const [timetable, setTimetable] = useState<any[]>([]);
-  const [academicYearName, setAcademicYearName] = useState("");
-  const [leaveRequests, setLeaveRequests] = useState<any[]>([]);
-  const [libraryBooks, setLibraryBooks] = useState<any[]>([]);
-  const [bookIssues, setBookIssues] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [studentResults, setStudentResults] = useState<any[]>([]);
   const [wardStudents, setWardStudents] = useState<any[]>([]);
   const [selectedWardId, setSelectedWardId] = useState<string | null>(null);
@@ -537,8 +530,12 @@ export default function DashboardPage() {
     }
   }, [sessionRole, sessionEmail, sessionName, students, myStudent]);
 
-  useEffect(() => {
-    Promise.all([
+  // Bulk dashboard reference data, cached client-side (SWR) so repeat visits
+  // to /dashboard within the dedupe window render instantly instead of
+  // re-querying Postgres for the same 7 things every single navigation.
+  const { data: dashData, isLoading: loading, mutate: refreshDashData } = useSWR(
+    "dashboard-bulk",
+    () => Promise.all([
       fetchUsersDB(),
       fetchAnnouncementsDB(),
       fetchTimetableDB(),
@@ -547,22 +544,24 @@ export default function DashboardPage() {
       fetchLibraryBooksDB(),
       fetchBookIssuesDB(),
     ]).then(([u, a, t, yrs, leaves, books, issues]) => {
-      setUsers(u as any[]);
-      setAnnouncements(a);
-      setTimetable(t);
-      setLeaveRequests(leaves);
-      setLibraryBooks(books);
-      setBookIssues(issues);
       const active = yrs.find((y: any) => y.isActive) || yrs[0];
       if (active) {
-        setAcademicYearName(active.name);
         fetchClassesDB(active.id).then(cls => {
           if (cls.length) fetchEnrollmentsDB(active.id, cls[0].id);
         });
       }
-      setLoading(false);
-    });
-  }, []);
+      return { users: u as any[], announcements: a, timetable: t, leaveRequests: leaves, libraryBooks: books, bookIssues: issues, academicYearName: active?.name || "" };
+    }),
+    { revalidateOnFocus: false, dedupingInterval: 30_000 }
+  );
+  const users = dashData?.users ?? [];
+  const announcements = dashData?.announcements ?? [];
+  const timetable = dashData?.timetable ?? [];
+  const leaveRequests = dashData?.leaveRequests ?? [];
+  const libraryBooks = dashData?.libraryBooks ?? [];
+  const bookIssues = dashData?.bookIssues ?? [];
+  const academicYearName = dashData?.academicYearName ?? "";
+  const refreshLeaveRequests = () => refreshDashData();
 
   const teachers = users.filter(u => u.role === "TEACHER");
   const totalStudents = students.length;
@@ -1018,7 +1017,7 @@ export default function DashboardPage() {
       </div>
 
       {(sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") && (
-        <SubstitutionsWidget leaveRequests={leaveRequests} onLeaveUpdated={() => fetchLeaveRequestsDB().then(setLeaveRequests)} />
+        <SubstitutionsWidget leaveRequests={leaveRequests} onLeaveUpdated={refreshLeaveRequests} />
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

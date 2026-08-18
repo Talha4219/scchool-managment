@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Sparkles, Send, Loader2, MessageSquare, User } from "lucide-react";
 import { generateParentProgressReport } from "@/ai/flows/generate-parent-progress-report";
 import { useToast } from "@/hooks/use-toast";
@@ -32,11 +33,12 @@ export default function CommunicationsPage() {
   );
 
   const [studentDetails, setStudentDetails] = useState<any>(null);
+  const [pageLoading, setPageLoading] = useState(true);
 
   // Load selected student dynamic stats
   useEffect(() => {
     const student = students.find(s => s.id === selectedStudentId);
-    if (!student) return;
+    if (!student) { setPageLoading(false); return; }
 
     // Calculate attendance records dynamically
     const studentLogs = attendance.filter(a => a.studentId === student.id);
@@ -80,10 +82,51 @@ export default function CommunicationsPage() {
         tardyDays
       }
     });
+    setPageLoading(false);
   }, [selectedStudentId, students, attendance, exams]);
 
   if (!permsLoaded) return null;
   if (!can("communications.view")) return <Unauthorized />;
+
+  if (pageLoading) {
+    return (
+      <div className="max-w-4xl mx-auto space-y-8">
+        <div>
+          <Skeleton className="h-8 w-80 mb-2" />
+          <Skeleton className="h-4 w-96" />
+        </div>
+        <div className="grid gap-8 lg:grid-cols-5">
+          <Card className="lg:col-span-2 border-none shadow-sm h-fit">
+            <CardHeader>
+              <Skeleton className="h-5 w-40 mb-2" />
+              <Skeleton className="h-4 w-56" />
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Skeleton className="h-10 w-full rounded-md" />
+              <Skeleton className="h-24 w-full rounded-lg" />
+              <Skeleton className="h-32 w-full rounded-md" />
+              <Skeleton className="h-10 w-full rounded-md" />
+            </CardContent>
+          </Card>
+          <Card className="lg:col-span-3 border-none shadow-sm flex flex-col min-h-[460px]">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0">
+              <div>
+                <Skeleton className="h-5 w-36 mb-2" />
+                <Skeleton className="h-4 w-48" />
+              </div>
+            </CardHeader>
+            <CardContent className="flex-1 flex flex-col">
+              <Skeleton className="flex-1 min-h-[300px] w-full rounded-lg" />
+              <div className="mt-6 flex gap-3">
+                <Skeleton className="h-10 flex-1 rounded-md" />
+                <Skeleton className="h-10 flex-1 rounded-md" />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
 
   const handleGenerate = async () => {
     if (!studentDetails) return;

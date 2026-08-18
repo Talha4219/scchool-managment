@@ -45,10 +45,10 @@ export default function ExamResultsPage() {
 
   useEffect(() => {
     (async () => {
-      const years = await fetchAcademicYearsDB();
+      const [years, scale] = await Promise.all([fetchAcademicYearsDB(), fetchGradeScalesDB()]);
       const active = years.find(y => y.isActive) || years[0];
       if (active) setActiveYearId(active.id);
-      setGradeScale(await fetchGradeScalesDB());
+      setGradeScale(scale);
     })();
   }, []);
 

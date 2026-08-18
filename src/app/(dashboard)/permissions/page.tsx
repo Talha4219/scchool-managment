@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { useToast } from "@/hooks/use-toast";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   fetchAllRolePermissionsDB, bulkUpdateRolePermissionsDB, fetchUsersDB,
   fetchCustomRolesDB, createCustomRoleDB, updateCustomRoleDB, deleteCustomRoleDB, type CustomRole,
@@ -80,6 +81,7 @@ export default function PermissionsPage() {
   const [allPerms, setAllPerms] = useState<Record<string, Record<string, boolean>>>({});
   const [customRoles, setCustomRoles] = useState<CustomRole[]>([]);
   const [userCounts, setUserCounts] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     const [perms, roles, users] = await Promise.all([fetchAllRolePermissionsDB(), fetchCustomRolesDB(), fetchUsersDB()]);
@@ -91,6 +93,7 @@ export default function PermissionsPage() {
       counts[key] = (counts[key] || 0) + 1;
     }
     setUserCounts(counts);
+    setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -178,6 +181,35 @@ export default function PermissionsPage() {
 
   if (!permsLoaded) return null;
   if (!can("settings.edit")) return <Unauthorized message="Only administrators can manage permissions." />;
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <Skeleton className="h-11 w-11 rounded-2xl" />
+          <div><Skeleton className="h-6 w-48 mb-1.5" /><Skeleton className="h-4 w-72" /></div>
+        </div>
+        <div className="rounded-2xl border border-border bg-card divide-y divide-border overflow-hidden">
+          {[1, 2, 3, 4, 5].map(i => (
+            <div key={i} className="flex items-center justify-between gap-4 px-5 py-3.5">
+              <div className="flex items-center gap-3 min-w-0">
+                <div><Skeleton className="h-4 w-32 mb-1.5" /><Skeleton className="h-3 w-56" /></div>
+                <Skeleton className="h-5 w-14 rounded-full" />
+              </div>
+              <Skeleton className="h-8 w-20 rounded-md" />
+            </div>
+          ))}
+        </div>
+        <div className="rounded-2xl border border-border bg-card p-6 space-y-5">
+          <Skeleton className="h-5 w-32" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Skeleton className="h-10 w-full rounded-md" />
+            <Skeleton className="h-10 w-full rounded-md" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

@@ -5,14 +5,13 @@ import { useAppState } from "@/lib/state-context";
 import { formatDatePK } from "@/lib/date-format";
 import { useStudents } from "@/lib/students-context";
 import { getSession } from "@/app/actions/auth";
-import {
-  fetchAcademicYearsDB, fetchClassesDB, fetchSectionsByClassDB, fetchEnrollmentsDB,
-} from "@/app/actions/academic-core";
+import { fetchEnrollmentsDB } from "@/app/actions/academic-core";
+import { useActiveAcademicYearId, useClasses, useSections } from "@/hooks/use-academic-data";
 import { fetchFeePaymentHistoryDB, type FeePaymentHistoryEntry } from "@/app/actions/db";
 import { fetchGatewayAvailabilityAction, initiateFeePaymentAction, isFeeReminderChannelConfigured, sendFeeReminderAction, sendOverdueFeeRemindersAction, type Gateway } from "@/app/actions/payments";
 import { exportToCsv } from "@/lib/export-csv";
-import type { AcademicYear, ClassItem, SectionItem } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -85,26 +84,12 @@ export default function FeesPage() {
   useEffect(() => { isFeeReminderChannelConfigured().then(setSmsChannelConfigured); }, []);
 
   // ── Relational roster (real Academic Year → Class → Section) ────────────────
-  const [relYears, setRelYears] = useState<AcademicYear[]>([]);
-  const [relYearId, setRelYearId] = useState("");
-  const [relClasses, setRelClasses] = useState<ClassItem[]>([]);
-  const [relSections, setRelSections] = useState<SectionItem[]>([]);
+  const { activeYearId: relYearId } = useActiveAcademicYearId();
+  const { classes: relClasses } = useClasses(relYearId || undefined);
   const [relClassId, setRelClassId] = useState("");
+  const { sections: relSections } = useSections(relClassId || undefined);
   const [relSectionId, setRelSectionId] = useState("");
-
-  useEffect(() => {
-    fetchAcademicYearsDB().then(years => {
-      setRelYears(years);
-      const active = years.find(y => y.isActive) || years[0];
-      if (active) setRelYearId(active.id);
-    });
-  }, []);
-  useEffect(() => { if (relYearId) fetchClassesDB(relYearId).then(setRelClasses); }, [relYearId]);
-  useEffect(() => {
-    if (relClassId) fetchSectionsByClassDB(relClassId).then(setRelSections);
-    else setRelSections([]);
-    setRelSectionId("");
-  }, [relClassId]);
+  useEffect(() => { setRelSectionId(""); }, [relClassId]);
 
   // ── Generate dialog ──────────────────────────────────────────────────────
   const [isGenerateOpen, setIsGenerateOpen] = useState(false);
@@ -659,7 +644,36 @@ export default function FeesPage() {
 
   const structureTotal = structureForm.lineItems.reduce((s, i) => s + (Number(i.amount) || 0), 0);
 
-  if (!permsLoaded) return null;
+  if (!permsLoaded) {
+    return (
+      <div className="space-y-8">
+        <div className="flex items-center justify-between">
+          <div><Skeleton className="h-7 w-40 mb-2" /><Skeleton className="h-4 w-64" /></div>
+          <Skeleton className="h-10 w-40 rounded-md" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i}><CardContent className="p-4 flex items-center gap-3">
+              <Skeleton className="h-10 w-10 rounded-lg" />
+              <div className="flex-1"><Skeleton className="h-6 w-16 mb-1" /><Skeleton className="h-3 w-20" /></div>
+            </CardContent></Card>
+          ))}
+        </div>
+        <Card>
+          <CardContent className="p-4 space-y-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-3">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-4 flex-1" />
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className="h-5 w-16 rounded-full" />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
   if (!can("fees.view")) return <Unauthorized />;
 
   return (

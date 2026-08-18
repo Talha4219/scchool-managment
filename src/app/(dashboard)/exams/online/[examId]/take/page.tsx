@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import {
   fetchOnlineExamsDB, fetchOnlineExamQuestionsDB, startOnlineExamAttemptDB,
@@ -110,7 +111,31 @@ export default function TakeOnlineExamPage({ params }: { params: Promise<{ examI
   }, [remainingMs, attempt, handleSubmit]);
 
   if (loading) {
-    return <div className="flex items-center justify-center min-h-[50vh] text-sm text-muted-foreground">Loading exam…</div>;
+    return (
+      <div className="max-w-2xl mx-auto space-y-4 pb-24">
+        <Card className="sticky top-4 z-10 shadow-md">
+          <CardContent className="py-3 flex items-center justify-between">
+            <div>
+              <Skeleton className="h-5 w-40 mb-2" />
+              <Skeleton className="h-3 w-24" />
+            </div>
+            <Skeleton className="h-6 w-16 rounded-full" />
+          </CardContent>
+        </Card>
+        {[1, 2, 3].map(i => (
+          <Card key={i}>
+            <CardHeader className="pb-2">
+              <Skeleton className="h-4 w-3/4" />
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <Skeleton className="h-4 w-1/2" />
+              <Skeleton className="h-4 w-1/3" />
+              <Skeleton className="h-4 w-2/5" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    );
   }
 
   if (error) {

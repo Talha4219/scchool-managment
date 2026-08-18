@@ -15,6 +15,7 @@ import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 import { motion } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -199,7 +200,15 @@ function BranchProfileForm({ branchId }: { branchId: string }) {
     load();
   };
 
-  if (loading) return <SoftCard icon={Building2} title="Branch Profile"><p className="text-sm text-muted-foreground">Loading…</p></SoftCard>;
+  if (loading) return (
+    <SoftCard icon={Building2} title="Branch Profile">
+      <div className="space-y-3">
+        <Skeleton className="h-9 w-full rounded-md" />
+        <Skeleton className="h-9 w-full rounded-md" />
+        <Skeleton className="h-9 w-2/3 rounded-md" />
+      </div>
+    </SoftCard>
+  );
   if (!branch) return <SoftCard icon={Building2} title="Branch Profile"><p className="text-sm text-muted-foreground">Branch not found.</p></SoftCard>;
 
   return (
@@ -639,6 +648,13 @@ function PaymentGatewaysTab() {
   return (
     <SoftCard icon={CreditCard} title="Payment Gateways" sub="Lets students and parents pay fee vouchers online instead of at the office">
       <div className="space-y-4">
+        {loading && [1, 2].map(i => (
+          <div key={i} className="rounded-2xl border border-border p-4 flex items-center gap-3">
+            <Skeleton className="h-10 w-10 rounded-xl" />
+            <div className="flex-1 space-y-1.5"><Skeleton className="h-4 w-32" /><Skeleton className="h-3 w-56" /></div>
+            <Skeleton className="h-5 w-24 rounded-full" />
+          </div>
+        ))}
         {!loading && gateways.map(g => (
           <div key={g.key} className="rounded-2xl border border-border p-4 flex items-start justify-between gap-4">
             <div className="flex items-start gap-3">
@@ -724,6 +740,13 @@ function NotificationChannelsTab() {
     <div className="space-y-5">
       <SoftCard icon={MessageSquare} title="Notification Channels" sub="WhatsApp (Meta Cloud API) for attendance & fee alerts, and email delivery for password resets">
         <div className="space-y-4">
+          {loading && (
+            <div className="rounded-2xl border border-border p-4 flex items-center gap-3">
+              <Skeleton className="h-10 w-10 rounded-xl" />
+              <div className="flex-1 space-y-1.5"><Skeleton className="h-4 w-32" /><Skeleton className="h-3 w-64" /></div>
+              <Skeleton className="h-5 w-24 rounded-full" />
+            </div>
+          )}
           {!loading && channels.map(c => (
             <div key={c.key} className="rounded-2xl border border-border p-4 flex items-start justify-between gap-4">
               <div className="flex items-start gap-3">
