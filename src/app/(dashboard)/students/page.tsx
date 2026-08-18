@@ -87,6 +87,12 @@ export default function StudentsPage() {
   // ── Students / Enrollments ────────────────────────────────────────────────────
   const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
   const [search, setSearch] = useState("");
+  // Client-side pagination — this table has no row limit from the DB (the
+  // whole school's enrollments load at once), so without paging a school
+  // with a few hundred students renders that many full rows (each with 4-6
+  // action buttons) into the DOM on every filter change.
+  const PAGE_SIZE = 25;
+  const [page, setPage] = useState(1);
 
   // Fallback: transform legacy students to enrollment-like display when DB is empty
   const displayEnrollments: Enrollment[] = enrollments.length > 0 ? enrollments : legacyStudents.map((s, i) => ({
@@ -433,6 +439,10 @@ export default function StudentsPage() {
     if (search && !e.studentName?.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pagedFiltered = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  useEffect(() => { setPage(1); }, [selectedClassId, selectedSectionId, search, activeYearId]);
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
 
   // ── Teacher View ──────────────────────────────────────────────────────────────
   if (activeRole === "TEACHER") {
@@ -688,7 +698,7 @@ export default function StudentsPage() {
               </TableRow>
             </TableHeader>
               <TableBody>
-                {filtered.map(enr => (
+                {pagedFiltered.map(enr => (
                   <TableRow key={enr.id}>
                     <TableCell>{enr.rollNumber}</TableCell>
                     <TableCell>
@@ -799,6 +809,18 @@ export default function StudentsPage() {
             </TableBody>
           </Table>
         </CardContent>
+        {filtered.length > PAGE_SIZE && (
+          <div className="flex items-center justify-between px-4 py-3 border-t border-[#E5E7EB]">
+            <p className="text-xs text-[#64748B]">
+              Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
+            </p>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" className="h-8 text-xs" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Previous</Button>
+              <span className="text-xs text-[#64748B]">Page {page} of {totalPages}</span>
+              <Button variant="outline" size="sm" className="h-8 text-xs" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* Edit Student Dialog */}

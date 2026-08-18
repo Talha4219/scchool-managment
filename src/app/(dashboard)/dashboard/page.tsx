@@ -20,10 +20,12 @@ import {
   Download, CalendarDays, MessageSquare, Star, PartyPopper,
 } from "lucide-react";
 import Link from "next/link";
-import {
-  ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar,
-  AreaChart, Area,
-} from "recharts";
+import dynamic from "next/dynamic";
+
+const ChartSkeleton = () => <div className="h-full w-full skeleton rounded-xl" />;
+const ResultsBarChart = dynamic(() => import("@/components/dashboard/charts/results-bar-chart"), { ssr: false, loading: ChartSkeleton });
+const AcademicProgressLineChart = dynamic(() => import("@/components/dashboard/charts/academic-progress-line-chart"), { ssr: false, loading: ChartSkeleton });
+const EnrollmentAreaChart = dynamic(() => import("@/components/dashboard/charts/enrollment-area-chart"), { ssr: false, loading: ChartSkeleton });
 import {
   fetchUsersDB, fetchAnnouncementsDB, fetchTimetableDB,
   fetchLeaveRequestsDB, approveLeaveDB, rejectLeaveDB, fetchLibraryBooksDB, fetchBookIssuesDB,
@@ -802,15 +804,7 @@ export default function DashboardPage() {
             <CoveringTodayWidget />
             <SoftCard title={t("dash.resultsOverview")} action={<Badge variant="outline" className="text-[10px]">{t("dash.thisTerm")}</Badge>}>
               <div className="h-[160px] -ml-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={resultsChartData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                    <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={24} />
-                    <Tooltip contentStyle={{ borderRadius: 12, fontSize: 12 }} />
-                    <Bar dataKey="value" fill="hsl(var(--primary))" radius={[8, 8, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+                <ResultsBarChart data={resultsChartData} />
               </div>
             </SoftCard>
             <SoftCard title={t("dash.quickActions")}>
@@ -867,15 +861,7 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <SoftCard title={t("dash.academicProgress")} className="lg:col-span-2">
             <div className="h-[280px] -ml-2">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={wardResults.map((r: any) => ({ exam: r.examName, score: r.percentage ?? 0 }))}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                  <XAxis dataKey="exam" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                  <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
-                  <Tooltip contentStyle={{ borderRadius: 12, fontSize: 12 }} />
-                  <Line type="monotone" dataKey="score" stroke="hsl(var(--primary))" strokeWidth={3} dot={{ r: 4, fill: "hsl(var(--primary))" }} />
-                </LineChart>
-              </ResponsiveContainer>
+              <AcademicProgressLineChart data={wardResults.map((r: any) => ({ exam: r.examName, score: r.percentage ?? 0 }))} />
               {wardResults.length === 0 && <p className="text-xs text-muted-foreground text-center -mt-32">{t("dash.noPublishedResults")}</p>}
             </div>
           </SoftCard>
@@ -970,21 +956,7 @@ export default function DashboardPage() {
           </div>
         }>
           <div className="h-[280px] -ml-2">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={enrollmentTrend}>
-                <defs>
-                  <linearGradient id="enrollmentFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.28} />
-                    <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="hsl(var(--border))" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
-                <YAxis hide />
-                <Tooltip contentStyle={{ borderRadius: 12, fontSize: 12, border: "none", boxShadow: "0 8px 24px -8px rgba(30,41,82,0.25)" }} />
-                <Area type="monotone" dataKey="applications" stroke="hsl(var(--primary))" strokeWidth={4} fill="url(#enrollmentFill)" dot={false} activeDot={{ r: 5, fill: "hsl(var(--primary))" }} />
-              </AreaChart>
-            </ResponsiveContainer>
+            <EnrollmentAreaChart data={enrollmentTrend} />
           </div>
         </SoftCard>
 

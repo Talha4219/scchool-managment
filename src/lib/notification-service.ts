@@ -1,7 +1,7 @@
 import { query } from "@/lib/db";
 import { normalizeToE164 } from "@/lib/whatsapp/phone";
 import { createWhatsAppNotification, createWhatsAppMessage, markMessageSent, markMessageFailed } from "@/lib/whatsapp/notification-store";
-import { enqueueJob } from "@/lib/whatsapp/queue";
+import { enqueueJob, processQueueBatch } from "@/lib/whatsapp/queue";
 import { whatsAppProvider } from "@/lib/whatsapp/client";
 
 // The seam business modules call through — attendance/fees/exams/PTM never
@@ -123,6 +123,16 @@ export const notificationService = {
       `UPDATE whatsapp_notifications SET status='QUEUED', scheduled_at=$1, updated_at=NOW() WHERE id=$2`,
       [input.scheduledAt || null, notificationId]
     );
+
+    // Send right away instead of waiting for the cron tick or someone to
+    // click "Process Queue Now" on /whatsapp — the job row (and its
+    // retry/backoff bookkeeping) still exists for the rare case Meta's API
+    // has a transient hiccup, but the common path is now immediate delivery.
+    // Skipped only for a genuinely future-dated send (scheduledAt in the
+    // future) — that one legitimately has to wait.
+    if (!input.scheduledAt || input.scheduledAt.getTime() <= Date.now()) {
+      await processQueueBatch(1);
+    }
 
     return { notificationId };
   },

@@ -946,6 +946,14 @@ Please review and approve in the school management dashboard.')
       ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS pay_scale_id VARCHAR(50);
       ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS designation VARCHAR(100);
 
+      -- Admin-created teacher accounts didn't always get a teacher_profiles
+      -- row (only self-registration did) — backfill so /teachers/[id]
+      -- doesn't show "Teacher not found" for those accounts.
+      INSERT INTO teacher_profiles (id, user_id, phone, cnic, specialization, qualification, experience_years, joining_date, address)
+      SELECT 'tp_backfill_' || u.id, u.id, '', '', '', '', 0, NULL, ''
+      FROM users u
+      WHERE u.role = 'TEACHER' AND NOT EXISTS (SELECT 1 FROM teacher_profiles tp WHERE tp.user_id = u.id);
+
       ALTER TABLE teacher_class_subjects ADD COLUMN IF NOT EXISTS competency_override BOOLEAN DEFAULT false;
 
       -- LMS tables

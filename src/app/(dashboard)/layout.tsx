@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, createContext, useContext, useCallback, Suspense } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, createContext, useContext, useCallback, Suspense } from "react";
 import { AppSidebar } from "@/components/dashboard/app-sidebar";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Search, Bell, MessageSquare, Zap, LogOut, User, Settings, ShieldAlert, UserCheck, GraduationCap, Loader2, Menu, Check, X, ChevronRight, Users, AlertOctagon } from "lucide-react";
@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { logout, getSession, getOwnerViewBranchAction, setOwnerViewBranchAction } from "@/app/actions/auth";
 import { fetchBranchesDB, type BranchRecord } from "@/app/actions/branches";
 import { fetchProfilePhotoAction } from "@/app/actions/features";
@@ -26,6 +26,7 @@ import { usePermission } from "@/hooks/use-permission";
 import { fetchUnresolvedErrorCountAction } from "@/app/actions/error-log-admin";
 import { LanguageSwitcher } from "@/components/ui/language-switcher";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Breadcrumbs } from "@/components/dashboard/breadcrumbs";
 import { useLanguage } from "@/hooks/use-language";
 import { Agentation } from "agentation";
 
@@ -48,6 +49,7 @@ export const useSidebarCollapse = () => useContext(SidebarCollapseCtx);
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { isDbLoaded, activeRole, setActiveRole, schoolInfo, reloadDbData } = useAppState();
   const { notifications, markNotificationRead } = useNotifications();
   const { t, tn } = useLanguage();
@@ -85,6 +87,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // useAppState demo/DB dataset (fees, library, etc.) that a subset of older
   // pages still read from instead of fetching directly.
   const [contentKey, setContentKey] = useState(0);
+
+  // Scroll position restoration — Next's built-in scroll restoration only
+  // tracks window scroll, but this app's scrollable region is the <main>
+  // element below (overflow-y-auto), not the window. Without this, every
+  // navigation (including browser back) drops the user back at the top of
+  // a long list/table instead of where they were.
+  const mainRef = useRef<HTMLElement>(null);
+  const scrollPositions = useRef<Map<string, number>>(new Map());
+  useLayoutEffect(() => {
+    const el = mainRef.current;
+    if (el) el.scrollTop = scrollPositions.current.get(pathname) ?? 0;
+  }, [pathname, contentKey]);
+  const handleMainScroll = useCallback(() => {
+    if (mainRef.current) scrollPositions.current.set(pathname, mainRef.current.scrollTop);
+  }, [pathname]);
   const handleOwnerBranchChange = async (value: string) => {
     const branchId = value === "ALL" ? null : value;
     await setOwnerViewBranchAction(branchId);
@@ -473,7 +490,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </header>
 
           {/* Main Content */}
-          <main className="flex-1 p-6 overflow-y-auto page-enter">
+          <main ref={mainRef} onScroll={handleMainScroll} className="flex-1 p-6 overflow-y-auto page-enter">
+            {isDbLoaded && <Breadcrumbs />}
             {!isDbLoaded ? (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">

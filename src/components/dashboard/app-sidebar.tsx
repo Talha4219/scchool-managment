@@ -21,15 +21,15 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { AnimatePresence, motion } from "framer-motion";
 import { useAppState } from "@/lib/state-context";
 import { useSidebarCollapse } from "@/app/(dashboard)/layout";
 import { logout, getSession } from "@/app/actions/auth";
+import { fetchBranchByIdDB } from "@/app/actions/branches";
 import { fetchRolePermissionsDB, fetchMyCustomRoleIdDB } from "@/app/actions/features";
 import { useDarkMode } from "@/hooks/use-dark-mode";
 import { useLanguage } from "@/hooks/use-language";
 
-type NavItem = {
+export type NavItem = {
   icon: LucideIcon;
   label: string;
   href: string;
@@ -43,7 +43,7 @@ type NavItem = {
   ownerOnly?: boolean;
 };
 
-const navItems: NavItem[] = [
+export const navItems: NavItem[] = [
   { icon: LayoutDashboard, label: "Dashboard", href: "/dashboard" },
   { icon: Building2, label: "Branches", href: "/owner", ownerOnly: true },
   { icon: Users, label: "Students", href: "/students", permission: "students.view" },
@@ -146,10 +146,13 @@ export function AppSidebar() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { collapsed, toggle: toggleCollapsed } = useSidebarCollapse();
-  const { activeRole, isDbLoaded } = useAppState();
+  const { activeRole, isDbLoaded, schoolInfo } = useAppState();
 
   const [sessionName, setSessionName] = useState<string | null>(null);
   const [sessionRole, setSessionRole] = useState<string | null>(null);
+  // Principal's sidebar header shows their own branch name alongside the
+  // school name — every other role just gets the school identity.
+  const [myBranchName, setMyBranchName] = useState<string | null>(null);
   const { darkMode, toggleDarkMode } = useDarkMode();
   const { tn } = useLanguage();
   const [commandOpen, setCommandOpen] = useState(false);
@@ -169,6 +172,9 @@ export function AppSidebar() {
     getSession().then(async s => {
       setSessionName(s?.name ?? null);
       setSessionRole(s?.role ?? null);
+      if (s?.role === "PRINCIPAL" && s.branchId) {
+        fetchBranchByIdDB(s.branchId).then(b => setMyBranchName(b?.name ?? null));
+      }
       if (s?.role) {
         // Looked up live (not baked into the session JWT) so assigning a
         // custom role applies immediately without a re-login.
@@ -252,19 +258,30 @@ export function AppSidebar() {
           collapsed ? "w-[68px]" : "w-[280px]"
         )}
       >
-        {/* Logo */}
+        {/* Logo — school identity, clicking returns to the main dashboard */}
         <div className={cn("flex h-[72px] items-center border-b border-border px-5 shrink-0", collapsed && "justify-center px-0")}>
-          <div className={cn("flex items-center gap-2.5", collapsed && "justify-center")}>
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 shrink-0">
-              <GraduationCap className="h-[18px] w-[18px] text-primary" />
+          <Link
+            href={sessionRole === "PARENT" ? "/parent" : "/dashboard"}
+            className={cn("flex items-center gap-2.5 min-w-0", collapsed && "justify-center")}
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 shrink-0 overflow-hidden">
+              {schoolInfo?.logoUrl ? (
+                <img src={schoolInfo.logoUrl} alt="" className="h-full w-full object-cover" />
+              ) : (
+                <GraduationCap className="h-[18px] w-[18px] text-primary" />
+              )}
             </div>
             {!collapsed && (
-              <div>
-                <p className="text-sm font-bold text-foreground leading-tight">Scholarly</p>
-                <p className="text-[10px] font-medium tracking-wide text-muted-foreground leading-tight">Management ERP</p>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-foreground leading-tight truncate">{schoolInfo?.name || "Classora"}</p>
+                {sessionRole === "PRINCIPAL" && myBranchName ? (
+                  <p className="text-[10px] font-medium tracking-wide text-muted-foreground leading-tight truncate">{myBranchName}</p>
+                ) : (
+                  <p className="text-[10px] font-medium tracking-wide text-muted-foreground leading-tight">Management ERP</p>
+                )}
               </div>
             )}
-          </div>
+          </Link>
         </div>
 
         {/* Search + Quick Create */}
@@ -320,9 +337,9 @@ export function AppSidebar() {
                   if (!item) return null;
                   const Icon = item.icon;
                   return (
-                    <button
+                    <Link
                       key={href}
-                      onClick={() => handleNavClick(href)}
+                      href={href}
                       className={cn(
                         "flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-all duration-150",
                         pathname === href
@@ -332,7 +349,7 @@ export function AppSidebar() {
                     >
                       <Icon className="h-3.5 w-3.5 shrink-0" />
                       <span className="truncate">{tn(label)}</span>
-                    </button>
+                    </Link>
                   );
                 })}
               </div>
@@ -381,16 +398,13 @@ export function AppSidebar() {
                       )}
                     </button>
                     {!collapsed && (
-                      <AnimatePresence initial={false}>
-                        {isExpanded && (
-                          <motion.div
-                            key={item.label}
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: "auto", opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.2, ease: "easeInOut" }}
-                            className="overflow-hidden"
-                          >
+                      <div
+                        className={cn(
+                          "grid transition-[grid-template-rows] duration-200 ease-in-out",
+                          isExpanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+                        )}
+                      >
+                        <div className="overflow-hidden">
                             <div className="ml-6 mt-0.5 space-y-0.5 border-l-2 border-border pl-2">
                               {item.children!.filter(child => hasPermission(child.permission) && !child.hideForRoles?.includes(displayRole)).map(child => {
                                 const [childPath, childQuery] = child.href.split("?");
@@ -398,9 +412,9 @@ export function AppSidebar() {
                                   ? pathname === childPath && searchParams.toString() === childQuery.replace("?", "")
                                   : pathname === child.href;
                                 return (
-                                  <button
+                                  <Link
                                     key={child.href}
-                                    onClick={() => handleNavClick(child.href)}
+                                    href={child.href}
                                     onContextMenu={(e) => { e.preventDefault(); toggleFavorite(child.href); }}
                               className={cn(
                                 "group relative flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-150",
@@ -411,7 +425,7 @@ export function AppSidebar() {
                             >
                               <span className="flex-1 text-left truncate">{tn(child.label)}</span>
                               <span
-                                onClick={(e) => { e.stopPropagation(); toggleFavorite(child.href); }}
+                                onClick={(e) => { e.stopPropagation(); e.preventDefault(); toggleFavorite(child.href); }}
                                 className={cn(
                                   "flex h-4 w-4 items-center justify-center rounded-md opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer",
                                   isFav(child.href) ? "text-accent opacity-100" : "text-white/50 hover:text-white"
@@ -419,22 +433,21 @@ export function AppSidebar() {
                               >
                                 <Star className={cn("h-2.5 w-2.5", isFav(child.href) && "fill-accent")} />
                               </span>
-                            </button>
+                            </Link>
                           );
                         })}
                       </div>
-                            </motion.div>
-                          )}
-                      </AnimatePresence>
+                        </div>
+                      </div>
                     )}
                   </div>
                 );
               }
 
               return (
-                <button
+                <Link
                   key={item.href}
-                  onClick={() => handleNavClick(item.href)}
+                  href={item.href}
                   onContextMenu={(e) => { e.preventDefault(); toggleFavorite(item.href); }}
                   className={cn(
                     "group relative flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium transition-all duration-150",
@@ -455,7 +468,7 @@ export function AppSidebar() {
                         </span>
                       )}
                       <span
-                        onClick={(e) => { e.stopPropagation(); toggleFavorite(item.href); }}
+                        onClick={(e) => { e.stopPropagation(); e.preventDefault(); toggleFavorite(item.href); }}
                         className={cn(
                           "flex h-5 w-5 items-center justify-center rounded-lg opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer",
                           isFav(item.href) ? "text-accent opacity-100" : "text-white/50 hover:text-white"
@@ -465,7 +478,7 @@ export function AppSidebar() {
                       </span>
                     </>
                   )}
-                </button>
+                </Link>
               );
             })}
 

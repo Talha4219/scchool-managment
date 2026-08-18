@@ -783,6 +783,16 @@ export async function createUserDB(
     // OWNER-created accounts use whichever branch was explicitly picked.
     const effectiveBranchId = role === 'OWNER' ? null : (branchId ?? scopeBranch(auth.session));
     if (effectiveBranchId) await query('UPDATE users SET branch_id=$1 WHERE id=$2', [effectiveBranchId, user.id]);
+    // The self-registration flow (auth.ts) creates this row itself; an
+    // admin-created teacher account needs one too, or /teachers/[id] shows
+    // "Teacher not found" since fetchTeacherProfileDB has nothing to return.
+    if (role === 'TEACHER') {
+      await query(
+        `INSERT INTO teacher_profiles (id, user_id, phone, cnic, specialization, qualification, experience_years, joining_date, address)
+         VALUES ($1,$2,'','','','',0,NULL,'')`,
+        [`tp_${Date.now()}`, user.id]
+      );
+    }
     await logAudit({ actor: auth.session, action: 'CREATE', entityType: 'user', entityId: String(user.id), summary: `Created user ${name} (${role})`, after: { name, email, role, customRoleId: customRoleId || null, branchId: effectiveBranchId } });
     return {};
   } catch { return { error: 'Failed to create user.' }; }
