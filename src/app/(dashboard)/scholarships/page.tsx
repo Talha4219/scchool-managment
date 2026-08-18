@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
 import { useStudents } from "@/lib/students-context";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -44,8 +45,7 @@ function formatCurrency(n: number) {
 }
 
 function formatDate(d: string) {
-  if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
+  return formatDatePK(d);
 }
 
 export default function ScholarshipsPage() {

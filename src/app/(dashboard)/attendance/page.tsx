@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
@@ -19,18 +20,20 @@ import {
   fetchEnrollmentsDB, fetchAttendanceSessionsDB,
   createAttendanceSessionDB, saveAttendanceRecordsDB, fetchAttendanceRecordsDB,
   fetchAttendanceDatesDB, fetchAttendanceHistoryDB, getAttendanceSummaryDB,
+  fetchMyAccessibleSectionsDB,
 } from "@/app/actions/academic-core";
 import {
   fetchStaffAttendanceDB, markStaffAttendanceDB, fetchStaffAttendanceHistoryDB, fetchStaffAttendanceSummaryDB, checkOutStaffDB,
 } from "@/app/actions/staff-attendance";
 import {
   fetchSubstitutionsForDateDB, fetchEligibleSubstitutesDB, overrideSubstitutionDB, fillUnfilledSubstitutionDB,
+  approveSubstitutionDB,
   type SubstitutionRecord,
 } from "@/app/actions/substitutions";
 import { fetchStaffDirectoryDB } from "@/app/actions/features";
 import { getSession } from "@/app/actions/auth";
 import type { AcademicYear, ClassItem, SectionItem, Enrollment } from "@/lib/types";
-import { formatDatePK } from "@/lib/date-format";
+import { formatDatePK, formatDayMonthPK } from "@/lib/date-format";
 import { UserCheck, AlertTriangle, LogOut } from "lucide-react";
 
 const ATT_STATUS_OPTIONS = ["Present", "Absent", "Late", "Leave", "Half Day"] as const;
@@ -67,7 +70,11 @@ function StudentAttendanceTab() {
   const [activeYearId, setActiveYearId] = useState("");
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [sections, setSections] = useState<SectionItem[]>([]);
-  const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
+  // Fetched once per (year, class) — not per section, since fetchEnrollmentsDB
+  // already returns every section's students for the class. Re-fetching on
+  // every section switch was a redundant round trip; filtering client-side
+  // instead makes switching sections instant.
+  const [classEnrollments, setClassEnrollments] = useState<Enrollment[]>([]);
 
   const [selectedClassId, setSelectedClassId] = useState("");
   const [selectedSectionId, setSelectedSectionId] = useState("");
@@ -77,31 +84,50 @@ function StudentAttendanceTab() {
   const [saving, setSaving] = useState(false);
   const [loadingStudents, setLoadingStudents] = useState(false);
 
+  const enrollments = useMemo(
+    () => classEnrollments.filter(e => e.sectionId === selectedSectionId && e.status === "Active"),
+    [classEnrollments, selectedSectionId]
+  );
+
   const [savedDates, setSavedDates] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<"mark" | "history">("mark");
   const [historyData, setHistoryData] = useState<any[]>([]);
   const [historyDates, setHistoryDates] = useState<string[]>([]);
   const [studentSummaries, setStudentSummaries] = useState<Record<string, any>>({});
 
+  // null = no restriction (Admin/Principal/Owner). For a TEACHER, only the
+  // classes/sections they're actually assigned to (class teacher or subject
+  // teacher) — matches the same scoping enforced server-side, so the picker
+  // never offers something the save call would reject anyway.
+  const [accessibleSectionIds, setAccessibleSectionIds] = useState<Set<string> | null>(null);
+
+  // Years and classes don't depend on each other — fetch in parallel instead
+  // of a two-step waterfall to cut the initial page load roughly in half.
   const loadContext = useCallback(async () => {
-    const years = await fetchAcademicYearsDB();
+    const [years, cls, session] = await Promise.all([fetchAcademicYearsDB(), fetchClassesDB(), getSession()]);
     setAcademicYears(years);
-    const active = years.find(y => y.isActive) || years[0];
-    if (active) {
-      setActiveYearId(active.id);
-      const cls = await fetchClassesDB();
+    if (session?.role === "TEACHER") {
+      const accessible = await fetchMyAccessibleSectionsDB();
+      setAccessibleSectionIds(new Set(accessible.map(a => a.sectionId)));
+      const classIds = new Set(accessible.map(a => a.classId));
+      setClasses(cls.filter(c => classIds.has(c.id)));
+    } else {
       setClasses(cls);
     }
+    const active = years.find(y => y.isActive) || years[0];
+    if (active) setActiveYearId(active.id);
   }, []);
 
   useEffect(() => { loadContext(); }, [loadContext]);
 
   useEffect(() => {
     if (selectedClassId) {
-      fetchSectionsByClassDB(selectedClassId).then(setSections);
-      setEnrollments([]);
+      fetchSectionsByClassDB(selectedClassId).then(secs =>
+        setSections(accessibleSectionIds ? secs.filter(s => accessibleSectionIds.has(s.id)) : secs)
+      );
+      setClassEnrollments([]);
     }
-  }, [selectedClassId]);
+  }, [selectedClassId, accessibleSectionIds]);
 
   const loadSavedDates = useCallback(async () => {
     if (!selectedClassId || !selectedSectionId) { setSavedDates([]); return; }
@@ -111,13 +137,15 @@ function StudentAttendanceTab() {
 
   useEffect(() => { loadSavedDates(); }, [loadSavedDates]);
 
+  // Depends only on class + year (not section) — switching sections within
+  // the same class reuses this fetch instead of re-hitting the server.
   const loadEnrollments = useCallback(async () => {
-    if (!selectedClassId || !selectedSectionId || !activeYearId) return;
+    if (!selectedClassId || !activeYearId) return;
     setLoadingStudents(true);
     const enr = await fetchEnrollmentsDB(activeYearId, selectedClassId);
-    setEnrollments(enr.filter(e => e.sectionId === selectedSectionId && e.status === "Active"));
+    setClassEnrollments(enr);
     setLoadingStudents(false);
-  }, [selectedClassId, selectedSectionId, activeYearId]);
+  }, [selectedClassId, activeYearId]);
 
   useEffect(() => { loadEnrollments(); }, [loadEnrollments]);
 
@@ -186,7 +214,7 @@ function StudentAttendanceTab() {
         status: attendanceMap[enr.studentId] || "Present",
       }));
       await saveAttendanceRecordsDB(session, records);
-      toast({ title: `Attendance saved for ${selectedDate}` });
+      toast({ title: `Attendance saved for ${formatDatePK(selectedDate)}` });
       loadSavedDates();
     } catch {
       toast({ title: "Failed to save attendance", variant: "destructive" });
@@ -294,7 +322,7 @@ function StudentAttendanceTab() {
                           ${isToday ? "bg-indigo-100 text-indigo-700" : "text-slate-600 hover:bg-slate-100"}`}
                       >
                         <Calendar className="h-3 w-3 shrink-0" />
-                        <span>{date}</span>
+                        <span>{formatDatePK(date)}</span>
                         {isToday && <span className="ml-auto text-[9px] font-bold text-indigo-500">CURRENT</span>}
                       </button>
                     );
@@ -364,7 +392,16 @@ function StudentAttendanceTab() {
                 </div>
 
                 {/* Summary Cards */}
-                {enrollments.length > 0 && (
+                {loadingStudents ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <Card key={i}><CardContent className="p-3 text-center space-y-1.5">
+                        <Skeleton className="h-7 w-10 mx-auto" />
+                        <Skeleton className="h-3 w-14 mx-auto" />
+                      </CardContent></Card>
+                    ))}
+                  </div>
+                ) : enrollments.length > 0 && (
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <Card className="border-green-200 bg-green-50/30"><CardContent className="p-3 text-center">
                       <p className="text-2xl font-bold text-green-700">{presentCount}</p>
@@ -414,35 +451,47 @@ function StudentAttendanceTab() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {enrollments.map(enr => (
-                          <TableRow key={enr.studentId}>
-                            <TableCell className="text-slate-500">{enr.rollNumber}</TableCell>
-                            <TableCell className="font-medium">{enr.studentName}</TableCell>
-                            <TableCell>
-                              <div className="flex gap-1">
-                                {ATT_STATUS_OPTIONS.map(s => {
-                                  const current = attendanceMap[enr.studentId] || "Present";
-                                  const isActive = current === s;
-                                  return (
-                                    <Button
-                                      key={s}
-                                      variant="outline"
-                                      size="sm"
-                                      className={`text-xs h-7 px-2 transition-all ${isActive ? STATUS_COLORS[s] + " ring-1 ring-offset-1" : ""}`}
-                                      onClick={() => setAttendanceMap(prev => ({ ...prev, [enr.studentId]: s }))}
-                                    >
-                                      {s}
-                                    </Button>
-                                  );
-                                })}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                        {enrollments.length === 0 && !loadingStudents && (
-                          <TableRow><TableCell colSpan={3} className="text-center text-[#94A3B8] py-12">
-                            No students enrolled in this class/section
-                          </TableCell></TableRow>
+                        {loadingStudents ? (
+                          Array.from({ length: 8 }).map((_, i) => (
+                            <TableRow key={`skeleton-${i}`}>
+                              <TableCell><Skeleton className="h-4 w-8" /></TableCell>
+                              <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                              <TableCell><Skeleton className="h-7 w-64" /></TableCell>
+                            </TableRow>
+                          ))
+                        ) : (
+                          <>
+                            {enrollments.map(enr => (
+                              <TableRow key={enr.studentId}>
+                                <TableCell className="text-slate-500">{enr.rollNumber}</TableCell>
+                                <TableCell className="font-medium">{enr.studentName}</TableCell>
+                                <TableCell>
+                                  <div className="flex gap-1">
+                                    {ATT_STATUS_OPTIONS.map(s => {
+                                      const current = attendanceMap[enr.studentId] || "Present";
+                                      const isActive = current === s;
+                                      return (
+                                        <Button
+                                          key={s}
+                                          variant="outline"
+                                          size="sm"
+                                          className={`text-xs h-7 px-2 transition-all ${isActive ? STATUS_COLORS[s] + " ring-1 ring-offset-1" : ""}`}
+                                          onClick={() => setAttendanceMap(prev => ({ ...prev, [enr.studentId]: s }))}
+                                        >
+                                          {s}
+                                        </Button>
+                                      );
+                                    })}
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                            {enrollments.length === 0 && (
+                              <TableRow><TableCell colSpan={3} className="text-center text-[#94A3B8] py-12">
+                                No students enrolled in this class/section
+                              </TableCell></TableRow>
+                            )}
+                          </>
                         )}
                       </TableBody>
                     </Table>
@@ -503,7 +552,7 @@ function StudentAttendanceTab() {
                           {historyDates.map(d => (
                             <TableHead key={d} className="min-w-[36px] text-center p-1">
                               <span className="text-[9px] font-semibold uppercase whitespace-nowrap">
-                                {new Date(d).toLocaleDateString("en", { month: "short", day: "numeric" })}
+                                {formatDayMonthPK(d)}
                               </span>
                             </TableHead>
                           ))}
@@ -536,7 +585,7 @@ function StudentAttendanceTab() {
                                 return (
                                   <TableCell key={d} className="text-center p-1">
                                     {record ? (
-                                      <span title={`${new Date(d).toLocaleDateString()}: ${record.status}`}>
+                                      <span title={`${formatDatePK(d)}: ${record.status}`}>
                                         {statusShortBadge(record.status)}
                                       </span>
                                     ) : (
@@ -638,7 +687,28 @@ function StaffAttendanceTab() {
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Loading...</div>
+        <div className="border rounded-xl overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Staff Member</TableHead>
+                <TableHead>Department</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-24"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <TableRow key={i}>
+                  <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                  <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                  <TableCell><Skeleton className="h-6 w-56" /></TableCell>
+                  <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       ) : (
         <div className="border rounded-xl overflow-hidden">
           <Table>
@@ -718,7 +788,33 @@ function MyAttendanceTab() {
     });
   }, []);
 
-  if (loading) return <div className="text-center py-12 text-muted-foreground">Loading...</div>;
+  if (loading) return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="rounded-xl border p-3 text-center space-y-1.5">
+            <Skeleton className="h-7 w-8 mx-auto" />
+            <Skeleton className="h-3 w-12 mx-auto" />
+          </div>
+        ))}
+      </div>
+      <Skeleton className="h-14 w-full rounded-xl" />
+      <div className="border rounded-xl overflow-hidden">
+        <Table>
+          <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Status</TableHead><TableHead>Remarks</TableHead></TableRow></TableHeader>
+          <TableBody>
+            {Array.from({ length: 5 }).map((_, i) => (
+              <TableRow key={i}>
+                <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                <TableCell><Skeleton className="h-5 w-16" /></TableCell>
+                <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-5">
@@ -762,18 +858,19 @@ function MyAttendanceTab() {
 // one-click swap that only offers teachers who won't create a new conflict.
 // ═══════════════════════════════════════════════════════════════════════════════
 const SUB_STATUS_COLORS: Record<string, string> = {
-  auto: "bg-blue-100 text-blue-700 border-blue-200",
+  auto: "bg-amber-100 text-amber-700 border-amber-200",
   confirmed: "bg-green-100 text-green-700 border-green-200",
   manual_override: "bg-purple-100 text-purple-700 border-purple-200",
   unfilled: "bg-red-100 text-red-700 border-red-200",
 };
 const SUB_STATUS_LABELS: Record<string, string> = {
-  auto: "Auto", confirmed: "Confirmed", manual_override: "Manual", unfilled: "Unfilled",
+  auto: "Pending Approval", confirmed: "Confirmed", manual_override: "Manual", unfilled: "Unfilled",
 };
 
 function SubstitutionsTab() {
   const { toast } = useToast();
-  const { can, loaded: permsLoaded } = usePermission();
+  const { can, loaded: permsLoaded, role } = usePermission();
+  const canApprove = role === "ADMIN" || role === "PRINCIPAL";
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
   const [subs, setSubs] = useState<SubstitutionRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -803,8 +900,17 @@ function SubstitutionsTab() {
     load();
   };
 
+  const handleApprove = async (id: string) => {
+    const res = await approveSubstitutionDB(id);
+    if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
+    toast({ title: "Substitution approved" });
+    load();
+  };
+
   if (!permsLoaded) return null;
   if (!can("timetable.substitute")) return <Unauthorized />;
+  // Approval is an Admin/Principal action (mirrors approveSubstitutionDB's
+  // requireRole('ADMIN') server check — PRINCIPAL is auto-included there).
 
   const unfilledCount = subs.filter(s => s.status === "unfilled").length;
 
@@ -823,11 +929,38 @@ function SubstitutionsTab() {
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Loading...</div>
+        <div className="border rounded-xl overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Period</TableHead>
+                <TableHead>Class</TableHead>
+                <TableHead>Subject</TableHead>
+                <TableHead>Original Teacher</TableHead>
+                <TableHead>Substitute</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-20"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {Array.from({ length: 5 }).map((_, i) => (
+                <TableRow key={i}>
+                  <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                  <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                  <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                  <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                  <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                  <TableCell><Skeleton className="h-5 w-16" /></TableCell>
+                  <TableCell><Skeleton className="h-4 w-10" /></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       ) : subs.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
           <UserCheck className="h-12 w-12 mx-auto mb-3 opacity-50" />
-          <p>No substitutions needed for {date}</p>
+          <p>No substitutions needed for {formatDatePK(date)}</p>
           <p className="text-xs mt-1">Substitutions appear here automatically when a teacher is marked Absent, on Leave, or checks out early.</p>
         </div>
       ) : (
@@ -858,9 +991,16 @@ function SubstitutionsTab() {
                     </span>
                   </TableCell>
                   <TableCell>
-                    <button onClick={() => openSwap(s.id)} className="text-xs font-medium text-primary hover:underline">
-                      {s.status === "unfilled" ? "Assign" : "Swap"}
-                    </button>
+                    <div className="flex items-center gap-3">
+                      {s.status === "auto" && canApprove && (
+                        <button onClick={() => handleApprove(s.id)} className="text-xs font-medium text-green-700 hover:underline">
+                          Approve
+                        </button>
+                      )}
+                      <button onClick={() => openSwap(s.id)} className="text-xs font-medium text-primary hover:underline">
+                        {s.status === "unfilled" ? "Assign" : "Swap"}
+                      </button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

@@ -69,6 +69,61 @@ export class WhatsAppProvider implements NotificationProvider {
     }
   }
 
+  /** Free-form text message — no Meta template, so no approval wait. Only
+   *  deliverable within Meta's 24h customer-service window (recipient must
+   *  have messaged this business number within the last 24h); outside that
+   *  window Meta's API rejects it with an error, which is surfaced as-is
+   *  rather than silently falling back to a template. */
+  async sendTextMessage(to: string, body: string): Promise<SendResult> {
+    if (!isWhatsAppConfigured()) {
+      return { error: "WhatsApp Cloud API is not configured for this school yet." };
+    }
+    const config = getWhatsAppConfig();
+    const url = `https://graph.facebook.com/${config.apiVersion}/${config.phoneNumberId}/messages`;
+
+    const requestBody = {
+      messaging_product: "whatsapp",
+      to: to.replace(/^\+/, ""),
+      type: "text",
+      text: { body },
+    };
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data) {
+        const errorMessage = data?.error?.message || `WhatsApp API request failed (${res.status})`;
+        const errorCode = data?.error?.code ? String(data.error.code) : undefined;
+        logServerError("whatsapp", `sendTextMessage failed to=${redactPhone(to)}:`, errorMessage);
+        return { error: errorMessage, errorCode };
+      }
+
+      const metaMessageId: string | undefined = data.messages?.[0]?.id;
+      console.log(`[whatsapp] sendTextMessage to=${redactPhone(to)} result=ok id=${metaMessageId}`);
+      return { metaMessageId };
+    } catch (err) {
+      clearTimeout(timeout);
+      const isAbort = err instanceof Error && err.name === "AbortError";
+      const message = isAbort ? "WhatsApp API request timed out." : err instanceof Error ? err.message : "Failed to reach WhatsApp API.";
+      logServerError("whatsapp", `sendTextMessage error to=${redactPhone(to)}:`, message);
+      return { error: message };
+    }
+  }
+
   /** Real status arrives via the delivery-status webhook (Phase 2), not polling.
    *  This satisfies the NotificationProvider interface now so callers can be
    *  written against it before the webhook exists. */

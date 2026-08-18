@@ -15,11 +15,91 @@ import { notificationService } from "@/lib/notification-service";
 // exam/attendance data to anonymous requests.
 import { requireRole, requireSession, scopeBranch } from "@/lib/auth-scope";
 
+// Powers the "My Classes" dashboard widget: which section(s) this teacher is
+// the class teacher of, and which class/subject combinations they teach.
+export async function fetchMyTeachingSummaryDB(): Promise<{
+  classTeacherOf: { sectionId: string; className: string; sectionName: string }[];
+  teaches: { classId: string; className: string; sectionId: string; sectionName: string; subjectName: string }[];
+}> {
+  const auth = await requireSession();
+  if ('error' in auth) return { classTeacherOf: [], teaches: [] };
+  if (auth.session.role !== 'TEACHER') return { classTeacherOf: [], teaches: [] };
+  try {
+    const [classTeacherRes, teachesRes] = await Promise.all([
+      query(
+        `SELECT s.id as section_id, c.name as class_name, s.name as section_name
+         FROM sections s JOIN classes c ON c.id = s.class_id
+         WHERE s.class_teacher_id = $1 ORDER BY c.name, s.name`,
+        [auth.session.userId]
+      ),
+      query(
+        `SELECT tcs.class_id, c.name as class_name, tcs.section_id, sec.name as section_name, sub.name as subject_name
+         FROM teacher_class_subjects tcs
+         JOIN classes c ON c.id = tcs.class_id
+         JOIN sections sec ON sec.id = tcs.section_id
+         JOIN subjects sub ON sub.id = tcs.subject_id
+         WHERE tcs.teacher_id = $1 ORDER BY c.name, sec.name, sub.name`,
+        [auth.session.userId]
+      ),
+    ]);
+    return {
+      classTeacherOf: classTeacherRes.rows.map((r: any) => ({ sectionId: r.section_id, className: r.class_name, sectionName: r.section_name })),
+      teaches: teachesRes.rows.map((r: any) => ({ classId: r.class_id, className: r.class_name, sectionId: r.section_id, sectionName: r.section_name, subjectName: r.subject_name })),
+    };
+  } catch { return { classTeacherOf: [], teaches: [] }; }
+}
+
+// Sections where the logged-in user is the class teacher — used by the
+// Students page to show the Edit action only to the actual class teacher,
+// never a subject teacher (who can view attendance but not edit students).
+export async function fetchMyClassTeacherSectionIdsDB(): Promise<{ sectionId: string; classId: string }[]> {
+  const auth = await requireSession();
+  if ('error' in auth) return [];
+  if (auth.session.role !== 'TEACHER') return [];
+  try {
+    const res = await query("SELECT id, class_id FROM sections WHERE class_teacher_id = $1", [auth.session.userId]);
+    return res.rows.map((r: any) => ({ sectionId: r.id, classId: r.class_id }));
+  } catch { return []; }
+}
+
+// Client-callable version of the scoping below — lets the Attendance page
+// filter its class/section pickers to what the logged-in teacher can
+// actually mark, instead of relying on server-side rejection alone.
+export async function fetchMyAccessibleSectionsDB(): Promise<{ sectionId: string; classId: string }[]> {
+  const auth = await requireSession();
+  if ('error' in auth) return [];
+  if (auth.session.role !== 'TEACHER') return [];
+  try {
+    const res = await query(
+      `SELECT s.id as section_id, s.class_id FROM sections s WHERE s.class_teacher_id = $1
+       UNION
+       SELECT DISTINCT tcs.section_id, tcs.class_id FROM teacher_class_subjects tcs WHERE tcs.teacher_id = $1`,
+      [auth.session.userId]
+    );
+    return res.rows.map((r: any) => ({ sectionId: r.section_id, classId: r.class_id }));
+  } catch { return []; }
+}
+
+// Sections a TEACHER can act on: their own homeroom section (class teacher)
+// plus every section they're assigned a subject in. Used to scope attendance
+// so "every teacher can see attendance of a class he actually teaches" is
+// enforced server-side, not just hidden in the UI.
+async function teacherAccessibleSectionIds(teacherId: number): Promise<Set<string>> {
+  const res = await query(
+    `SELECT s.id FROM sections s WHERE s.class_teacher_id = $1
+     UNION
+     SELECT DISTINCT tcs.section_id FROM teacher_class_subjects tcs WHERE tcs.teacher_id = $1`,
+    [teacherId]
+  );
+  return new Set(res.rows.map((r: any) => r.id));
+}
+
 let _acDbInitialized = false;
 async function ensureDbInit() {
   if (_acDbInitialized) return;
-  _acDbInitialized = true;
+  // Only mark done on success — see the matching comment in actions/auth.ts.
   await initializeDatabase();
+  _acDbInitialized = true;
 }
 
 // ── Academic Year ──────────────────────────────────────────────────────────────
@@ -247,18 +327,29 @@ export async function fetchAllSectionsDB(classIds?: string[]) {
   if (!isOnline) return [];
   try {
     const branchId = scopeBranch(auth.session);
+    const mapSection = (r: any) => ({
+      id: r.id, name: r.name, capacity: r.capacity, teacherName: r.teacher_name, classId: r.class_id, group: r.section_group,
+      classTeacherId: r.class_teacher_id ?? null, classTeacherName: r.class_teacher_name ?? null,
+    });
     if (classIds && classIds.length > 0) {
       const placeholders = classIds.map((_, i) => `$${i + 1}`).join(",");
-      const res = await query(`SELECT * FROM sections WHERE class_id IN (${placeholders}) ORDER BY class_id, name`, classIds);
-      return res.rows.map((r: any) => ({ id: r.id, name: r.name, capacity: r.capacity, teacherName: r.teacher_name, classId: r.class_id, group: r.section_group }));
+      const res = await query(
+        `SELECT s.*, u.name as class_teacher_name FROM sections s
+         LEFT JOIN users u ON u.id = s.class_teacher_id
+         WHERE s.class_id IN (${placeholders}) ORDER BY s.class_id, s.name`,
+        classIds
+      );
+      return res.rows.map(mapSection);
     }
     // No classIds given — this is the "every section school-wide" path, so
     // it's the one that actually needs the branch join.
     const sql = branchId
-      ? "SELECT s.* FROM sections s JOIN classes c ON c.id = s.class_id WHERE c.branch_id = $1 ORDER BY s.class_id, s.name"
-      : "SELECT * FROM sections ORDER BY class_id, name";
+      ? `SELECT s.*, u.name as class_teacher_name FROM sections s
+         JOIN classes c ON c.id = s.class_id LEFT JOIN users u ON u.id = s.class_teacher_id
+         WHERE c.branch_id = $1 ORDER BY s.class_id, s.name`
+      : `SELECT s.*, u.name as class_teacher_name FROM sections s LEFT JOIN users u ON u.id = s.class_teacher_id ORDER BY s.class_id, s.name`;
     const res = await query(sql, branchId ? [branchId] : []);
-    return res.rows.map((r: any) => ({ id: r.id, name: r.name, capacity: r.capacity, teacherName: r.teacher_name, classId: r.class_id, group: r.section_group }));
+    return res.rows.map(mapSection);
   } catch { return []; }
 }
 
@@ -300,16 +391,26 @@ export async function updateSectionDB(data: { id: string; name: string; capacity
   } catch (e) { logServerError("academic-core", "updateSectionDB error:", e); return false; }
 }
 
-export async function updateSectionTeacherDB(sectionId: string, teacherName: string | null) {
+// Assigns the real class teacher (a TEACHER-role user, checked here rather
+// than trusted from the client) — teacher_name is kept in sync too since
+// it's still what a couple of legacy display spots read.
+export async function updateSectionClassTeacherDB(sectionId: string, teacherId: number | null) {
   const auth = await requireRole('ADMIN');
-  if ('error' in auth) return false;
+  if ('error' in auth) return { error: auth.error };
   await ensureDbInit();
   const isOnline = await checkDbConnection();
-  if (!isOnline) return false;
+  if (!isOnline) return { error: 'Database offline' };
   try {
-    await query("UPDATE sections SET teacher_name = $1 WHERE id = $2", [teacherName, sectionId]);
-    return true;
-  } catch (e) { logServerError("academic-core", "updateSectionTeacherDB error:", e); return false; }
+    let teacherName: string | null = null;
+    if (teacherId !== null) {
+      const userRes = await query('SELECT name, role FROM users WHERE id=$1', [teacherId]);
+      if (userRes.rows.length === 0) return { error: 'Teacher not found.' };
+      if (userRes.rows[0].role !== 'TEACHER') return { error: 'User must have the TEACHER role.' };
+      teacherName = userRes.rows[0].name;
+    }
+    await query("UPDATE sections SET class_teacher_id = $1, teacher_name = $2 WHERE id = $3", [teacherId, teacherName, sectionId]);
+    return {};
+  } catch (e) { logServerError("academic-core", "updateSectionClassTeacherDB error:", e); return { error: 'Failed to update class teacher.' }; }
 }
 
 // ── Enrollments ────────────────────────────────────────────────────────────────
@@ -325,12 +426,21 @@ export async function fetchEnrollmentsDB(academicYearId?: string, classId?: stri
                JOIN classes c ON e.class_id = c.id
                LEFT JOIN sections sec ON e.section_id = sec.id`;
     const conditions: string[] = [];
-    const params: string[] = [];
+    const params: any[] = [];
     if (academicYearId) { conditions.push(`e.academic_year_id = $${params.length + 1}`); params.push(academicYearId); }
     if (classId) { conditions.push(`e.class_id = $${params.length + 1}`); params.push(classId); }
     if (studentId) { conditions.push(`e.student_id = $${params.length + 1}`); params.push(studentId); }
     const branchId = scopeBranch(auth.session);
     if (branchId) { conditions.push(`c.branch_id = $${params.length + 1}`); params.push(branchId); }
+    // A teacher only ever gets rosters for classes they're actually
+    // assigned to (class teacher or subject teacher) — this was previously
+    // unrestricted, letting any teacher pull any class's full enrollment.
+    if (auth.session.role === 'TEACHER') {
+      const accessible = await teacherAccessibleSectionIds(auth.session.userId);
+      if (accessible.size === 0) return [];
+      conditions.push(`e.section_id = ANY($${params.length + 1})`);
+      params.push(Array.from(accessible));
+    }
     if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
     sql += " ORDER BY e.roll_number, s.name";
     const res = await query(sql, params);
@@ -969,11 +1079,29 @@ export async function addExamSubjectDB(data: { examId: string; subjectId: string
   try {
     const { nanoid } = await import("nanoid");
     const id = `es-${nanoid(8)}`;
+    // The Teacher column on this exam subject should show whoever actually
+    // teaches that subject to that class, not require picking one by hand —
+    // resolve it from the class's own subject-teacher assignments unless a
+    // teacher was explicitly passed in.
+    let teacherId = data.teacherId || null;
+    if (!teacherId) {
+      const examRes = await query(`SELECT class_id, section_id FROM term_exams WHERE id = $1`, [data.examId]);
+      const exam = examRes.rows[0];
+      if (exam) {
+        const assignRes = await query(
+          `SELECT teacher_id FROM teacher_class_subjects
+           WHERE class_id = $1 AND subject_id = $2 AND ($3::text IS NULL OR section_id = $3)
+           ORDER BY (section_id = $3) DESC LIMIT 1`,
+          [exam.class_id, data.subjectId, exam.section_id || null]
+        );
+        teacherId = assignRes.rows[0]?.teacher_id || null;
+      }
+    }
     await query(
       `INSERT INTO exam_subjects (id, exam_id, subject_id, total_marks, passing_marks, teacher_id) VALUES ($1,$2,$3,$4,$5,$6)`,
-      [id, data.examId, data.subjectId, data.totalMarks, data.passingMarks, data.teacherId || null]
+      [id, data.examId, data.subjectId, data.totalMarks, data.passingMarks, teacherId]
     );
-    return { id, ...data };
+    return { id, ...data, teacherId };
   } catch { return null; }
 }
 
@@ -1569,6 +1697,82 @@ export async function updateReportCardRemarksDB(id: string, remarks: string) {
 
 // ── Student Term Results ─────────────────────────────────────────────────────
 
+// One consolidated "everything about this student" read for the profile
+// page (src/app/(dashboard)/students/[id]/page.tsx) — combines the core
+// students row, their current active enrollment (class/section/roll), a
+// best-effort match into the standalone `parents` table, and small summary
+// stats (attendance %, outstanding fee balance) so the page's header/tabs
+// don't need a dozen separate round-trips just to render the top of the page.
+// Tab content below the header still uses the existing narrower fetchers
+// (fetchStudentAttendanceHistoryDB, fetchStudentTermResultsDB, etc.).
+export async function fetchStudentProfileDB(studentId: string) {
+  const auth = await requireSession();
+  if ('error' in auth) return null;
+  const isOnline = await checkDbConnection();
+  if (!isOnline) return null;
+  try {
+    const branchId = scopeBranch(auth.session);
+    const params: string[] = [studentId];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = ` AND s.branch_id=$${params.length}`; }
+
+    const studentRes = await query(
+      `SELECT s.*, b.name as branch_name FROM students s LEFT JOIN branches b ON b.id = s.branch_id
+       WHERE s.id=$1${branchFilter}`,
+      params
+    );
+    if (studentRes.rows.length === 0) return null;
+    const s = studentRes.rows[0];
+
+    const enrollRes = await query(
+      `SELECT e.roll_number, e.academic_year_id, c.name as class_name, sec.name as section_name
+       FROM enrollments e JOIN classes c ON c.id = e.class_id LEFT JOIN sections sec ON sec.id = e.section_id
+       WHERE e.student_id=$1 AND e.status='Active' ORDER BY e.updated_at DESC NULLS LAST LIMIT 1`,
+      [studentId]
+    );
+    const enr = enrollRes.rows[0] || null;
+
+    // A parent row's `student_ids` is a JSON array of student ids stored as
+    // text — cheapest match without a real join column is a substring check
+    // against the quoted id, same trick used elsewhere in this codebase for
+    // this table (see fetchParentPortalData-style lookups).
+    const parentRes = await query(
+      `SELECT id, name, email, phone FROM parents WHERE student_ids LIKE $1 OR email=$2 LIMIT 1`,
+      [`%"${studentId}"%`, s.parent_email]
+    );
+    const parent = parentRes.rows[0] || null;
+
+    const [attendanceRes, feeRes] = await Promise.all([
+      query(
+        `SELECT COUNT(*) FILTER (WHERE ar.status IN ('Present','Late')) as present, COUNT(*) as total
+         FROM attendance_records ar JOIN attendance_sessions asess ON ar.session_id = asess.id
+         WHERE ar.student_id=$1`,
+        [studentId]
+      ),
+      query(
+        `SELECT COALESCE(SUM(amount - COALESCE(discount,0) - COALESCE(amount_paid,0)), 0) as outstanding
+         FROM fee_records WHERE student_id=$1 AND status != 'Paid'`,
+        [studentId]
+      ),
+    ]);
+    const attTotal = parseInt(attendanceRes.rows[0]?.total || '0', 10);
+    const attPresent = parseInt(attendanceRes.rows[0]?.present || '0', 10);
+
+    return {
+      id: s.id, name: s.name, admissionNumber: s.admission_number, status: s.status,
+      email: s.email, phone: s.phone, dob: s.dob, gender: s.gender, address: s.address,
+      profilePhoto: s.profile_photo, branchId: s.branch_id, branchName: s.branch_name,
+      parentName: s.parent_name, parentEmail: s.parent_email, parentPhone: s.parent_phone,
+      guardianRelation: s.guardian_relation,
+      className: enr?.class_name || s.class, sectionName: enr?.section_name || s.section,
+      rollNumber: enr?.roll_number ?? null, academicYearId: enr?.academic_year_id ?? null,
+      linkedParent: parent ? { id: parent.id, name: parent.name, email: parent.email, phone: parent.phone } : null,
+      attendancePct: attTotal > 0 ? Math.round((attPresent / attTotal) * 100) : null,
+      outstandingFees: parseFloat(feeRes.rows[0]?.outstanding || '0'),
+    };
+  } catch { return null; }
+}
+
 export async function fetchStudentTermResultsDB(studentId: string) {
   const auth = await requireSession();
   if ('error' in auth) return [];
@@ -1731,6 +1935,10 @@ export async function createAttendanceSessionDB(data: {
 }) {
   const auth = await requireRole('ADMIN', 'TEACHER');
   if ('error' in auth) return null;
+  if (auth.session.role === 'TEACHER') {
+    const accessible = await teacherAccessibleSectionIds(auth.session.userId);
+    if (!accessible.has(data.sectionId)) return null;
+  }
   const isOnline = await checkDbConnection();
   if (!isOnline) return null;
   try {
@@ -1760,12 +1968,21 @@ export async function fetchAttendanceSessionsDB(classId?: string, sectionId?: st
                JOIN classes c ON asess.class_id = c.id
                JOIN sections sec ON asess.section_id = sec.id`;
     const conditions: string[] = [];
-    const params: string[] = [];
+    const params: any[] = [];
     if (classId) { conditions.push(`asess.class_id = $${params.length + 1}`); params.push(classId); }
     if (sectionId) { conditions.push(`asess.section_id = $${params.length + 1}`); params.push(sectionId); }
     if (date) { conditions.push(`asess.date = $${params.length + 1}`); params.push(date); }
     const branchId = scopeBranch(auth.session);
     if (branchId) { conditions.push(`c.branch_id = $${params.length + 1}`); params.push(branchId); }
+    if (auth.session.role === 'TEACHER') {
+      const accessible = await teacherAccessibleSectionIds(auth.session.userId);
+      if (sectionId && !accessible.has(sectionId)) return [];
+      if (!sectionId) {
+        if (accessible.size === 0) return [];
+        conditions.push(`asess.section_id = ANY($${params.length + 1})`);
+        params.push(Array.from(accessible));
+      }
+    }
     if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
     sql += " ORDER BY asess.date DESC";
     const res = await query(sql, params);
@@ -1781,6 +1998,12 @@ export async function fetchAttendanceSessionsDB(classId?: string, sectionId?: st
 export async function saveAttendanceRecordsDB(sessionId: string, records: { studentId: string; status: string; remarks?: string }[]) {
   const auth = await requireRole('ADMIN', 'TEACHER');
   if ('error' in auth) return;
+  if (auth.session.role === 'TEACHER') {
+    const sessionRes = await query("SELECT section_id FROM attendance_sessions WHERE id=$1", [sessionId]);
+    if (sessionRes.rows.length === 0) return;
+    const accessible = await teacherAccessibleSectionIds(auth.session.userId);
+    if (!accessible.has(sessionRes.rows[0].section_id)) return;
+  }
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
   try {
@@ -1840,6 +2063,12 @@ export async function saveAttendanceRecordsDB(sessionId: string, records: { stud
 export async function fetchAttendanceRecordsDB(sessionId: string) {
   const auth = await requireSession();
   if ('error' in auth) return [];
+  if (auth.session.role === 'TEACHER') {
+    const sessionRes = await query("SELECT section_id FROM attendance_sessions WHERE id=$1", [sessionId]);
+    if (sessionRes.rows.length === 0) return [];
+    const accessible = await teacherAccessibleSectionIds(auth.session.userId);
+    if (!accessible.has(sessionRes.rows[0].section_id)) return [];
+  }
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
@@ -1885,6 +2114,10 @@ export async function getAttendanceSummaryDB(studentId: string, academicYearId: 
 export async function fetchAttendanceDatesDB(classId: string, sectionId: string) {
   const auth = await requireSession();
   if ('error' in auth) return [];
+  if (auth.session.role === 'TEACHER') {
+    const accessible = await teacherAccessibleSectionIds(auth.session.userId);
+    if (!accessible.has(sectionId)) return [];
+  }
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
@@ -1901,6 +2134,10 @@ export async function fetchAttendanceHistoryDB(
 ) {
   const auth = await requireSession();
   if ('error' in auth) return [];
+  if (auth.session.role === 'TEACHER') {
+    const accessible = await teacherAccessibleSectionIds(auth.session.userId);
+    if (!accessible.has(sectionId)) return [];
+  }
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
@@ -1925,6 +2162,14 @@ export async function fetchAttendanceHistoryDB(
 export async function fetchStudentAttendanceHistoryDB(studentId: string, academicYearId: string) {
   const auth = await requireSession();
   if ('error' in auth) return [];
+  if (auth.session.role === 'TEACHER') {
+    const enrollRes = await query(
+      "SELECT section_id FROM enrollments WHERE student_id=$1 AND academic_year_id=$2 AND status='Active'",
+      [studentId, academicYearId]
+    );
+    const accessible = await teacherAccessibleSectionIds(auth.session.userId);
+    if (!enrollRes.rows.some((r: any) => accessible.has(r.section_id))) return [];
+  }
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
@@ -2151,6 +2396,58 @@ export async function deleteExamScheduleDB(id: string) {
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
   try { await query("DELETE FROM exam_schedules WHERE id=$1", [id]); } catch {}
+}
+
+export async function updateExamScheduleDB(id: string, data: {
+  examDate: string; startTime?: string; endTime?: string; roomId?: string;
+}): Promise<{ error?: string }> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return { error: auth.error };
+  const isOnline = await checkDbConnection();
+  if (!isOnline) return { error: 'Database offline.' };
+  try {
+    await query(
+      `UPDATE exam_schedules SET exam_date=$1, start_time=$2, end_time=$3, room_id=$4 WHERE id=$5`,
+      [data.examDate, data.startTime || null, data.endTime || null, data.roomId || null, id]
+    );
+    return {};
+  } catch { return { error: 'Failed to update schedule.' }; }
+}
+
+// Bulk-apply one date/time to a subject across several sections in one call —
+// the datesheet is almost always "same date for every section", so without
+// this the admin has to repeat the same entry once per section by hand.
+// Sections that already have an entry for this exam+subject are skipped
+// (not overwritten) rather than duplicated; the caller sees which via
+// `skipped` and can use updateExamScheduleDB to change those individually.
+export async function createExamSchedulesBulkDB(data: {
+  examId: string; classId: string; sectionIds: string[]; subjectId: string;
+  examDate: string; startTime?: string; endTime?: string; roomId?: string;
+}): Promise<{ created: number; skipped: string[]; error?: string }> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return { created: 0, skipped: [], error: auth.error };
+  const isOnline = await checkDbConnection();
+  if (!isOnline) return { created: 0, skipped: [], error: 'Database offline.' };
+  try {
+    const { nanoid } = await import("nanoid");
+    let created = 0;
+    const skipped: string[] = [];
+    for (const sectionId of data.sectionIds) {
+      const existing = await query(
+        `SELECT id FROM exam_schedules WHERE exam_id=$1 AND subject_id=$2 AND section_id=$3`,
+        [data.examId, data.subjectId, sectionId]
+      );
+      if (existing.rows.length > 0) { skipped.push(sectionId); continue; }
+      const id = `es-${nanoid(8)}`;
+      await query(
+        `INSERT INTO exam_schedules (id, exam_id, class_id, section_id, subject_id, exam_date, start_time, end_time, room_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [id, data.examId, data.classId, sectionId, data.subjectId, data.examDate, data.startTime || null, data.endTime || null, data.roomId || null]
+      );
+      created++;
+    }
+    return { created, skipped };
+  } catch { return { created: 0, skipped: [], error: 'Failed to create schedule entries.' }; }
 }
 
 // ── Result Details ──────────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ import { processQueueBatch, fetchQueueStats, type QueueStats } from "@/lib/whats
 
 async function requireAdmin() {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") return null;
+  if (!session || (session.role !== "ADMIN" && session.role !== "PRINCIPAL" && session.role !== "OWNER")) return null;
   return session;
 }
 
@@ -18,6 +18,10 @@ async function requireAdmin() {
 export interface WhatsAppTemplateRecord {
   id: string; name: string; metaTemplateName: string; language: string; category: string;
   status: string; description: string | null; variables: string[]; updatedAt: string;
+  /** Literal text to paste into Meta Business Manager's template body field
+   *  when creating this template there (Meta's numbered {{1}}, {{2}}...
+   *  placeholder syntax — position matches `variables`' order). */
+  body: string | null;
 }
 
 export async function fetchWhatsAppTemplatesAction(): Promise<WhatsAppTemplateRecord[]> {
@@ -26,7 +30,7 @@ export async function fetchWhatsAppTemplatesAction(): Promise<WhatsAppTemplateRe
   return res.rows.map(r => ({
     id: r.id, name: r.name, metaTemplateName: r.meta_template_name, language: r.language, category: r.category,
     status: r.status, description: r.description, variables: typeof r.variables === "string" ? JSON.parse(r.variables) : r.variables,
-    updatedAt: r.updated_at,
+    updatedAt: r.updated_at, body: r.body,
   }));
 }
 

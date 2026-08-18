@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useAppState } from "@/lib/state-context";
 import { useStudents } from "@/lib/students-context";
 import { Subject, FeeCategory, AcademicTerm, Section, GradeScaleItem } from "@/lib/types";
-import { fetchAllSectionsDB, createSectionDB, updateSectionDB, deleteSectionDB } from "@/app/actions/academic-core";
+import { fetchAllSectionsDB, createSectionDB, updateSectionDB, deleteSectionDB, updateSectionClassTeacherDB } from "@/app/actions/academic-core";
 import { fetchUsersDB } from "@/app/actions/features";
 import { fetchGradeScalesDB, updateGradeScaleDB } from "@/app/actions/academic-core";
 import { useToast } from "@/hooks/use-toast";
@@ -37,9 +37,11 @@ import {
 } from "@/app/actions/staff-attendance";
 import { fetchStaffDirectoryDB } from "@/app/actions/features";
 import {
-  fetchErrorLogAction, resolveErrorLogEntryAction, clearResolvedErrorLogAction,
+  fetchErrorLogAction, resolveErrorLogEntryAction, resolveErrorLogEntriesAction, clearResolvedErrorLogAction,
   type ErrorLogEntry,
 } from "@/app/actions/error-log-admin";
+import { getSession } from "@/app/actions/auth";
+import { fetchBranchesDB, fetchBranchByIdDB, updateBranchDB, type BranchRecord } from "@/app/actions/branches";
 
 const GRADE_LEVELS = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
 
@@ -69,9 +71,14 @@ function SoftCard({ icon: Icon, title, sub, action, children }: { icon?: React.E
 
 // ─── TAB 1 – School Profile ──────────────────────────────────────────────────
 
-function SchoolProfileTab() {
+function OrgProfileForm({ readOnly = false }: { readOnly?: boolean }) {
   const { schoolInfo, updateSchoolInfo } = useAppState();
-  const [form, setForm] = useState({ ...schoolInfo, phone: (schoolInfo as any).phone || "", website: (schoolInfo as any).website || "", principal: (schoolInfo as any).principal || "" });
+  const [form, setForm] = useState({
+    ...schoolInfo,
+    phone: schoolInfo.phone || "", website: schoolInfo.website || "", principal: schoolInfo.principal || "",
+    logoUrl: schoolInfo.logoUrl || "", foundingYear: schoolInfo.foundingYear || "",
+    currency: schoolInfo.currency || "", timezone: schoolInfo.timezone || "",
+  });
   const [saved, setSaved] = useState(false);
 
   const f = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
@@ -84,22 +91,170 @@ function SchoolProfileTab() {
   };
 
   return (
-    <SoftCard icon={Building2} title="School Profile" sub="Core information about your institution">
+    <SoftCard
+      icon={Building2} title="School Profile"
+      sub={readOnly ? "Core information about your institution — managed by the Owner" : "Core information about your institution"}
+    >
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div><label className={labelCls}>School Name</label><Input value={form.name} onChange={f("name")} placeholder="e.g. St. Jude's Academy" /></div>
-        <div><label className={labelCls}>Registration Number</label><Input value={form.registrationNumber} onChange={f("registrationNumber")} placeholder="SJA-2026-001" /></div>
-        <div><label className={labelCls}>Contact Email</label><Input type="email" value={form.contactEmail} onChange={f("contactEmail")} placeholder="admin@school.edu" /></div>
-        <div><label className={labelCls}>Phone Number</label><Input value={form.phone} onChange={f("phone")} placeholder="+1 (555) 000-0000" /></div>
-        <div className="sm:col-span-2"><label className={labelCls}>Address</label><textarea value={form.address} onChange={f("address")} rows={2} className={`${inputSelectCls} resize-none`} placeholder="Street, City, Country" /></div>
-        <div><label className={labelCls}>Website</label><Input value={form.website} onChange={f("website")} placeholder="https://school.edu" /></div>
-        <div><label className={labelCls}>Principal / Head</label><Input value={form.principal} onChange={f("principal")} placeholder="Dr. Jane Smith" /></div>
+        <div><label className={labelCls}>School Name</label><Input value={form.name} onChange={f("name")} placeholder="e.g. St. Jude's Academy" disabled={readOnly} /></div>
+        <div><label className={labelCls}>Registration Number</label><Input value={form.registrationNumber} onChange={f("registrationNumber")} placeholder="SJA-2026-001" disabled={readOnly} /></div>
+        <div><label className={labelCls}>Contact Email</label><Input type="email" value={form.contactEmail} onChange={f("contactEmail")} placeholder="admin@school.edu" disabled={readOnly} /></div>
+        <div><label className={labelCls}>Phone Number</label><Input value={form.phone} onChange={f("phone")} placeholder="+1 (555) 000-0000" disabled={readOnly} /></div>
+        <div className="sm:col-span-2"><label className={labelCls}>Address</label><textarea value={form.address} onChange={f("address")} rows={2} className={`${inputSelectCls} resize-none`} placeholder="Street, City, Country" disabled={readOnly} /></div>
+        <div><label className={labelCls}>Website</label><Input value={form.website} onChange={f("website")} placeholder="https://school.edu" disabled={readOnly} /></div>
+        <div><label className={labelCls}>Principal / Head</label><Input value={form.principal} onChange={f("principal")} placeholder="Dr. Jane Smith" disabled={readOnly} /></div>
+        <div><label className={labelCls}>Group Logo URL</label><Input value={form.logoUrl} onChange={f("logoUrl")} placeholder="https://school.edu/logo.png" disabled={readOnly} /></div>
+        <div><label className={labelCls}>Founding Year</label><Input value={form.foundingYear} onChange={f("foundingYear")} placeholder="e.g. 1998" disabled={readOnly} /></div>
+        <div><label className={labelCls}>Currency</label><Input value={form.currency} onChange={f("currency")} placeholder="e.g. PKR" disabled={readOnly} /></div>
+        <div><label className={labelCls}>Timezone</label><Input value={form.timezone} onChange={f("timezone")} placeholder="e.g. Asia/Karachi" disabled={readOnly} /></div>
+      </div>
+      {!readOnly && (
+        <div className="mt-6 flex justify-end">
+          <Button onClick={handleSave} className={saved ? "bg-success hover:bg-success/90" : ""}>
+            {saved ? <><Check className="h-4 w-4 mr-1" /> Saved!</> : <><Save className="h-4 w-4 mr-1" /> Save School Profile</>}
+          </Button>
+        </div>
+      )}
+    </SoftCard>
+  );
+}
+
+// Owner sees the org-wide profile plus a dropdown that loads any branch's
+// profile inline, right here on the page — no navigating away to
+// /owner/branches/[id] just to look at or edit one campus.
+function OwnerBranchesCard() {
+  const [branches, setBranches] = useState<BranchRecord[]>([]);
+  const [selected, setSelected] = useState("");
+
+  useEffect(() => { fetchBranchesDB().then(setBranches); }, []);
+
+  if (branches.length === 0) return null;
+
+  return (
+    <div className="space-y-5">
+      <SoftCard icon={Building2} title="Branch Profiles" sub="Each campus's own identity, contact details, and metrics">
+        <Select value={selected} onValueChange={setSelected}>
+          <SelectTrigger className="w-72"><SelectValue placeholder="Select a branch to view its profile" /></SelectTrigger>
+          <SelectContent>
+            {branches.map(b => (
+              <SelectItem key={b.id} value={b.id}>{b.name} {b.code ? `(${b.code})` : ""} · {b.isActive ? "Active" : "Inactive"}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </SoftCard>
+      {selected && <BranchProfileForm key={selected} branchId={selected} />}
+    </div>
+  );
+}
+
+// Inline-editable branch profile — reuses the same fetchBranchByIdDB/
+// updateBranchDB pair as the full /owner/branches/[id] page, just condensed
+// (no activate/reassign controls, which stay Owner-only both here and at
+// the action layer). Used for a Principal's own branch and, from the
+// dropdown above, any branch an Owner picks — no page navigation needed.
+function BranchProfileForm({ branchId }: { branchId: string }) {
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [branch, setBranch] = useState<BranchRecord | null>(null);
+  const [form, setForm] = useState({
+    name: "", code: "", address: "", phone: "", email: "",
+    establishedDate: "", capacity: "", gradeLevels: "", shift: "",
+  });
+
+  const load = () => {
+    setLoading(true);
+    fetchBranchByIdDB(branchId).then(b => {
+      if (b) {
+        setBranch(b);
+        setForm({
+          name: b.name, code: b.code || "", address: b.address || "", phone: b.phone || "",
+          email: b.email || "", establishedDate: b.establishedDate || "",
+          capacity: b.capacity !== null ? String(b.capacity) : "", gradeLevels: b.gradeLevels || "", shift: b.shift || "",
+        });
+      }
+      setLoading(false);
+    });
+  };
+
+  useEffect(load, [branchId]);
+
+  const f = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm(prev => ({ ...prev, [k]: e.target.value }));
+
+  const handleSave = async () => {
+    setSaving(true);
+    const res = await updateBranchDB(branchId, {
+      name: form.name, code: form.code || undefined, address: form.address || undefined,
+      phone: form.phone || undefined, email: form.email || undefined,
+      establishedDate: form.establishedDate || undefined,
+      capacity: form.capacity ? parseInt(form.capacity, 10) : null,
+      gradeLevels: form.gradeLevels || undefined, shift: form.shift || undefined,
+    });
+    setSaving(false);
+    if (res.error) { toast({ title: "Failed to save", description: res.error, variant: "destructive" }); return; }
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+    load();
+  };
+
+  if (loading) return <SoftCard icon={Building2} title="Branch Profile"><p className="text-sm text-muted-foreground">Loading…</p></SoftCard>;
+  if (!branch) return <SoftCard icon={Building2} title="Branch Profile"><p className="text-sm text-muted-foreground">Branch not found.</p></SoftCard>;
+
+  return (
+    <SoftCard icon={Building2} title="Branch Profile" sub="Your campus's identity and contact details">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div><label className={labelCls}>Branch Name</label><Input value={form.name} onChange={f("name")} /></div>
+        <div><label className={labelCls}>Branch Code</label><Input value={form.code} onChange={f("code")} placeholder="e.g. NORTH" /></div>
+        <div><label className={labelCls}>Phone</label><Input value={form.phone} onChange={f("phone")} /></div>
+        <div><label className={labelCls}>Email</label><Input type="email" value={form.email} onChange={f("email")} /></div>
+        <div className="sm:col-span-2"><label className={labelCls}>Address</label><Input value={form.address} onChange={f("address")} /></div>
+        <div><label className={labelCls}>Established Date</label><Input type="date" value={form.establishedDate} onChange={f("establishedDate")} /></div>
+        <div><label className={labelCls}>Capacity</label><Input type="number" value={form.capacity} onChange={f("capacity")} placeholder="e.g. 1200" /></div>
+        <div><label className={labelCls}>Grade Levels Offered</label><Input value={form.gradeLevels} onChange={f("gradeLevels")} placeholder="e.g. Nursery – Grade 10" /></div>
+        <div><label className={labelCls}>Shift</label><Input value={form.shift} onChange={f("shift")} placeholder="e.g. Morning" /></div>
       </div>
       <div className="mt-6 flex justify-end">
-        <Button onClick={handleSave} className={saved ? "bg-success hover:bg-success/90" : ""}>
-          {saved ? <><Check className="h-4 w-4 mr-1" /> Saved!</> : <><Save className="h-4 w-4 mr-1" /> Save School Profile</>}
+        <Button onClick={handleSave} disabled={saving} className={saved ? "bg-success hover:bg-success/90" : ""}>
+          {saved ? <><Check className="h-4 w-4 mr-1" /> Saved!</> : <><Save className="h-4 w-4 mr-1" /> Save Branch Profile</>}
         </Button>
       </div>
     </SoftCard>
+  );
+}
+
+function SchoolProfileTab() {
+  const [role, setRole] = useState<string | null>(null);
+  const [branchId, setBranchId] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    getSession().then(s => {
+      setRole(s?.role ?? null);
+      setBranchId(s?.branchId ?? null);
+      setLoaded(true);
+    });
+  }, []);
+
+  if (!loaded) return null;
+
+  if (role === "PRINCIPAL") {
+    return (
+      <div className="space-y-5">
+        <OrgProfileForm readOnly />
+        {branchId
+          ? <BranchProfileForm branchId={branchId} />
+          : <p className="text-sm text-muted-foreground">No branch assigned yet — contact the Owner.</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <OrgProfileForm />
+      {role === "OWNER" && <OwnerBranchesCard />}
+    </div>
   );
 }
 
@@ -182,7 +337,7 @@ function ClassSectionsTab() {
   const [sections, setSections] = useState<Section[]>([]);
   const [teachers, setTeachers] = useState<{ id: number; name: string }[]>([]);
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState<Omit<Section, "id">>({ name: "", classId: "cls-10", capacity: 30, teacherName: "", group: "" });
+  const [form, setForm] = useState<Omit<Section, "id">>({ name: "", classId: "cls-10", capacity: 30, teacherName: "", group: "", classTeacherId: null });
   const [editing, setEditing] = useState<Section | null>(null);
 
   useEffect(() => {
@@ -195,9 +350,13 @@ function ClassSectionsTab() {
 
   const handleAdd = async () => {
     if (!form.name || !form.classId) return;
-    const created = await createSectionDB({ name: form.name, capacity: form.capacity, teacherName: form.teacherName, classId: form.classId, group: form.group || undefined });
-    if (created) setSections(prev => [...prev, created]);
-    setForm({ name: "", classId: "cls-10", capacity: 30, teacherName: "", group: "" }); setShowAdd(false);
+    const teacherName = teachers.find(t => t.id === form.classTeacherId)?.name || "";
+    const created = await createSectionDB({ name: form.name, capacity: form.capacity, teacherName, classId: form.classId, group: form.group || undefined });
+    if (created) {
+      if (form.classTeacherId) await updateSectionClassTeacherDB(created.id, form.classTeacherId);
+      setSections(prev => [...prev, { ...created, teacherName, classTeacherId: form.classTeacherId || null }]);
+    }
+    setForm({ name: "", classId: "cls-10", capacity: 30, teacherName: "", group: "", classTeacherId: null }); setShowAdd(false);
   };
 
   return (
@@ -210,7 +369,7 @@ function ClassSectionsTab() {
           <div><label className={labelCls}>Grade Level</label><select value={form.classId} onChange={e => setForm({ ...form, classId: e.target.value })} className={inputSelectCls}>{classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
           <div><label className={labelCls}>Section</label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="A, B, C…" /></div>
           <div><label className={labelCls}>Capacity</label><Input type="number" value={form.capacity} onChange={e => setForm({ ...form, capacity: parseInt(e.target.value) || 30 })} /></div>
-          <div><label className={labelCls}>Class Teacher</label><select value={form.teacherName || ""} onChange={e => setForm({ ...form, teacherName: e.target.value })} className={inputSelectCls}><option value="">None</option>{teachers.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select></div>
+          <div><label className={labelCls}>Class Teacher</label><select value={form.classTeacherId ?? ""} onChange={e => setForm({ ...form, classTeacherId: e.target.value ? parseInt(e.target.value) : null })} className={inputSelectCls}><option value="">None</option>{teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
           <div className="sm:col-span-2 lg:col-span-4 flex justify-end gap-2"><Button variant="outline" size="sm" onClick={() => setShowAdd(false)}>Cancel</Button><Button size="sm" onClick={handleAdd}>Add Section</Button></div>
         </div>
       )}
@@ -225,13 +384,22 @@ function ClassSectionsTab() {
                   {editing?.id === sec.id ? (
                     <div className="space-y-2">
                       <div className="flex gap-2"><Input value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} placeholder="Section" className="w-20 py-1 text-xs" /><Input type="number" value={String(editing.capacity)} onChange={e => setEditing({ ...editing, capacity: parseInt(e.target.value) || 30 })} placeholder="Cap" className="w-20 py-1 text-xs" /></div>
-                      <div className="flex gap-2 justify-end"><button className="text-xs font-medium text-success" onClick={async () => { await updateSectionDB({ id: sec.id, name: editing.name, capacity: editing.capacity, teacherName: editing.teacherName, group: editing.group || undefined }); setSections(prev => prev.map(x => x.id === sec.id ? editing : x)); setEditing(null); }}>Save</button><button className="text-xs font-medium text-muted-foreground" onClick={() => setEditing(null)}>Cancel</button></div>
+                      <select value={editing.classTeacherId ?? ""} onChange={e => setEditing({ ...editing, classTeacherId: e.target.value ? parseInt(e.target.value) : null })} className={`${inputSelectCls} text-xs py-1.5`}>
+                        <option value="">No class teacher</option>
+                        {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                      <div className="flex gap-2 justify-end"><button className="text-xs font-medium text-success" onClick={async () => {
+                        const teacherName = teachers.find(t => t.id === editing.classTeacherId)?.name || "";
+                        await updateSectionDB({ id: sec.id, name: editing.name, capacity: editing.capacity, teacherName, group: editing.group || undefined });
+                        await updateSectionClassTeacherDB(sec.id, editing.classTeacherId ?? null);
+                        setSections(prev => prev.map(x => x.id === sec.id ? { ...editing, teacherName } : x)); setEditing(null);
+                      }}>Save</button><button className="text-xs font-medium text-muted-foreground" onClick={() => setEditing(null)}>Cancel</button></div>
                     </div>
                   ) : (
                     <>
                       <div className="flex items-center justify-between"><span className="font-bold text-primary text-base">{classLabel(sec.classId).replace("Grade ", "G")}–{sec.name}</span><Badge className="bg-info/15 text-info">Cap {sec.capacity}</Badge></div>
                       {sec.group && <p className="text-xs text-muted-foreground mt-0.5">{sec.group}</p>}
-                      <p className="mt-1 text-xs text-muted-foreground">{sec.teacherName || "No teacher assigned"}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">Class Teacher: {sec.teacherName || "None assigned"}</p>
                       <div className="mt-3 flex gap-3 text-xs font-medium"><button className="text-primary" onClick={() => setEditing({ ...sec })}>Edit</button><button className="text-destructive" onClick={async () => { const ok = await confirm({ title: `Delete section ${sec.name}?`, description: "Any students currently enrolled in this section will need to be reassigned. This cannot be undone." }); if (!ok) return; await deleteSectionDB(sec.id); setSections(prev => prev.filter(x => x.id !== sec.id)); }}>Delete</button></div>
                     </>
                   )}
@@ -877,11 +1045,12 @@ function ErrorLogTab() {
   const [entries, setEntries] = useState<ErrorLogEntry[]>([]);
   const [filter, setFilter] = useState<"unresolved" | "all">("unresolved");
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const load = () => {
     fetchErrorLogAction(filter === "unresolved" ? { onlyUnresolved: true } : undefined).then(setEntries);
   };
-  useEffect(() => { load(); }, [filter]);
+  useEffect(() => { load(); setSelected(new Set()); }, [filter]);
 
   const handleResolve = async (id: string) => {
     await resolveErrorLogEntryAction(id);
@@ -894,6 +1063,29 @@ function ErrorLogTab() {
     if (!ok) return;
     await clearResolvedErrorLogAction();
     toast({ title: "Resolved errors cleared" });
+    load();
+  };
+
+  const toggleSelected = (id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const resolvableEntries = entries.filter(e => !e.resolved);
+  const allResolvableSelected = resolvableEntries.length > 0 && resolvableEntries.every(e => selected.has(e.id));
+  const toggleSelectAll = () => {
+    setSelected(allResolvableSelected ? new Set() : new Set(resolvableEntries.map(e => e.id)));
+  };
+
+  const handleBulkResolve = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    await resolveErrorLogEntriesAction(ids);
+    toast({ title: `Marked ${ids.length} error${ids.length === 1 ? "" : "s"} as resolved` });
+    setSelected(new Set());
     load();
   };
 
@@ -915,6 +1107,11 @@ function ErrorLogTab() {
                 All
               </button>
             </div>
+            {selected.size > 0 && (
+              <Button size="sm" onClick={handleBulkResolve}>
+                Mark {selected.size} Resolved
+              </Button>
+            )}
             <Button size="sm" variant="outline" onClick={handleClearResolved}>Clear Resolved</Button>
           </div>
         }
@@ -923,6 +1120,16 @@ function ErrorLogTab() {
           <table className="w-full text-sm">
             <thead className={theadCls}>
               <tr>
+                <th className="px-4 py-2 w-8">
+                  {resolvableEntries.length > 0 && (
+                    <input
+                      type="checkbox"
+                      checked={allResolvableSelected}
+                      onChange={toggleSelectAll}
+                      onClick={(evt) => evt.stopPropagation()}
+                    />
+                  )}
+                </th>
                 <th className="text-left px-4 py-2">Source</th>
                 <th className="text-left px-4 py-2">Message</th>
                 <th className="text-left px-4 py-2">When</th>
@@ -934,6 +1141,15 @@ function ErrorLogTab() {
               {entries.map(e => (
                 <React.Fragment key={e.id}>
                   <tr className="cursor-pointer hover:bg-secondary/20" onClick={() => setExpanded(expanded === e.id ? null : e.id)}>
+                    <td className="px-4 py-2.5" onClick={(evt) => evt.stopPropagation()}>
+                      {!e.resolved && (
+                        <input
+                          type="checkbox"
+                          checked={selected.has(e.id)}
+                          onChange={() => toggleSelected(e.id)}
+                        />
+                      )}
+                    </td>
                     <td className="px-4 py-2.5"><Badge variant="outline" className="text-[10px] font-mono">{e.source}</Badge></td>
                     <td className="px-4 py-2.5 max-w-md truncate">{e.message}</td>
                     <td className="px-4 py-2.5 text-muted-foreground text-xs">{new Date(e.createdAt).toLocaleString()}</td>
@@ -952,7 +1168,7 @@ function ErrorLogTab() {
                   </tr>
                   {expanded === e.id && e.stack && (
                     <tr>
-                      <td colSpan={5} className="px-4 py-3 bg-secondary/10">
+                      <td colSpan={6} className="px-4 py-3 bg-secondary/10">
                         <pre className="text-[11px] text-muted-foreground whitespace-pre-wrap font-mono max-h-64 overflow-y-auto">{e.stack}</pre>
                       </td>
                     </tr>
@@ -960,7 +1176,7 @@ function ErrorLogTab() {
                 </React.Fragment>
               ))}
               {entries.length === 0 && (
-                <tr><td colSpan={5} className="text-center py-8 text-muted-foreground text-sm">
+                <tr><td colSpan={6} className="text-center py-8 text-muted-foreground text-sm">
                   {filter === "unresolved" ? "No unresolved errors. All clear." : "No errors recorded yet."}
                 </td></tr>
               )}

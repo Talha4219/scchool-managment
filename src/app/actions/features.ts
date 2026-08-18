@@ -71,7 +71,7 @@ export async function fetchAnnouncementsDB(role?: string, viewerUserId?: number)
     const branchConditions: string[] = [];
     const branchId = scopeBranch(session);
     if (branchId) { params.push(branchId); branchConditions.push(`branch_id=$${params.length}`); }
-    if (role && role !== 'ADMIN') {
+    if (role && role !== 'ADMIN' && role !== 'PRINCIPAL' && role !== 'OWNER') {
       // Older seed data stores "everyone" announcements as the literal string
       // 'ALL' rather than NULL — treat both as "everyone" so they aren't
       // silently excluded for every non-admin role (was hiding all "ALL"
@@ -177,7 +177,7 @@ export async function createAssignmentDB(
 ): Promise<{ error?: string; id?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') {
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') {
     return { error: 'Only admins and teachers can create assignments.' };
   }
   try {
@@ -222,7 +222,7 @@ export async function deleteAssignmentDB(id: string): Promise<{ error?: string }
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
   try {
-    if (session.role === 'ADMIN') {
+    if (session.role === 'ADMIN' || session.role === 'PRINCIPAL' || session.role === 'OWNER') {
       await query('DELETE FROM assignments WHERE id=$1', [id]);
       return {};
     }
@@ -304,7 +304,7 @@ export async function submitAssignmentDB(data: { assignmentId: string; notes: st
 export async function gradeSubmissionDB(id: string, grade: string, feedback: string): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') return { error: 'Not authorized.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Not authorized.' };
   try {
     if (session.role === 'TEACHER') {
       const owns = await query(
@@ -600,9 +600,11 @@ export async function fetchUsersDB() {
     if (branchId) { params.push(branchId); branchFilter = ` AND u.branch_id=$${params.length}`; }
     const res = await query(
       `SELECT u.id, u.name, u.email, u.role, u.created_at, COALESCE(u.status, 'ACTIVE') AS status,
-              u.custom_role_id, cr.name AS custom_role_name, cr.color AS custom_role_color
+              u.custom_role_id, cr.name AS custom_role_name, cr.color AS custom_role_color,
+              u.branch_id, b.name AS branch_name
        FROM users u
        LEFT JOIN custom_roles cr ON cr.id = u.custom_role_id
+       LEFT JOIN branches b ON b.id = u.branch_id
        WHERE COALESCE(u.status, 'ACTIVE') IN ('ACTIVE', 'INACTIVE')${branchFilter}
        ORDER BY u.created_at DESC`,
       params
@@ -613,6 +615,8 @@ export async function fetchUsersDB() {
       customRoleId: r.custom_role_id as string | null,
       customRoleName: r.custom_role_name as string | null,
       customRoleColor: r.custom_role_color as string | null,
+      branchId: r.branch_id as string | null,
+      branchName: r.branch_name as string | null,
     }));
   } catch { return []; }
 }
@@ -678,18 +682,34 @@ export async function rejectUserDB(id: number): Promise<{ error?: string }> {
 
 export async function updateUserDB(
   id: number,
-  data: { name?: string; role?: 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE'; customRoleId?: string | null }
+  data: {
+    name?: string; email?: string;
+    role?: 'ADMIN' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'EMPLOYEE' | 'OWNER' | 'PRINCIPAL';
+    customRoleId?: string | null; branchId?: string | null;
+  }
 ): Promise<{ error?: string }> {
   const auth = await requireAdmin();
   if ('error' in auth) return auth;
   if (!(await ownsUserId(auth.session, id))) return { error: 'Not authorized for this user.' };
+  // Only OWNER may hand out OWNER/PRINCIPAL authority or move someone to a
+  // different branch — same rule createUserDB already enforces at creation.
+  if ((data.role === 'OWNER' || data.role === 'PRINCIPAL') && auth.session.role !== 'OWNER') {
+    return { error: 'Only the owner can assign that role.' };
+  }
+  if (data.branchId !== undefined && auth.session.role !== 'OWNER') {
+    return { error: 'Only the owner can change a user\'s branch.' };
+  }
   try {
-    const { customRoleId, ...prismaData } = data;
+    const { customRoleId, branchId, ...prismaData } = data;
     if (Object.keys(prismaData).length > 0) await prisma.user.update({ where: { id }, data: prismaData });
     if (customRoleId !== undefined) await query('UPDATE users SET custom_role_id=$1 WHERE id=$2', [customRoleId, id]);
+    if (branchId !== undefined) await query('UPDATE users SET branch_id=$1 WHERE id=$2', [branchId, id]);
     await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'user', entityId: String(id), summary: `Updated user #${id}`, after: data });
     return {};
-  } catch { return { error: 'Failed to update user.' }; }
+  } catch (err: any) {
+    if (err?.code === 'P2002') return { error: 'That email is already in use.' };
+    return { error: 'Failed to update user.' };
+  }
 }
 
 export async function deactivateUserDB(id: number): Promise<{ error?: string }> {
@@ -1815,7 +1835,7 @@ export async function deleteCourseDB(id: string): Promise<{ error?: string }> {
 async function requireCourseMaterialWriteAccess(courseId: string): Promise<{ userId: number; name: string; role: string } | { error: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role === 'ADMIN') return { userId: session.userId, name: session.name, role: session.role };
+  if (session.role === 'ADMIN' || session.role === 'PRINCIPAL' || session.role === 'OWNER') return { userId: session.userId, name: session.name, role: session.role };
   if (session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage course materials.' };
   const courseRes = await query('SELECT teacher_name FROM courses WHERE id=$1', [courseId]);
   if (courseRes.rows.length === 0) return { error: 'Course not found.' };
@@ -2602,7 +2622,7 @@ export async function createOnlineExamDB(data: Omit<import('@/lib/types').Online
 export async function updateOnlineExamDB(id: string, data: Partial<Omit<import('@/lib/types').OnlineExam, 'id'>>): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage exams.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage exams.' };
   try {
     await query(
       `UPDATE online_exams SET title=COALESCE($1,title), class_name=COALESCE($2,class_name), subject=COALESCE($3,subject),
@@ -2643,7 +2663,7 @@ async function syncOnlineExamScoreToMarksDB(examId: string, studentId: string, s
 export async function deleteOnlineExamDB(id: string): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage exams.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage exams.' };
   try {
     const attempts = await query('SELECT COUNT(*) FROM online_exam_attempts WHERE exam_id=$1', [id]);
     if (parseInt(attempts.rows[0].count) > 0) return { error: 'Cannot delete an exam that students have already attempted.' };
@@ -2673,7 +2693,7 @@ export async function fetchOnlineExamQuestionsDB(examId: string, opts?: { includ
 export async function createOnlineExamQuestionDB(data: Omit<import('@/lib/types').OnlineExamQuestion, 'id'>): Promise<{ error?: string; id?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage questions.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage questions.' };
   try {
     const id = `oeq_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     await query(
@@ -2687,7 +2707,7 @@ export async function createOnlineExamQuestionDB(data: Omit<import('@/lib/types'
 export async function updateOnlineExamQuestionDB(id: string, data: Partial<Omit<import('@/lib/types').OnlineExamQuestion, 'id' | 'examId'>>): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage questions.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage questions.' };
   try {
     await query(
       `UPDATE online_exam_questions SET type=COALESCE($1,type), question=COALESCE($2,question), options=COALESCE($3,options), correct_answer=COALESCE($4,correct_answer), marks=COALESCE($5,marks) WHERE id=$6`,
@@ -2700,7 +2720,7 @@ export async function updateOnlineExamQuestionDB(id: string, data: Partial<Omit<
 export async function deleteOnlineExamQuestionDB(id: string): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage questions.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage questions.' };
   try { await query('DELETE FROM online_exam_questions WHERE id=$1', [id]); return {}; } catch { return { error: 'Failed to delete question.' }; }
 }
 
@@ -2881,7 +2901,7 @@ export async function fetchOnlineExamAttemptsDB(examId: string): Promise<OnlineE
 export async function gradeOnlineExamAnswerDB(attemptId: string, questionId: string, marksObtained: number): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can grade.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can grade.' };
   try {
     const res = await query('SELECT answers FROM online_exam_attempts WHERE id=$1', [attemptId]);
     if (res.rows.length === 0) return { error: 'Attempt not found.' };

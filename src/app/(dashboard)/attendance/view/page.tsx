@@ -17,6 +17,7 @@ import {
   getAttendanceSummaryDB,
 } from "@/app/actions/academic-core";
 import type { AcademicYear, ClassItem, SectionItem, Enrollment } from "@/lib/types";
+import { formatDayMonthPK } from "@/lib/date-format";
 import { ArrowLeft, Calendar, Download, Eye, BarChart3, History, Users, Search } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -279,9 +280,7 @@ export default function AttendanceViewPage() {
                       {historyDates.map(d => (
                         <TableHead key={d} className="min-w-[36px] text-center p-1">
                           <span className="text-[9px] font-semibold uppercase whitespace-nowrap">
-                            {/* timeZone pinned to UTC: `d` is a date-only string, and formatting it in the
-                                runtime's local offset renders a different calendar day server vs client. */}
-                            {new Date(d).toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" })}
+                            {formatDayMonthPK(d)}
                           </span>
                         </TableHead>
                       ))}

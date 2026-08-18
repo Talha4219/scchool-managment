@@ -11,6 +11,8 @@ import { nanoid } from "nanoid";
 
 export interface BranchRecord {
   id: string; name: string; code: string | null; address: string | null; phone: string | null;
+  email: string | null; logoUrl: string | null; establishedDate: string | null;
+  capacity: number | null; gradeLevels: string | null; shift: string | null;
   principalUserId: number | null; principalName: string | null; isActive: boolean;
 }
 
@@ -24,14 +26,14 @@ export interface BranchSummary extends BranchRecord {
 function mapBranch(r: any): BranchRecord {
   return {
     id: r.id, name: r.name, code: r.code, address: r.address, phone: r.phone,
+    email: r.email || null, logoUrl: r.logo_url || null, establishedDate: r.established_date || null,
+    capacity: r.capacity ?? null, gradeLevels: r.grade_levels || null, shift: r.shift || null,
     principalUserId: r.principal_user_id, principalName: r.principal_name || null,
     isActive: r.is_active,
   };
 }
 
-export async function fetchBranchesDB(): Promise<BranchRecord[]> {
-  const auth = await requireRole('OWNER', 'ADMIN');
-  if ('error' in auth) return [];
+async function computeBranches(): Promise<BranchRecord[]> {
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
@@ -44,17 +46,21 @@ export async function fetchBranchesDB(): Promise<BranchRecord[]> {
   } catch { return []; }
 }
 
+export async function fetchBranchesDB(): Promise<BranchRecord[]> {
+  const auth = await requireRole('OWNER', 'ADMIN');
+  if ('error' in auth) return [];
+  return computeBranches();
+}
+
 // One row per branch with the headline metrics the Owner Dashboard cards
 // show: enrolled students, staff headcount, fees collected this term, and
 // overall attendance rate. Each metric is its own query so a failure in one
 // (e.g. no active academic term yet) doesn't blank out the others.
-export async function fetchBranchSummariesDB(): Promise<BranchSummary[]> {
-  const auth = await requireRole('OWNER');
-  if ('error' in auth) return [];
+async function computeBranchSummaries(): Promise<BranchSummary[]> {
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
-    const branches = await fetchBranchesDB();
+    const branches = await computeBranches();
 
     const [studentCounts, staffCounts, feeSums, attendanceRates] = await Promise.all([
       query(`SELECT branch_id, COUNT(*) as c FROM students WHERE status='Active' AND branch_id IS NOT NULL GROUP BY branch_id`),
@@ -91,6 +97,29 @@ export async function fetchBranchSummariesDB(): Promise<BranchSummary[]> {
   } catch { return []; }
 }
 
+export async function fetchBranchSummariesDB(): Promise<BranchSummary[]> {
+  const auth = await requireRole('OWNER');
+  if ('error' in auth) return [];
+  return computeBranchSummaries();
+}
+
+// Single-branch fetch for the branch profile page — OWNER sees any branch,
+// PRINCIPAL only their own (matches the scoping every other branch query uses).
+export async function fetchBranchByIdDB(id: string): Promise<BranchRecord | null> {
+  const auth = await requireRole('OWNER', 'ADMIN');
+  if ('error' in auth) return null;
+  if (auth.session.role === 'PRINCIPAL' && auth.session.branchId !== id) return null;
+  try {
+    const res = await query(
+      `SELECT b.*, u.name as principal_name FROM branches b
+       LEFT JOIN users u ON u.id = b.principal_user_id
+       WHERE b.id = $1`,
+      [id]
+    );
+    return res.rows.length > 0 ? mapBranch(res.rows[0]) : null;
+  } catch { return null; }
+}
+
 export async function createBranchDB(data: { name: string; code?: string; address?: string; phone?: string }): Promise<{ error?: string; id?: string }> {
   const auth = await requireRole('OWNER');
   if ('error' in auth) return { error: auth.error };
@@ -104,12 +133,26 @@ export async function createBranchDB(data: { name: string; code?: string; addres
   } catch (e: any) { return { error: e.message || 'Failed to create branch.' }; }
 }
 
-export async function updateBranchDB(id: string, data: { name?: string; code?: string; address?: string; phone?: string; isActive?: boolean }): Promise<{ error?: string }> {
-  const auth = await requireRole('OWNER');
+export async function updateBranchDB(id: string, data: {
+  name?: string; code?: string; address?: string; phone?: string; email?: string;
+  logoUrl?: string; establishedDate?: string; capacity?: number | null; gradeLevels?: string; shift?: string;
+  isActive?: boolean;
+}): Promise<{ error?: string }> {
+  const auth = await requireRole('OWNER', 'ADMIN');
   if ('error' in auth) return { error: auth.error };
+  if (auth.session.role === 'PRINCIPAL') {
+    if (auth.session.branchId !== id) return { error: 'You are not authorized to perform this action.' };
+    // A Principal manages their own campus's contact/identity details but
+    // not activation state or reassigning themselves — that stays OWNER-only.
+    if (data.isActive !== undefined) return { error: 'Only the Owner can activate or deactivate a branch.' };
+  }
   try {
     const fields: string[] = []; const vals: any[] = []; let i = 1;
-    const colMap: Record<string, string> = { name: 'name', code: 'code', address: 'address', phone: 'phone', isActive: 'is_active' };
+    const colMap: Record<string, string> = {
+      name: 'name', code: 'code', address: 'address', phone: 'phone', email: 'email',
+      logoUrl: 'logo_url', establishedDate: 'established_date', capacity: 'capacity',
+      gradeLevels: 'grade_levels', shift: 'shift', isActive: 'is_active',
+    };
     for (const [key, col] of Object.entries(colMap)) {
       const v = (data as any)[key];
       if (v !== undefined) { fields.push(`${col}=$${i++}`); vals.push(v); }
@@ -158,11 +201,14 @@ export interface BranchComparisonRow extends BranchSummary {
   openIncidents: number;
 }
 
-export async function fetchBranchComparisonDB(): Promise<BranchComparisonRow[]> {
-  const auth = await requireRole('OWNER');
-  if ('error' in auth) return [];
+// Unauthenticated helper factored out so a single branch's row can be
+// computed for a PRINCIPAL (who is scoped to their own branch) without
+// running the OWNER-only gate that fetchBranchComparisonDB enforces — the
+// cross-branch query still runs, but only the caller's own row ever leaves
+// the two exported wrappers below.
+async function computeBranchComparison(): Promise<BranchComparisonRow[]> {
   try {
-    const base = await fetchBranchSummariesDB();
+    const base = await computeBranchSummaries();
 
     const [teacherAtt, feeTotals, admissions, incidents] = await Promise.all([
       query(`
@@ -215,6 +261,23 @@ export async function fetchBranchComparisonDB(): Promise<BranchComparisonRow[]> 
   } catch { return []; }
 }
 
+export async function fetchBranchComparisonDB(): Promise<BranchComparisonRow[]> {
+  const auth = await requireRole('OWNER');
+  if ('error' in auth) return [];
+  return computeBranchComparison();
+}
+
+// Single branch's own metrics row — OWNER can view any branch, PRINCIPAL only
+// their own. The full cross-branch computation still runs internally, but
+// only the caller's own row is ever returned to the client.
+export async function fetchBranchMetricsDB(branchId: string): Promise<BranchComparisonRow | null> {
+  const auth = await requireRole('OWNER', 'ADMIN');
+  if ('error' in auth) return null;
+  if (auth.session.role === 'PRINCIPAL' && auth.session.branchId !== branchId) return null;
+  const rows = await computeBranchComparison();
+  return rows.find(r => r.id === branchId) || null;
+}
+
 // ── Attention Required panel ─────────────────────────────────────────────────
 
 export interface OwnerAlert {
@@ -258,17 +321,22 @@ export async function fetchOwnerAlertsDB(): Promise<OwnerAlert[]> {
 
 export interface AttendanceTrendPoint { date: string; ratePct: number | null }
 
-export async function fetchAttendanceTrendDB(): Promise<AttendanceTrendPoint[]> {
+export async function fetchAttendanceTrendDB(branchId?: string): Promise<AttendanceTrendPoint[]> {
   const auth = await requireRole('OWNER');
   if ('error' in auth) return [];
   try {
+    const params: string[] = [];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = ` AND s.branch_id=$${params.length}`; }
     const res = await query(`
       SELECT ases.date,
              ROUND(100.0 * COUNT(*) FILTER (WHERE ar.status='Present') / NULLIF(COUNT(*),0), 1) as rate
-      FROM attendance_records ar JOIN attendance_sessions ases ON ases.id = ar.session_id
-      WHERE ases.date >= to_char(NOW() - INTERVAL '7 days', 'YYYY-MM-DD')
+      FROM attendance_records ar
+      JOIN attendance_sessions ases ON ases.id = ar.session_id
+      JOIN students s ON s.id = ar.student_id
+      WHERE ases.date >= to_char(NOW() - INTERVAL '7 days', 'YYYY-MM-DD')${branchFilter}
       GROUP BY ases.date ORDER BY ases.date ASC
-    `);
+    `, params);
     return res.rows.map((r: any) => ({ date: r.date, ratePct: r.rate !== null ? parseFloat(r.rate) : null }));
   } catch { return []; }
 }
@@ -384,8 +452,9 @@ export async function fetchAtRiskStudentsSummaryDB(thresholdPct = 40): Promise<A
 }
 
 export async function fetchAtRiskStudentsListDB(branchId: string, thresholdPct = 40): Promise<AtRiskStudent[]> {
-  const auth = await requireRole('OWNER');
+  const auth = await requireRole('OWNER', 'ADMIN');
   if ('error' in auth) return [];
+  if (auth.session.role === 'PRINCIPAL' && auth.session.branchId !== branchId) return [];
   try {
     const res = await query(`
       SELECT DISTINCT ON (s.id) s.id as student_id, s.name as student_name, s.class as class_name, r.percentage

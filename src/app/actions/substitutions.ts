@@ -10,6 +10,7 @@
 import { query } from "@/lib/db";
 import { notify } from "./features";
 import { requireRole, requireSession, scopeBranch } from "@/lib/auth-scope";
+import { notificationService } from "@/lib/notification-service";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -65,6 +66,27 @@ export async function generateSubstitutionsForTeacherDateDB(
     let assigned = 0, unfilled = 0;
     const { nanoid } = await import("nanoid");
 
+    // Resolved once per run (not per period) — every auto-assigned substitution
+    // for this teacher/date needs sign-off from the branch's principal(s) AND
+    // admin(s) — both can approve (approveSubstitutionDB), so both get notified.
+    const teacherRes = await query('SELECT name, branch_id FROM users WHERE id=$1', [teacherId]);
+    const originalTeacherName = teacherRes.rows[0]?.name || 'A teacher';
+    const branchId = teacherRes.rows[0]?.branch_id ?? null;
+    const approvers = branchId
+      ? (await query(
+          `SELECT id, email, name, role FROM users WHERE role IN ('PRINCIPAL','ADMIN') AND branch_id=$1`,
+          [branchId]
+        )).rows
+      : (await query(`SELECT id, email, name, role FROM users WHERE role='ADMIN' AND branch_id IS NULL`)).rows;
+
+    // Every period is proposed here (substitute pre-computed via
+    // findBestSubstitute so the principal sees a concrete suggestion), but
+    // nothing is announced to the covering teacher yet — that only happens
+    // once a principal/admin approves it (see approveSubstitutionDB). This
+    // is what "requires approval" actually means: the match is suggested,
+    // not committed, until signed off.
+    const periods: { periodDesc: string; substituteName: string | null }[] = [];
+
     for (const entry of entries.rows) {
       const already = await query(
         `SELECT id FROM timetable_substitutions WHERE timetable_entry_id=$1 AND date=$2`,
@@ -80,24 +102,52 @@ export async function generateSubstitutionsForTeacherDateDB(
         [id, entry.id, date, teacherId, substituteId, reason, substituteId ? 'auto' : 'unfilled']
       );
 
+      const periodDesc = `${entry.class_name} ${entry.subject_name}, ${entry.start_time}-${entry.end_time}`;
       if (substituteId) {
         assigned++;
-        const subRes = await query('SELECT name, email FROM users WHERE id=$1', [substituteId]);
-        const sub = subRes.rows[0];
-        if (sub) {
-          await notify(
-            'Substitution Assignment',
-            `You're covering ${entry.class_name} ${entry.subject_name}, ${entry.start_time}-${entry.end_time} on ${date}.`,
-            'TEACHER', sub.email
-          );
-        }
+        const subRes = await query('SELECT name FROM users WHERE id=$1', [substituteId]);
+        periods.push({ periodDesc, substituteName: subRes.rows[0]?.name || null });
       } else {
         unfilled++;
+        periods.push({ periodDesc, substituteName: null });
       }
     }
 
-    if (unfilled > 0) {
-      await notify('Unfilled Substitution', `${unfilled} period(s) on ${date} could not be auto-assigned a substitute and need manual attention.`, 'ADMIN');
+    // Nothing new to report (every period already had a row from an earlier
+    // run) — don't send an empty approval request.
+    if (periods.length === 0) return { assigned, unfilled };
+
+    // One consolidated message per approver instead of one per period —
+    // a teacher with 7 periods sends 7 individual pings otherwise.
+    const reasonText = reason === 'half_day' ? 'checking out early' : reason;
+    const periodLines = periods
+      .map((p, i) => `${i + 1}. ${p.periodDesc} → ${p.substituteName ? p.substituteName : 'UNFILLED (no eligible substitute found)'}`)
+      .join('\n');
+    const summaryMessage =
+      `${originalTeacherName} is ${reasonText} on ${date}. ${periods.length} period(s) need coverage:\n${periodLines}\n\n` +
+      `Please review and approve in the dashboard.`;
+
+    for (const p of approvers) {
+      await notify('Substitution Needs Approval', summaryMessage, p.role, p.email);
+      // recipientType 'PRINCIPAL' just means "resolve WhatsApp contact
+      // directly from the users table" (see notification-service.ts) — works
+      // the same for an ADMIN row, not principal-role-specific.
+      // Free text first (instant, no template) — if the recipient's 24h
+      // WhatsApp conversation window is closed, that fails and this falls
+      // back to the SUBSTITUTION_APPROVAL template automatically (requires
+      // that template to be marked APPROVED under WhatsApp > Templates).
+      await notificationService.sendFreeTextWithTemplateFallback({
+        type: 'SUBSTITUTION_APPROVAL',
+        recipientType: 'PRINCIPAL',
+        recipientId: String(p.id),
+        message: summaryMessage,
+        templateData: {
+          teacher_name: originalTeacherName,
+          date,
+          reason: reasonText,
+          periods_summary: periodLines,
+        },
+      });
     }
 
     return { assigned, unfilled };
@@ -234,6 +284,57 @@ export async function fetchEligibleSubstitutesDB(substitutionId: string): Promis
     const teachers = await query(teachersSql, branchId ? [branchId] : []);
     return teachers.rows.filter((r: any) => !excluded.has(r.id)).map((r: any) => ({ userId: r.id, name: r.name }));
   } catch { return []; }
+}
+
+// Signs off an auto-assigned ('auto' status) substitution, flipping it to
+// 'confirmed'. ADMIN or the branch PRINCIPAL only (requireRole('ADMIN')
+// already includes PRINCIPAL — see auth-scope.ts) — a teacher can't approve
+// their own coverage assignment.
+export async function approveSubstitutionDB(id: string): Promise<{ error?: string }> {
+  const auth = await requireRole('ADMIN');
+  if ('error' in auth) return { error: auth.error };
+  try {
+    const res = await query(
+      `SELECT ts.status, ts.date, ts.substitute_teacher_id, te.class_name, te.subject_name, te.start_time, te.end_time, u.email
+       FROM timetable_substitutions ts JOIN timetable_entries te ON te.id = ts.timetable_entry_id
+       LEFT JOIN users u ON u.id = ts.substitute_teacher_id
+       WHERE ts.id=$1`,
+      [id]
+    );
+    if (res.rows.length === 0) return { error: 'Substitution not found.' };
+    const row = res.rows[0];
+    if (row.status !== 'auto') return { error: 'Only pending (auto-assigned) substitutions can be approved.' };
+    await query(
+      `UPDATE timetable_substitutions SET status='confirmed', approved_by=$1, approved_at=NOW() WHERE id=$2`,
+      [auth.session.userId, id]
+    );
+    // The covering teacher is only told about it now, on approval — not at
+    // auto-assignment time — matching "propose, don't commit until approved".
+    if (row.email) {
+      await notify(
+        'Substitution Assignment',
+        `You're covering ${row.class_name} ${row.subject_name}, ${row.start_time}-${row.end_time} on ${row.date}.`,
+        'TEACHER', row.email
+      );
+    }
+    return {};
+  } catch { return { error: 'Failed to approve substitution.' }; }
+}
+
+// Count of substitutions still awaiting principal/admin sign-off, scoped to
+// the caller's branch — powers the dashboard's Pending Approvals widget.
+export async function fetchPendingSubstitutionApprovalCountDB(): Promise<number> {
+  const auth = await requireSession();
+  if ('error' in auth) return 0;
+  if (auth.session.role !== 'ADMIN' && auth.session.role !== 'PRINCIPAL' && auth.session.role !== 'OWNER') return 0;
+  try {
+    const branchId = scopeBranch(auth.session);
+    let sql = `SELECT COUNT(*)::int as count FROM timetable_substitutions ts JOIN users ot ON ot.id = ts.original_teacher_id WHERE ts.status='auto'`;
+    const params: any[] = [];
+    if (branchId) { params.push(branchId); sql += ` AND ot.branch_id=$${params.length}`; }
+    const res = await query(sql, params);
+    return res.rows[0]?.count || 0;
+  } catch { return 0; }
 }
 
 export async function overrideSubstitutionDB(id: string, newTeacherId: number): Promise<{ error?: string }> {

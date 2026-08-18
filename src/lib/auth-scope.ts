@@ -31,7 +31,12 @@ export async function requireSession(): Promise<{ session: SessionPayload } | { 
 // Multi-branch data scoping. Returns null for OWNER (and for legacy
 // sessions with no branchId) — meaning "no filter, see everything" — or the
 // caller's own branchId otherwise, to be AND-ed into a query's WHERE clause.
+// OWNER is the one exception: getSession() (src/app/actions/auth.ts) stamps
+// session.branchId from the sc_owner_view_branch cookie when the Owner has
+// picked a branch to "view as" from the global header selector — so an
+// active selection scopes OWNER just like any other role, everywhere, with
+// zero changes needed at any of this function's ~40 call sites.
 export function scopeBranch(session: SessionPayload): string | null {
-  if (session.role === 'OWNER') return null;
+  if (session.role === 'OWNER') return session.branchId ?? null;
   return session.branchId;
 }

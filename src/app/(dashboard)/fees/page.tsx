@@ -2,6 +2,8 @@
 
 import { useState, useMemo, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
+import { useStudents } from "@/lib/students-context";
 import { getSession } from "@/app/actions/auth";
 import {
   fetchAcademicYearsDB, fetchClassesDB, fetchSectionsByClassDB, fetchEnrollmentsDB,
@@ -55,17 +57,17 @@ function daysOverdue(dueDate: string) {
 }
 
 function formatDate(dateStr?: string) {
-  if (!dateStr) return "—";
-  return new Date(dateStr).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
+  return formatDatePK(dateStr);
 }
 
 export default function FeesPage() {
   const {
     feeRecords, generateFeeVouchers, payFeeVoucher, applyDiscount,
     recordPartialPayment, sendFeeReminders, updateFeePayment, regenerateVoucher,
-    schoolInfo, students,
+    schoolInfo,
     feeCategories, feeStructures, addFeeStructure, updateFeeStructure, deleteFeeStructure,
   } = useAppState();
+  const { students } = useStudents();
   const { toast } = useToast();
   const confirm = useConfirm();
   const { can, loaded: permsLoaded } = usePermission();
@@ -453,7 +455,7 @@ export default function FeesPage() {
       : "";
     const statusColor = { Paid: "#166534", Unpaid: "#1d4ed8", Overdue: "#991b1b", Partial: "#92400e" }[voucher.status] || "#111";
     const statusBg = { Paid: "#dcfce7", Unpaid: "#dbeafe", Overdue: "#fee2e2", Partial: "#fef3c7" }[voucher.status] || "#f3f4f6";
-    const generated = new Date().toLocaleDateString("en-PK", { year: "numeric", month: "long", day: "numeric" });
+    const generated = formatDatePK(new Date());
 
     win.document.write(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Fee Voucher — ${voucher.voucherId}</title>
@@ -541,7 +543,7 @@ export default function FeesPage() {
     const paidAmount = voucher.status === "Paid" ? netDue(voucher) + (voucher.amountPaid || 0) : (voucher.amountPaid || 0);
     const receiptNo = `RCP-${voucher.voucherId.replace("FV-", "")}`;
     const payDate = formatDate(voucher.paymentDate || new Date().toISOString().split("T")[0]);
-    const generated = new Date().toLocaleDateString("en-PK", { year: "numeric", month: "long", day: "numeric" });
+    const generated = formatDatePK(new Date());
     const payments = history.filter(h => h.type === "payment");
     const historyHTML = payments.length > 1 ? `
   <div class="info-section">

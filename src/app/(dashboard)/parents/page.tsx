@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useAppState } from "@/lib/state-context";
 import { useStudents } from "@/lib/students-context";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,10 +18,9 @@ import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 import { fetchParentsDB, createParentDB, updateParentDB, deleteParentDB } from "@/app/actions/features";
 import type { ParentRecord } from "@/lib/types";
-import { Plus, Search, MoreHorizontal, Edit2, UserX, UserCheck, Trash2, Link2, Lock, UserCircle } from "lucide-react";
+import { Plus, Search, MoreHorizontal, Edit2, UserX, UserCheck, Trash2, Link2, UserCircle } from "lucide-react";
 
 export default function ParentsPage() {
-  const { activeRole } = useAppState();
   const { students } = useStudents();
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
@@ -50,17 +48,8 @@ export default function ParentsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (activeRole !== "ADMIN") {
-    if (!permsLoaded) return null;
+  if (!permsLoaded) return null;
   if (!can("parents.view")) return <Unauthorized />;
-
-  return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
-        <Lock className="h-12 w-12 text-muted-foreground" />
-        <h2 className="text-xl font-bold text-primary">Admin Access Only</h2>
-      </div>
-    );
-  }
 
   const filtered = parents.filter(p => {
     const matchSearch = p.name.toLowerCase().includes(search.toLowerCase()) ||

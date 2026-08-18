@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { getSession } from "@/app/actions/auth";
+import { formatDayMonthPK } from "@/lib/date-format";
 import {
   fetchMessagingContactsDB, fetchConversationsDB, fetchMessagesDB, sendMessageDB,
   type MessagingContact, type ConversationSummary, type MessageItem,
@@ -23,7 +24,7 @@ function timeAgo(iso: string) {
   if (diffMin < 1) return "now";
   if (diffMin < 60) return `${diffMin}m`;
   if (diffMin < 1440) return `${Math.round(diffMin / 60)}h`;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return formatDayMonthPK(d);
 }
 
 export default function MessagesPage() {

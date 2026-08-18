@@ -19,8 +19,26 @@ model User {
 
   teacherAssignments TeacherClassSubject[]
   examSubjects       ExamSubject[]
+  attendanceRecords  TeacherAttendance[]
 
   @@map("users")
+}
+
+model TeacherAttendance {
+  id           String    @id
+  userId       Int       @map("user_id")
+  date         String
+  status       String    @default("Present")
+  checkInTime  DateTime? @map("check_in_time")
+  checkOutTime DateTime? @map("check_out_time")
+  source       String    @default("manual")
+  markedBy     String?   @map("marked_by")
+  remarks      String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@map("staff_attendance")
 }
 
 model SchoolInfo {
@@ -141,6 +159,7 @@ model Exam {
   commonStrengths  String? @map("common_strengths")
   commonWeaknesses String? @map("common_weaknesses")
   studentResults   Json    @default("[]") @map("student_results")
+  published        Boolean @default(false)
 
   @@map("exams")
 }

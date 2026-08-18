@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
 import { useStudents } from "@/lib/students-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +15,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
@@ -24,7 +24,7 @@ import {
   fetchAcademicYearsDB, fetchClassesDB, fetchSectionsByClassDB,
   fetchEnrollmentsDB, createEnrollmentDB, updateEnrollmentStatusDB,
   bulkPromoteStudentsDB, fetchPromotionsDB, changeEnrollmentClassDB,
-  graduateStudentToAlumniDB,
+  graduateStudentToAlumniDB, fetchMyClassTeacherSectionIdsDB,
 } from "@/app/actions/academic-core";
 import { resetStudentPasswordDB } from "@/app/actions/db";
 import {
@@ -51,7 +51,27 @@ export default function StudentsPage() {
   // the server actions it calls now enforce this too, but the button
   // shouldn't be shown at all to someone it will silently fail for.
   const [isAdmin, setIsAdmin] = useState(false);
-  useEffect(() => { getSession().then(s => setIsAdmin(s?.role === "ADMIN")); }, []);
+  // A class teacher may edit contact/profile fields for students in their
+  // own section (server-enforced too, see updateStudentDB) — everything
+  // else here (admission number, roll, status, portal password) stays
+  // admin-only in the UI even though those fields render in the same form.
+  const [myClassTeacherSectionIds, setMyClassTeacherSectionIds] = useState<Set<string>>(new Set());
+  const [myClassTeacherClassIds, setMyClassTeacherClassIds] = useState<Set<string>>(new Set());
+  // Roster visibility on this page is stricter than attendance/marks: only
+  // the class teacher of a section sees its students here, not every
+  // subject teacher assigned to it (they still get rosters via attendance/
+  // marks entry, which is a separate, broader scope — see fetchEnrollmentsDB).
+  const [isTeacher, setIsTeacher] = useState(false);
+  useEffect(() => {
+    getSession().then(s => {
+      setIsAdmin(s?.role === "ADMIN" || s?.role === "PRINCIPAL" || s?.role === "OWNER");
+      setIsTeacher(s?.role === "TEACHER");
+      if (s?.role === "TEACHER") fetchMyClassTeacherSectionIdsDB().then(rows => {
+        setMyClassTeacherSectionIds(new Set(rows.map(r => r.sectionId)));
+        setMyClassTeacherClassIds(new Set(rows.map(r => r.classId)));
+      });
+    });
+  }, []);
 
   // ── Loading State ──────────────────────────────────────────────────────────
   const [loading, setLoading] = useState(true);
@@ -99,8 +119,8 @@ export default function StudentsPage() {
   const loadEnrollments = useCallback(async () => {
     if (!activeYearId) return;
     const enr = await fetchEnrollmentsDB(activeYearId, selectedClassId !== "ALL" ? selectedClassId : undefined);
-    setEnrollments(enr);
-  }, [activeYearId, selectedClassId]);
+    setEnrollments(isTeacher ? enr.filter(e => myClassTeacherSectionIds.has(e.sectionId)) : enr);
+  }, [activeYearId, selectedClassId, isTeacher, myClassTeacherSectionIds]);
 
   useEffect(() => { loadContext(); }, [loadContext]);
 
@@ -125,26 +145,24 @@ export default function StudentsPage() {
   const [editPhoto, setEditPhoto] = useState<string>("");
   const [editPassword, setEditPassword] = useState("");
 
-  // ── WhatsApp consent (separate from the legacy edit-form save path above —
-  // parent_phone/whatsapp_opt_in live on the real students row, not the
-  // in-memory legacy model) ────────────────────────────────────────────────
+  // ── WhatsApp contact (separate from the legacy edit-form save path above —
+  // parent_phone lives on the real students row, not the in-memory legacy
+  // model). Notifications are mandatory for everyone — no opt-in/opt-out. ──
   const [waPhone, setWaPhone] = useState("");
-  const [waOptIn, setWaOptIn] = useState(false);
   const [waSaving, setWaSaving] = useState(false);
   useEffect(() => {
     if (!editOpen || !editStudent) return;
     fetchStudentWhatsAppPrefsAction(editStudent.studentId).then(prefs => {
       setWaPhone(prefs?.phone || "");
-      setWaOptIn(prefs?.optIn || false);
     });
   }, [editOpen, editStudent]);
 
   const handleSaveWhatsAppPrefs = async () => {
     if (!editStudent) return;
     setWaSaving(true);
-    await setStudentWhatsAppOptInAction(editStudent.studentId, waOptIn, waPhone);
+    await setStudentWhatsAppOptInAction(editStudent.studentId, true, waPhone);
     setWaSaving(false);
-    toast({ title: "WhatsApp preferences saved" });
+    toast({ title: "WhatsApp number saved" });
   };
 
   const handleEditPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -461,7 +479,9 @@ export default function StudentsPage() {
           </div>
           <Select value={selectedClassId} onValueChange={v => { setSelectedClassId(v); setSelectedSectionId("ALL"); }}>
             <SelectTrigger className="w-40"><SelectValue placeholder="Class" /></SelectTrigger>
-            <SelectContent>{classes.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+            <SelectContent>
+              {(isTeacher ? classes.filter(c => myClassTeacherClassIds.has(c.id)) : classes).map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+            </SelectContent>
           </Select>
         </div>
         <Card className="border-[#E5E7EB]">
@@ -700,6 +720,9 @@ export default function StudentsPage() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex gap-1 justify-end">
+                      <Button variant="ghost" size="sm" className="h-8 text-xs" asChild>
+                        <Link href={`/students/${enr.studentId}`}><Eye className="h-3 w-3 mr-1" /> View</Link>
+                      </Button>
                       <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => openHistory(enr)}>
                         <History className="h-3 w-3 mr-1" /> History
                       </Button>
@@ -742,7 +765,7 @@ export default function StudentsPage() {
                           )}
                         </>
                       )}
-                      {isAdmin && (
+                      {(isAdmin || myClassTeacherSectionIds.has(enr.sectionId)) && (
                         <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => {
                           const legacy = legacyStudents.find(s => s.id === enr.studentId);
                           setEditStudent(enr);
@@ -801,12 +824,17 @@ export default function StudentsPage() {
             </div>
             <Separator />
             {/* Basic Info */}
+            {!isAdmin && (
+              <p className="text-xs text-[#94A3B8] bg-[#F8FAFC] rounded-lg px-3 py-2">
+                As class teacher you can update contact and personal details. Name, admission number, roll number, and status are managed by the school office.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-3">
-              <div><Label>Name *</Label><Input value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} /></div>
-              <div><Label>Admission No.</Label><Input value={editForm.admissionNumber} onChange={e => setEditForm(f => ({ ...f, admissionNumber: e.target.value }))} /></div>
-              <div><Label>Roll Number</Label><Input type="number" value={editForm.rollNumber} onChange={e => setEditForm(f => ({ ...f, rollNumber: e.target.value }))} /></div>
+              <div><Label>Name *</Label><Input value={editForm.name} disabled={!isAdmin} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} /></div>
+              <div><Label>Admission No.</Label><Input value={editForm.admissionNumber} disabled={!isAdmin} onChange={e => setEditForm(f => ({ ...f, admissionNumber: e.target.value }))} /></div>
+              <div><Label>Roll Number</Label><Input type="number" value={editForm.rollNumber} disabled={!isAdmin} onChange={e => setEditForm(f => ({ ...f, rollNumber: e.target.value }))} /></div>
               <div><Label>Status</Label>
-                <Select value={editForm.status} onValueChange={v => setEditForm(f => ({ ...f, status: v }))}>
+                <Select value={editForm.status} onValueChange={v => setEditForm(f => ({ ...f, status: v }))} disabled={!isAdmin}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="Active">Active</SelectItem>
@@ -849,23 +877,23 @@ export default function StudentsPage() {
             <h4 className="text-sm font-semibold text-[#0F172A]">WhatsApp Notifications</h4>
             <div className="grid grid-cols-2 gap-3 items-end">
               <div><Label>Parent WhatsApp Number</Label><Input value={waPhone} onChange={e => setWaPhone(e.target.value)} placeholder="03001234567" /></div>
-              <div className="flex items-center gap-2 pb-2">
-                <Switch checked={waOptIn} onCheckedChange={setWaOptIn} id="wa-opt-in" />
-                <Label htmlFor="wa-opt-in" className="cursor-pointer">Enabled</Label>
-              </div>
-              <div className="col-span-2 flex items-center justify-between">
-                <p className="text-xs text-[#94A3B8]">Absence alerts and fee reminders are only sent to the parent when this is on — having a phone number on file doesn't imply consent.</p>
+              <div className="flex items-center justify-end">
                 <Button type="button" size="sm" variant="outline" onClick={handleSaveWhatsAppPrefs} disabled={waSaving}>
                   {waSaving ? "Saving..." : "Save"}
                 </Button>
               </div>
+              <p className="col-span-2 text-xs text-[#94A3B8]">WhatsApp notifications (absence alerts, fee reminders) are sent to every parent — this is mandatory, not optional.</p>
             </div>
-            <Separator />
-            {/* Portal Password Reset */}
-            <h4 className="text-sm font-semibold text-[#0F172A]">Portal Access</h4>
-            <div><Label>New Portal Password <span className="text-xs text-[#94A3B8]">(leave blank to keep current)</span></Label>
-              <Input type="password" value={editPassword} onChange={e => setEditPassword(e.target.value)} placeholder="Enter new password" />
-            </div>
+            {isAdmin && (
+              <>
+                <Separator />
+                {/* Portal Password Reset */}
+                <h4 className="text-sm font-semibold text-[#0F172A]">Portal Access</h4>
+                <div><Label>New Portal Password <span className="text-xs text-[#94A3B8]">(leave blank to keep current)</span></Label>
+                  <Input type="password" value={editPassword} onChange={e => setEditPassword(e.target.value)} placeholder="Enter new password" />
+                </div>
+              </>
+            )}
           </div>
           <DialogFooter><Button onClick={handleEdit}>Save Changes</Button></DialogFooter>
         </DialogContent>
@@ -1028,7 +1056,7 @@ export default function StudentsPage() {
                   {p.fromSectionId && <span className="text-[#64748B]"> → </span>}
                   <span className="font-medium">{p.toClassName}</span>
                 </div>
-                <span className="text-xs text-[#94A3B8]">{new Date(p.promotedAt).toLocaleDateString()}</span>
+                <span className="text-xs text-[#94A3B8]">{formatDatePK(p.promotedAt)}</span>
               </div>
             ))}
           </div>
@@ -1061,7 +1089,7 @@ export default function StudentsPage() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium">{docType}</p>
                     {doc ? (
-                      <p className="text-xs text-[#94A3B8] truncate">{doc.fileName} · {new Date(doc.uploadedAt).toLocaleDateString()}</p>
+                      <p className="text-xs text-[#94A3B8] truncate">{doc.fileName} · {formatDatePK(doc.uploadedAt)}</p>
                     ) : (
                       <p className="text-xs text-[#94A3B8]">Not uploaded</p>
                     )}
@@ -1105,7 +1133,7 @@ export default function StudentsPage() {
               ) : (
                 <img src={viewDoc.fileData} alt={viewDoc.documentType} className="w-full max-h-[70vh] object-contain rounded-lg border border-[#E5E7EB] bg-[#F8FAFC]" />
               )}
-              <p className="text-xs text-[#94A3B8]">{viewDoc.fileName} · Uploaded {new Date(viewDoc.uploadedAt).toLocaleDateString()}{viewDoc.uploadedBy ? ` by ${viewDoc.uploadedBy}` : ""}</p>
+              <p className="text-xs text-[#94A3B8]">{viewDoc.fileName} · Uploaded {formatDatePK(viewDoc.uploadedAt)}{viewDoc.uploadedBy ? ` by ${viewDoc.uploadedBy}` : ""}</p>
             </div>
           )}
           <DialogFooter>

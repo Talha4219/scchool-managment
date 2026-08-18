@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { getSession } from "@/app/actions/auth";
+import Link from "next/link";
+import { getSession, getOwnerViewBranchAction, setOwnerViewBranchAction } from "@/app/actions/auth";
+import { formatDayMonthPK } from "@/lib/date-format";
 import {
-  fetchBranchSummariesDB, fetchBranchComparisonDB, fetchOwnerAlertsDB,
+  fetchBranchesDB, fetchBranchSummariesDB, fetchBranchComparisonDB, fetchOwnerAlertsDB,
   fetchAttendanceTrendDB, fetchChronicAbsenteesDB, fetchFeeAgingDB,
   fetchStaffCoverageTodayDB, fetchAtRiskStudentsSummaryDB, fetchAtRiskStudentsListDB,
   fetchLowStockItemsDB,
@@ -27,6 +29,7 @@ import { Unauthorized } from "@/components/unauthorized";
 import {
   Building2, Users, GraduationCap, Wallet, CalendarCheck, Plus, Crown,
   AlertTriangle, AlertCircle, CheckCircle2, ArrowUpDown, Package, FileWarning,
+  ShieldCheck, KeyRound,
 } from "lucide-react";
 
 const RS = (n: number) => `Rs ${Math.round(n).toLocaleString()}`;
@@ -55,6 +58,12 @@ export default function OwnerDashboardPage() {
 
   const [sortKey, setSortKey] = useState<keyof BranchComparisonRow>("name");
   const [sortAsc, setSortAsc] = useState(true);
+
+  // The Owner's global "view branch as" selection lives in the main header
+  // (src/app/(dashboard)/layout.tsx) and scopes the rest of the app — this
+  // page's own content is always the full cross-branch comparison, so it
+  // only reads the active selection to show an informational banner.
+  const [viewingBranchName, setViewingBranchName] = useState<string | null>(null);
 
   const [atRiskDialogBranch, setAtRiskDialogBranch] = useState<{ id: string; name: string } | null>(null);
   const [atRiskList, setAtRiskList] = useState<AtRiskStudent[]>([]);
@@ -88,6 +97,23 @@ export default function OwnerDashboardPage() {
       else setLoading(false);
     });
   }, [load]);
+
+  useEffect(() => {
+    if (isOwner !== true) return;
+    getOwnerViewBranchAction().then(id => {
+      if (!id) { setViewingBranchName(null); return; }
+      fetchBranchesDB().then(list => setViewingBranchName(list.find(b => b.id === id)?.name ?? null));
+    });
+  }, [isOwner]);
+
+  // This page's own data is always the full cross-branch comparison
+  // (fetched via OWNER-only, unscoped functions) — clearing the selection
+  // only needs to update the banner here, not reload anything. The rest of
+  // the app picks up the cleared scope next time each page fetches.
+  const clearViewingBranch = async () => {
+    await setOwnerViewBranchAction(null);
+    setViewingBranchName(null);
+  };
 
   const handleCreate = async () => {
     if (!createForm.name) { toast({ title: "Branch name is required", variant: "destructive" }); return; }
@@ -167,9 +193,17 @@ export default function OwnerDashboardPage() {
           </h1>
           <p className="text-sm text-muted-foreground">Cross-branch overview across every campus.</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)} className="gap-2">
-          <Plus className="h-4 w-4" /> Add Branch
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" className="gap-2" asChild>
+            <Link href="/users"><ShieldCheck className="h-4 w-4" /> Users</Link>
+          </Button>
+          <Button variant="outline" className="gap-2" asChild>
+            <Link href="/permissions"><KeyRound className="h-4 w-4" /> Permissions</Link>
+          </Button>
+          <Button onClick={() => setCreateOpen(true)} className="gap-2">
+            <Plus className="h-4 w-4" /> Add Branch
+          </Button>
+        </div>
       </div>
 
       {loading ? (
@@ -178,6 +212,15 @@ export default function OwnerDashboardPage() {
         <p className="text-sm text-muted-foreground text-center py-12">No branches yet — add one to get started.</p>
       ) : (
         <>
+          {viewingBranchName && (
+            <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 px-4 py-2.5 text-sm">
+              <span className="text-foreground">
+                You're currently viewing the rest of the app as <span className="font-semibold">{viewingBranchName}</span> — the dashboard below still compares every campus.
+              </span>
+              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={clearViewingBranch}>Clear</Button>
+            </div>
+          )}
+
           {/* 1. Executive Snapshot */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             {[
@@ -295,7 +338,7 @@ export default function OwnerDashboardPage() {
                     {trend.map((t, i) => (
                       <div key={i} className="flex-1 flex flex-col items-center gap-1">
                         <div className="w-full bg-[#EFF6FF] rounded-t" style={{ height: `${Math.max(4, (t.ratePct ?? 0))}%` }} />
-                        <span className="text-[9px] text-muted-foreground">{t.date.slice(5)}</span>
+                        <span className="text-[9px] text-muted-foreground">{formatDayMonthPK(t.date)}</span>
                       </div>
                     ))}
                   </div>
@@ -426,6 +469,9 @@ export default function OwnerDashboardPage() {
                       {b.principalName ? "Reassign" : "Assign"}
                     </Button>
                   </div>
+                  <Button variant="outline" size="sm" className="w-full" asChild>
+                    <Link href={`/owner/branches/${b.id}`}>View Profile</Link>
+                  </Button>
                 </CardContent>
               </Card>
             ))}

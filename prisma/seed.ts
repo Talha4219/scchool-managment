@@ -462,6 +462,34 @@ async function main() {
     console.log("Exams seeded");
   }
 
+  // ── Teacher (staff) attendance ──
+  const teacherAttCount = await prisma.teacherAttendance.count({ where: { id: { startsWith: "tatt-" } } });
+  if (teacherAttCount === 0) {
+    const teachers = await prisma.user.findMany({ where: { role: "TEACHER" } });
+    const statusesArr: ("Present" | "Absent" | "Late" | "Leave")[] = ["Present", "Present", "Present", "Present", "Present", "Late", "Absent", "Leave"];
+    for (let ti = 0; ti < teachers.length; ti++) {
+      const t = teachers[ti];
+      for (let day = 1; day <= 25; day++) {
+        const date = `2026-04-${String(day).padStart(2, "0")}`;
+        const statusIdx = (ti * 5 + day * 3) % statusesArr.length;
+        const status = statusesArr[statusIdx];
+        await prisma.teacherAttendance.create({
+          data: {
+            id: `tatt-${t.id}-${day}`,
+            userId: t.id,
+            date,
+            status,
+            checkInTime: status !== "Absent" && status !== "Leave" ? new Date(`2026-04-${String(day).padStart(2, "0")}T${status === "Late" ? "08:35" : "07:55"}:00Z`) : undefined,
+            checkOutTime: status !== "Absent" && status !== "Leave" ? new Date(`2026-04-${String(day).padStart(2, "0")}T14:30:00Z`) : undefined,
+            source: "manual",
+            markedBy: "Admin User",
+          },
+        });
+      }
+    }
+    console.log("Teacher attendance seeded");
+  }
+
   const notifCount = await prisma.notification.count();
   if (notifCount === 0) {
     await prisma.notification.createMany({

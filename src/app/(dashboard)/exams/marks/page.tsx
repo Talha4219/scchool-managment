@@ -24,6 +24,7 @@ import {
 import type { AcademicYear, TermExam, ExamSubjectItem, MarksEntry, Enrollment, GradeScaleItem } from "@/lib/types";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 function computeGrade(percentage: number, gradeScale: GradeScaleItem[]): string {
   const sorted = [...gradeScale].sort((a, b) => b.minPercentage - a.minPercentage);
@@ -47,6 +48,7 @@ export default function MarksEntryPage() {
   const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
   const [marksEntries, setMarksEntries] = useState<MarksEntry[]>([]);
   const [marksInput, setMarksInput] = useState<Record<string, string>>({});
+  const [remarksInput, setRemarksInput] = useState<Record<string, string>>({});
   const [savingMarks, setSavingMarks] = useState(false);
   const [submittingMarks, setSubmittingMarks] = useState(false);
   const [gradeScale, setGradeScale] = useState<GradeScaleItem[]>([]);
@@ -85,8 +87,10 @@ export default function MarksEntryPage() {
       fetchMarksEntriesDB(selectedSubjectId).then(entries => {
         setMarksEntries(entries);
         const map: Record<string, string> = {};
-        entries.forEach(e => { map[e.studentId] = String(e.marksObtained); });
+        const remarksMap: Record<string, string> = {};
+        entries.forEach(e => { map[e.studentId] = String(e.marksObtained); remarksMap[e.studentId] = e.remarks || ""; });
         setMarksInput(map);
+        setRemarksInput(remarksMap);
       });
     }
   }, [selectedSubjectId]);
@@ -97,7 +101,7 @@ export default function MarksEntryPage() {
     for (const [studentId, marksStr] of Object.entries(marksInput)) {
       const marks = parseInt(marksStr);
       if (isNaN(marks)) continue;
-      await upsertMarksEntryDB({ examSubjectId: selectedSubjectId, studentId, marksObtained: marks });
+      await upsertMarksEntryDB({ examSubjectId: selectedSubjectId, studentId, marksObtained: marks, remarks: remarksInput[studentId] || undefined });
       count++;
     }
     const entries = await fetchMarksEntriesDB(selectedSubjectId);
@@ -118,7 +122,7 @@ export default function MarksEntryPage() {
   const totalMarks = currentSubject?.totalMarks || 100;
   const passingMarks = currentSubject?.passingMarks || 33;
 
-  if (!loaded) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Loading...</div>;
+  if (!loaded) return <PageSkeleton />;
   if (!can("exams.marks")) return <Unauthorized />;
 
   return (
@@ -220,6 +224,7 @@ export default function MarksEntryPage() {
                         <TableHead className="w-16">%</TableHead>
                         <TableHead className="w-16">Grade</TableHead>
                         <TableHead className="w-16">Result</TableHead>
+                        <TableHead>Remarks</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -259,11 +264,16 @@ export default function MarksEntryPage() {
                                 </span>
                               ) : <span className="text-slate-300">—</span>}
                             </TableCell>
+                            <TableCell>
+                              <Input className="h-8 text-sm" placeholder="Optional note"
+                                value={remarksInput[enr.studentId] || ""}
+                                onChange={e => setRemarksInput(prev => ({ ...prev, [enr.studentId]: e.target.value }))} />
+                            </TableCell>
                           </TableRow>
                         );
                       })}
                       {enrollments.length === 0 && (
-                        <TableRow><TableCell colSpan={7} className="text-center py-8 text-[#94A3B8]">No students enrolled</TableCell></TableRow>
+                        <TableRow><TableCell colSpan={8} className="text-center py-8 text-[#94A3B8]">No students enrolled</TableCell></TableRow>
                       )}
                     </TableBody>
                   </Table>

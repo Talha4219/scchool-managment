@@ -84,7 +84,7 @@ export default function AttendanceKioskPage() {
       <div className="text-center">
         <h1 className="text-2xl font-bold text-foreground">Attendance Kiosk</h1>
         <p className="text-muted-foreground mt-1 flex items-center justify-center gap-1.5">
-          <Radio className="h-3.5 w-3.5" /> Ready — scan a student ID card or badge
+          <Radio className="h-3.5 w-3.5" /> Ready — scan a card, or type a roll number
         </p>
       </div>
 
@@ -107,7 +107,7 @@ export default function AttendanceKioskPage() {
             value={value}
             onChange={e => setValue(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") handleSubmit(value); }}
-            placeholder="Or type card ID and press Enter"
+            placeholder="Or type your roll number and press Enter"
             className="flex-1 h-11 rounded-xl border border-border bg-card px-4 text-sm text-center font-mono focus:outline-none focus:ring-2 focus:ring-ring"
           />
           <Button onClick={() => handleSubmit(value)} disabled={busy}>Check In</Button>

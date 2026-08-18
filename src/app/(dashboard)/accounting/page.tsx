@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -40,12 +41,11 @@ function formatCurrency(n: number) {
 }
 
 function formatDate(d: string) {
-  if (!d) return "—";
-  // timeZone pinned to UTC: a date-only string like "2026-08-13" parses as UTC
-  // midnight, and formatting it in the runtime's local offset renders a
-  // different calendar day on the server (often UTC) than in the browser —
-  // a classic hydration mismatch. Pinning keeps server and client identical.
-  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
+  // formatDatePK reads YYYY-MM-DD strings via regex, never through
+  // `new Date()` + local getters — so it's inherently immune to the
+  // server/client timezone hydration mismatch that a UTC-pinned
+  // toLocaleDateString call was previously guarding against here.
+  return formatDatePK(d);
 }
 
 const entryTypeConfig = {

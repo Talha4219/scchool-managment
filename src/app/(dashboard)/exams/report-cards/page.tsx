@@ -21,6 +21,7 @@ import {
 } from "@/app/actions/academic-core";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 export default function ReportCardsPage() {
   const { can, loaded } = usePermission();
@@ -39,10 +40,9 @@ export default function ReportCardsPage() {
 
   useEffect(() => {
     (async () => {
-      const years = await fetchAcademicYearsDB();
+      const [years, cls] = await Promise.all([fetchAcademicYearsDB(), fetchClassesDB()]);
       const active = years.find(y => y.isActive) || years[0];
       if (active) setActiveYearId(active.id);
-      const cls = await fetchClassesDB();
       setClasses(cls.map(c => ({ id: c.id, name: c.name })));
     })();
   }, []);
@@ -112,7 +112,7 @@ export default function ReportCardsPage() {
 
   const filteredStudents = allStudents;
 
-  if (!loaded) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Loading...</div>;
+  if (!loaded) return <PageSkeleton />;
   if (!can("exams.report-cards")) return <Unauthorized />;
 
   return (

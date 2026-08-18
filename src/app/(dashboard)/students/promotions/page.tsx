@@ -8,6 +8,7 @@ import {
   type PromotionCandidate, type PromotionDecision, type BulkPromotionResult, type PromotionBatch,
 } from "@/app/actions/academic-core";
 import type { AcademicYear, ClassItem, SectionItem } from "@/lib/types";
+import { formatDatePK } from "@/lib/date-format";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
@@ -18,6 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { GraduationCap, ArrowRight, ChevronLeft, CheckCircle2, AlertTriangle, History } from "lucide-react";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 type Outcome = "promoted" | "retained" | "withdrawn";
 type Step = "setup" | "review" | "result";
@@ -141,7 +143,7 @@ export default function PromotionsPage() {
   const summary = { promoted: 0, retained: 0, withdrawn: 0 };
   Object.values(outcomes).forEach(o => { summary[o]++; });
 
-  if (!loaded) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Loading...</div>;
+  if (!loaded) return <PageSkeleton />;
   if (!can("students.edit")) return <Unauthorized />;
 
   return (
@@ -335,7 +337,7 @@ export default function PromotionsPage() {
             {history.map(b => (
               <div key={b.id} className="flex items-center justify-between rounded-xl bg-secondary/40 p-3 text-xs">
                 <div>
-                  <p className="font-semibold text-foreground">{b.isGraduating ? "Graduation batch" : "Promotion batch"} — {new Date(b.createdAt).toLocaleDateString()}</p>
+                  <p className="font-semibold text-foreground">{b.isGraduating ? "Graduation batch" : "Promotion batch"} — {formatDatePK(b.createdAt)}</p>
                   <p className="text-muted-foreground mt-0.5">By {b.promotedByName || "—"}</p>
                 </div>
                 <div className="flex gap-1.5">

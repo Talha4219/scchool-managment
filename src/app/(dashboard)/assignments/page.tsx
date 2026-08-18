@@ -101,7 +101,7 @@ export default function AssignmentsPage() {
       } else {
         setAssignments([]);
       }
-    } else if (sessionRole === "ADMIN") {
+    } else if (sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") {
       setAssignments(await fetchAssignmentsDB());
     }
     setLoading(false);

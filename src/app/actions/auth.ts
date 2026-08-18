@@ -14,8 +14,13 @@ import { isEmailConfigured, sendEmail } from "@/lib/email";
 let _authDbInitialized = false;
 async function ensureDbInit() {
   if (_authDbInitialized) return;
-  _authDbInitialized = true;
+  // Only mark done on success — flipping this before initializeDatabase()
+  // resolves meant a single transient failure (e.g. a DDL ordering bug)
+  // permanently skipped init for the rest of the process's life, so every
+  // request after the first kept failing with "column does not exist"
+  // instead of the schema ever getting a chance to finish creating itself.
   await initializeDatabase();
+  _authDbInitialized = true;
 }
 
 const SESSION_COOKIE = "sc_session";
@@ -259,16 +264,52 @@ export async function resetPasswordWithTokenAction(token: string, newPassword: s
 export async function logout() {
   const cookieStore = await cookies();
   cookieStore.delete(SESSION_COOKIE);
+  cookieStore.delete(OWNER_VIEW_BRANCH_COOKIE);
   redirect("/login");
 }
+
+const OWNER_VIEW_BRANCH_COOKIE = "sc_owner_view_branch";
 
 export async function getSession(): Promise<SessionPayload | null> {
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get(SESSION_COOKIE)?.value;
     if (!token) return null;
-    return await decrypt(token);
+    const session = await decrypt(token);
+    if (!session) return null;
+    // An OWNER viewing a specific branch (global header selector) gets that
+    // branch stamped onto branchId for the rest of this request — every
+    // scopeBranch() call site (src/lib/auth-scope.ts) then scopes OWNER
+    // exactly like any other role, with no per-call-site changes needed.
+    if (session.role === "OWNER") {
+      const viewBranchId = cookieStore.get(OWNER_VIEW_BRANCH_COOKIE)?.value;
+      if (viewBranchId) return { ...session, branchId: viewBranchId };
+    }
+    return session;
   } catch {
     return null;
   }
+}
+
+// Sets/clears the branch the Owner is currently "viewing as" — scopes every
+// branch-aware query (students, fees, HR, attendance, everything) to that
+// branch, app-wide, until cleared. OWNER-only; anyone else's selection is a
+// no-op since scopeBranch() only reads branchId specially for OWNER.
+export async function setOwnerViewBranchAction(branchId: string | null): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session || session.role !== "OWNER") return { error: "Only the school owner can switch branch view." };
+  const cookieStore = await cookies();
+  if (branchId) {
+    cookieStore.set(OWNER_VIEW_BRANCH_COOKIE, branchId, {
+      httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", path: "/",
+    });
+  } else {
+    cookieStore.delete(OWNER_VIEW_BRANCH_COOKIE);
+  }
+  return {};
+}
+
+export async function getOwnerViewBranchAction(): Promise<string | null> {
+  const cookieStore = await cookies();
+  return cookieStore.get(OWNER_VIEW_BRANCH_COOKIE)?.value ?? null;
 }

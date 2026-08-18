@@ -21,6 +21,7 @@ import type { AcademicYear, TermExam } from "@/lib/types";
 import type { ExamAnalytics } from "@/app/actions/academic-core";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 export default function AnalyticsPage() {
   const { can, loaded } = usePermission();  const { toast } = useToast();
@@ -55,7 +56,7 @@ export default function AnalyticsPage() {
     }
   }, [selectedExamId]);
 
-  if (!loaded) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Loading...</div>;
+  if (!loaded) return <PageSkeleton />;
   if (!can("exams.analytics")) return <Unauthorized />;
 
   return (

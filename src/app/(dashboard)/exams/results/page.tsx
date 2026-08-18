@@ -21,6 +21,7 @@ import type { AcademicYear, TermExam, GradeScaleItem } from "@/lib/types";
 import { downloadCSV } from "@/lib/csv-export";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 function computeGrade(percentage: number, gradeScale: GradeScaleItem[]): string {
   const sorted = [...gradeScale].sort((a, b) => b.minPercentage - a.minPercentage);
@@ -67,7 +68,7 @@ export default function ExamResultsPage() {
 
   useEffect(() => { loadResults(); }, [loadResults]);
 
-  if (!loaded) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Loading...</div>;
+  if (!loaded) return <PageSkeleton />;
   if (!can("exams.results")) return <Unauthorized />;
 
   return (

@@ -10,7 +10,7 @@ import { logServerError } from "@/lib/error-log";
 export type NotificationStatus = "QUEUED" | "PROCESSING" | "SENT" | "DELIVERED" | "READ" | "FAILED" | "CANCELLED";
 
 export async function createWhatsAppNotification(params: {
-  recipientType: "PARENT" | "TEACHER" | "STUDENT" | "ADMIN";
+  recipientType: "PARENT" | "TEACHER" | "STUDENT" | "ADMIN" | "PRINCIPAL";
   recipientId: string;
   notificationType: string;
   templateId?: string;

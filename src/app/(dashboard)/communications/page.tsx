@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useAppState } from "@/lib/state-context";
 import { useStudents } from "@/lib/students-context";
 import { useNotifications } from "@/lib/notifications-context";
 import { useAttendance } from "@/lib/attendance-context";
@@ -11,14 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sparkles, Send, Loader2, MessageSquare, User, Lock } from "lucide-react";
+import { Sparkles, Send, Loader2, MessageSquare, User } from "lucide-react";
 import { generateParentProgressReport } from "@/ai/flows/generate-parent-progress-report";
 import { useToast } from "@/hooks/use-toast";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
 
 export default function CommunicationsPage() {
-  const { activeRole } = useAppState();
   const { students } = useStudents();
   const { addNotification } = useNotifications();
   const { attendance } = useAttendance();
@@ -84,22 +82,8 @@ export default function CommunicationsPage() {
     });
   }, [selectedStudentId, students, attendance, exams]);
 
-  if (activeRole !== "ADMIN" && activeRole !== "TEACHER") {
-    if (!permsLoaded) return null;
-    if (!can("communications.view")) return <Unauthorized />;
-
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] max-w-md mx-auto text-center space-y-4">
-        <div className="p-4 bg-red-50 text-red-700 rounded-full">
-          <Lock className="h-10 w-10" />
-        </div>
-        <h2 className="text-2xl font-bold text-primary">Access Restricted</h2>
-        <p className="text-muted-foreground text-sm leading-relaxed">
-          AI Communications suite is only available to instructors and administrators.
-        </p>
-      </div>
-    );
-  }
+  if (!permsLoaded) return null;
+  if (!can("communications.view")) return <Unauthorized />;
 
   const handleGenerate = async () => {
     if (!studentDetails) return;

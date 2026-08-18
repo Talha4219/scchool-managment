@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useMemo, useRef, startTransition } from "react";
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback, startTransition } from "react";
 import {
   fetchDBState, updateSchoolInfoDB,
   addClassDB, updateClassDB, deleteClassDB, addSubjectDB,
@@ -51,6 +51,7 @@ export {
 
 interface StateContextType {
   isDbLoaded: boolean;
+  reloadDbData: () => Promise<void>;
   activeRole: UserRole;
   setActiveRole: (role: UserRole) => void;
   schoolInfo: SchoolInfo;
@@ -118,71 +119,75 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
   const { students, appendStudent, setStudentsFromDB } = useStudents();
 
   // ── Load from localStorage or DB ──────────────────────────────────────────────
-  useEffect(() => {
+  // Pulled out of the mount effect and exposed (as reloadDbData, below) so the
+  // Owner's global branch selector can force every branch-scoped array to
+  // re-fetch under the new scope without a full window reload.
+  const loadInitData = useCallback(async () => {
     if (typeof window === "undefined") return;
-    
-    const loadInitData = async () => {
-      try {
-        const dbState = await fetchDBState();
-        if (dbState) {
-          // Previously these only overwrote the hardcoded demo defaults when
-          // the DB array was non-empty, treating "successfully fetched, zero
-          // rows" the same as "fetch didn't run" — which meant a Principal
-          // whose branch legitimately has zero fee records (etc.) would see
-          // the ~480-row demo dataset instead of their real (empty) data.
-          // Once dbState exists at all, every array from it is authoritative,
-          // empty or not.
-          if (dbState.schoolInfo) setSchoolInfo(dbState.schoolInfo);
-          setStudentsFromDB(dbState.students);
-          setClasses(dbState.classes);
-          setSubjects(dbState.subjects);
-          setFeeCategories(dbState.feeCategories);
-          if (dbState.feeStructures) setFeeStructures(dbState.feeStructures);
-          setAcademicTerms(dbState.academicTerms);
-          setFeeRecords(dbState.feeRecords);
-          setAttendanceFromDB(dbState.attendance);
-          setExamsFromDB(dbState.exams);
-          setNotificationsFromDB(dbState.notifications);
-          if (dbState.applications) setApplications(dbState.applications);
+    try {
+      const dbState = await fetchDBState();
+      if (dbState) {
+        // Previously these only overwrote the hardcoded demo defaults when
+        // the DB array was non-empty, treating "successfully fetched, zero
+        // rows" the same as "fetch didn't run" — which meant a Principal
+        // whose branch legitimately has zero fee records (etc.) would see
+        // the ~480-row demo dataset instead of their real (empty) data.
+        // Once dbState exists at all, every array from it is authoritative,
+        // empty or not.
+        if (dbState.schoolInfo) setSchoolInfo(dbState.schoolInfo);
+        setStudentsFromDB(dbState.students);
+        setClasses(dbState.classes);
+        setSubjects(dbState.subjects);
+        setFeeCategories(dbState.feeCategories);
+        if (dbState.feeStructures) setFeeStructures(dbState.feeStructures);
+        setAcademicTerms(dbState.academicTerms);
+        setFeeRecords(dbState.feeRecords);
+        setAttendanceFromDB(dbState.attendance);
+        setExamsFromDB(dbState.exams);
+        setNotificationsFromDB(dbState.notifications);
+        if (dbState.applications) setApplications(dbState.applications);
 
-          const storedRole = localStorage.getItem("sc_activeRole");
-          if (storedRole) setActiveRole(storedRole as UserRole);
+        const storedRole = localStorage.getItem("sc_activeRole");
+        if (storedRole) setActiveRole(storedRole as UserRole);
 
-          setIsLoaded(true);
-          return;
-        }
-      } catch (err) {
-        console.error("DB load failed, falling back to local storage", err);
+        setIsLoaded(true);
+        return;
       }
+    } catch (err) {
+      console.error("DB load failed, falling back to local storage", err);
+    }
 
-      // Fallback
-      const load = (key: string) => {
-        const v = localStorage.getItem(key);
-        return v ? JSON.parse(v) : null;
-      };
-
-      const storedRole    = localStorage.getItem("sc_activeRole");
-      const storedSchool  = load("sc_schoolInfo");
-      const storedClasses        = load("sc_classes");
-      const storedSubjects       = load("sc_subjects");
-      const storedFeeCategories  = load("sc_feeCategories");
-      const storedFeeStructures  = load("sc_feeStructures");
-      const storedAcademicTerms  = load("sc_academicTerms");
-      const storedFees           = load("sc_feeRecords");
-
-      if (storedRole)           setActiveRole(storedRole as UserRole);
-      if (storedSchool)         setSchoolInfo(storedSchool);
-      if (storedClasses)        setClasses(storedClasses);
-      if (storedSubjects)       setSubjects(storedSubjects);
-      if (storedFeeCategories)  setFeeCategories(storedFeeCategories);
-      if (storedFeeStructures)  setFeeStructures(storedFeeStructures);
-      if (storedAcademicTerms)  setAcademicTerms(storedAcademicTerms);
-      if (storedFees)           setFeeRecords(storedFees);
-
-      setIsLoaded(true);
+    // Fallback
+    const load = (key: string) => {
+      const v = localStorage.getItem(key);
+      return v ? JSON.parse(v) : null;
     };
-    loadInitData();
+
+    const storedRole    = localStorage.getItem("sc_activeRole");
+    const storedSchool  = load("sc_schoolInfo");
+    const storedClasses        = load("sc_classes");
+    const storedSubjects       = load("sc_subjects");
+    const storedFeeCategories  = load("sc_feeCategories");
+    const storedFeeStructures  = load("sc_feeStructures");
+    const storedAcademicTerms  = load("sc_academicTerms");
+    const storedFees           = load("sc_feeRecords");
+
+    if (storedRole)           setActiveRole(storedRole as UserRole);
+    if (storedSchool)         setSchoolInfo(storedSchool);
+    if (storedClasses)        setClasses(storedClasses);
+    if (storedSubjects)       setSubjects(storedSubjects);
+    if (storedFeeCategories)  setFeeCategories(storedFeeCategories);
+    if (storedFeeStructures)  setFeeStructures(storedFeeStructures);
+    if (storedAcademicTerms)  setAcademicTerms(storedAcademicTerms);
+    if (storedFees)           setFeeRecords(storedFees);
+
+    setIsLoaded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    loadInitData();
+  }, [loadInitData]);
 
   // ── Save to localStorage ────────────────────────────────────────────────
   // This is only an offline fallback cache (the DB via syncDB is the source of
@@ -513,10 +518,11 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
     feeRecords, generateFeeVouchers, payFeeVoucher, applyDiscount, recordPartialPayment, sendFeeReminders,
     updateFeePayment, regenerateVoucher,
     applications, approveApplication, rejectApplication, setApplicationUnderReview,
+    reloadDbData: loadInitData,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [
     isLoaded, activeRole, schoolInfo, classes, subjects, feeCategories,
-    feeStructures, academicTerms, feeRecords, applications,
+    feeStructures, academicTerms, feeRecords, applications, loadInitData,
   ]);
 
   return (

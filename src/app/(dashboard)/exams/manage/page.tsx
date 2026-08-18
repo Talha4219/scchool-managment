@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAppState } from "@/lib/state-context";
@@ -11,17 +11,35 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, PenSquare, GraduationCap, ArrowLeft } from "lucide-react";
+import { Plus, PenSquare, GraduationCap, ArrowLeft, MoreVertical, Trash2, Search, CircleDot, CheckCircle2 } from "lucide-react";
 import { motion } from "framer-motion";
 import {
   fetchAcademicYearsDB, fetchClassesDB, fetchSectionsByClassDB,
   fetchTermExamsDB, createTermExamDB, updateTermExamDB, updateTermExamStatusDB, deleteTermExamDB,
   fetchExamSubjectsDB, addExamSubjectDB, deleteExamSubjectDB,
+  fetchExamSchedulesDB,
 } from "@/app/actions/academic-core";
 import type { AcademicYear, ClassItem, SectionItem, TermExam, ExamSubjectItem } from "@/lib/types";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
+import { DatesheetCard } from "../datesheet-card";
+
+const EXAM_TYPES = [
+  { value: "MidTerm", label: "Mid Term" },
+  { value: "Final", label: "Final" },
+  { value: "Monthly", label: "Monthly Test" },
+  { value: "Quiz", label: "Quiz" },
+];
+
+const STATUS_STYLES: Record<string, string> = {
+  Scheduled: "bg-slate-100 text-slate-600",
+  Ongoing: "bg-blue-100 text-blue-700",
+  Completed: "bg-emerald-100 text-emerald-700",
+  Published: "bg-purple-100 text-purple-700",
+};
 
 export default function ManageExamsPage() {
   const { can, loaded } = usePermission();
@@ -37,21 +55,20 @@ export default function ManageExamsPage() {
   const [exams, setExams] = useState<TermExam[]>([]);
   const [selectedExamId, setSelectedExamId] = useState(initialExamId);
   const [examSubjects, setExamSubjects] = useState<ExamSubjectItem[]>([]);
+  const [examSearch, setExamSearch] = useState("");
 
   const [createExamOpen, setCreateExamOpen] = useState(false);
-  const [addSubjectOpen, setAddSubjectOpen] = useState(false);
   const [editExamOpen, setEditExamOpen] = useState(false);
   const [deleteExamTarget, setDeleteExamTarget] = useState<TermExam | null>(null);
   const [deleteSubjectTarget, setDeleteSubjectTarget] = useState<{ id: string; subjectName: string } | null>(null);
 
   const [newExam, setNewExam] = useState({ name: "", examType: "MidTerm", classId: "", sectionId: "", startDate: "", endDate: "" });
-  const [newExamSubject, setNewExamSubject] = useState({ subjectId: "", totalMarks: "100", passingMarks: "33" });
+  // Inline "add a row" form, same pattern as the Datesheet grid below — no
+  // modal to open, no context switch, just pick a subject and hit Enter.
+  const [subjectForm, setSubjectForm] = useState({ subjectId: "", totalMarks: "100", passingMarks: "33" });
+  const [addingSubject, setAddingSubject] = useState(false);
   const [editExam, setEditExam] = useState({ id: "", name: "", examType: "MidTerm", classId: "", sectionId: "", startDate: "", endDate: "" });
-
-  const examTypeColors: Record<string, string> = {
-    MidTerm: "bg-blue-100 text-blue-700", Final: "bg-purple-100 text-purple-700",
-    Monthly: "bg-green-100 text-green-700", Quiz: "bg-yellow-100 text-yellow-700",
-  };
+  const [datesheet, setDatesheet] = useState<Awaited<ReturnType<typeof fetchExamSchedulesDB>>>([]);
 
   const loadContext = useCallback(async () => {
     const years = await fetchAcademicYearsDB();
@@ -76,10 +93,33 @@ export default function ManageExamsPage() {
   useEffect(() => {
     if (selectedExamId) {
       fetchExamSubjectsDB(selectedExamId).then(setExamSubjects);
+      fetchExamSchedulesDB(selectedExamId).then(setDatesheet);
       const exam = exams.find(e => e.id === selectedExamId);
       if (exam) fetchSectionsByClassDB(exam.classId).then(setSections);
+    } else {
+      setExamSubjects([]);
+      setDatesheet([]);
     }
   }, [selectedExamId, exams]);
+
+  // First exam loaded, or the very first one created, becomes the selection
+  // automatically — landing on this page should never show an empty detail
+  // pane when there's clearly something to look at.
+  useEffect(() => {
+    if (!selectedExamId && exams.length > 0) setSelectedExamId(exams[0].id);
+  }, [exams, selectedExamId]);
+
+  const selectedExam = exams.find(e => e.id === selectedExamId) || null;
+  const availableSubjects = useMemo(
+    () => subjects.filter(s => !examSubjects.some(es => es.subjectId === s.id)),
+    [subjects, examSubjects]
+  );
+  const totalMarksSum = examSubjects.reduce((sum, es) => sum + (es.totalMarks || 0), 0);
+  const scheduledSubjectCount = new Set(datesheet.map(d => d.subjectId)).size;
+
+  const filteredExams = examSearch.trim()
+    ? exams.filter(e => (e.name + " " + e.examType + " " + (e.className || "")).toLowerCase().includes(examSearch.trim().toLowerCase()))
+    : exams;
 
   const handleCreateExam = async () => {
     if (!newExam.name || !newExam.classId || !newExam.startDate || !newExam.endDate) {
@@ -89,26 +129,30 @@ export default function ManageExamsPage() {
     if (exam) {
       setCreateExamOpen(false);
       setNewExam({ name: "", examType: "MidTerm", classId: "", sectionId: "", startDate: "", endDate: "" });
-      loadExams();
+      await loadExams();
       setSelectedExamId(exam.id);
-      toast({ title: "Exam created" });
+      toast({ title: "Exam created — add its subjects below" });
+    } else {
+      toast({ title: "Failed to create exam", variant: "destructive" });
     }
   };
 
   const handleAddSubject = async () => {
-    if (!newExamSubject.subjectId || !newExamSubject.totalMarks) {
-      toast({ title: "Fill all fields", variant: "destructive" }); return;
+    if (!selectedExamId || !subjectForm.subjectId || !subjectForm.totalMarks) {
+      toast({ title: "Pick a subject", variant: "destructive" }); return;
     }
+    setAddingSubject(true);
     await addExamSubjectDB({
       examId: selectedExamId,
-      subjectId: newExamSubject.subjectId,
-      totalMarks: parseInt(newExamSubject.totalMarks),
-      passingMarks: parseInt(newExamSubject.passingMarks),
+      subjectId: subjectForm.subjectId,
+      totalMarks: parseInt(subjectForm.totalMarks),
+      passingMarks: parseInt(subjectForm.passingMarks),
     });
-    setAddSubjectOpen(false);
-    setNewExamSubject({ subjectId: "", totalMarks: "100", passingMarks: "33" });
-    const subs = await fetchExamSubjectsDB(selectedExamId);
-    setExamSubjects(subs);
+    setExamSubjects(await fetchExamSubjectsDB(selectedExamId));
+    setAddingSubject(false);
+    // Reset to the next unused subject so repeated Enter presses walk
+    // straight down the subject list.
+    setSubjectForm({ subjectId: "", totalMarks: "100", passingMarks: "33" });
     toast({ title: "Subject added" });
   };
 
@@ -135,25 +179,24 @@ export default function ManageExamsPage() {
   };
 
   const confirmDeleteSubject = async () => {
-    if (!deleteSubjectTarget) return;
+    if (!deleteSubjectTarget || !selectedExamId) return;
     await deleteExamSubjectDB(deleteSubjectTarget.id);
-    const subs = await fetchExamSubjectsDB(selectedExamId);
-    setExamSubjects(subs);
+    setExamSubjects(await fetchExamSubjectsDB(selectedExamId));
     setDeleteSubjectTarget(null);
     toast({ title: "Subject removed" });
   };
 
-  if (!loaded) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Loading...</div>;
+  if (!loaded) return <PageSkeleton />;
   if (!can("exams.manage")) return <Unauthorized />;
 
   return (
     <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <Link href="/exams" className="p-2 hover:bg-slate-100 rounded-lg transition"><ArrowLeft className="h-4 w-4" /></Link>
           <div>
             <h1 className="text-2xl font-semibold text-[#0F172A]">Manage Exams</h1>
-            <p className="text-sm text-[#64748B] mt-1">Create, edit and manage exams and their subjects</p>
+            <p className="text-sm text-[#64748B] mt-1">Create an exam, add its subjects, then set the datesheet</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -166,79 +209,165 @@ export default function ManageExamsPage() {
       </div>
 
       {exams.length === 0 ? (
-        <div className="text-center py-12 text-[#94A3B8]">
+        <div className="text-center py-16 text-[#94A3B8] border border-dashed border-[#E5E7EB] rounded-xl">
           <GraduationCap className="h-12 w-12 mx-auto mb-3 opacity-50" />
-          <p>No exams yet. Create one to get started.</p>
+          <p className="mb-3">No exams yet for this year.</p>
+          <Button size="sm" onClick={() => setCreateExamOpen(true)}><Plus className="h-4 w-4 mr-1" /> Create your first exam</Button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {exams.map(exam => (
-            <Card key={exam.id} className={`border-[#E5E7EB] cursor-pointer transition-colors ${selectedExamId === exam.id ? 'ring-2 ring-[#2563EB]' : ''}`}
-              onClick={() => setSelectedExamId(exam.id)}>
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <Badge className={examTypeColors[exam.examType] || ""}>{exam.examType}</Badge>
-                    <span className="font-medium">{exam.name}</span>
-                  </div>
-                  <Badge>{exam.status}</Badge>
-                </div>
-                <div className="text-xs text-[#64748B] space-y-1">
-                  <p>Class: {exam.className} {exam.sectionName ? `/ ${exam.sectionName}` : ""}</p>
-                  <p>{exam.startDate} → {exam.endDate}</p>
-                </div>
-                {selectedExamId === exam.id && (
-                  <div className="flex gap-1 mt-3 pt-3 border-t border-[#E5E7EB]">
-                    <Button size="sm" variant="outline" className="text-xs h-7"
-                      onClick={(e) => { e.stopPropagation(); fetchSectionsByClassDB(exam.classId).then(setSections); setEditExam({ id: exam.id, name: exam.name, examType: exam.examType, classId: exam.classId, sectionId: exam.sectionId || "", startDate: exam.startDate, endDate: exam.endDate }); setEditExamOpen(true); }}>
-                      <PenSquare className="h-3 w-3 mr-1" /> Edit
-                    </Button>
-                    <Button size="sm" variant="outline" className="text-xs h-7"
-                      onClick={async (e) => { e.stopPropagation(); await updateTermExamStatusDB(exam.id, "Ongoing"); loadExams(); }}>
-                      Mark Ongoing
-                    </Button>
-                    <Button size="sm" variant="outline" className="text-xs h-7"
-                      onClick={async (e) => { e.stopPropagation(); await updateTermExamStatusDB(exam.id, "Completed"); loadExams(); }}>
-                      Mark Completed
-                    </Button>
-                    <Button size="sm" variant="outline" className="text-xs h-7 text-red-500"
-                      onClick={(e) => { e.stopPropagation(); setDeleteExamTarget(exam); }}>
-                      Delete
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      {selectedExamId && (
-        <Card className="border-[#E5E7EB]">
-          <CardHeader className="pb-2 flex-row items-center justify-between">
-            <h3 className="font-medium text-sm">Subjects in this Exam</h3>
-            <Button size="sm" variant="outline" className="text-xs h-8" onClick={() => setAddSubjectOpen(true)}>
-              <Plus className="h-3.5 w-3.5 mr-1" /> Add Subject
-            </Button>
-          </CardHeader>
-          <CardContent>
-            {examSubjects.length === 0 ? (
-              <p className="text-sm text-[#94A3B8] text-center py-4">No subjects added yet</p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {examSubjects.map(es => (
-                  <Badge key={es.id} variant="outline" className="flex items-center gap-1 py-1.5">
-                    {es.subjectName}
-                    <span className="text-[#94A3B8]">({es.totalMarks} marks)</span>
-                    {es.teacherName && <span className="text-[#94A3B8]">—{es.teacherName}</span>}
-                    <button onClick={() => setDeleteSubjectTarget({ id: es.id, subjectName: es.subjectName || "this subject" })}
-                      className="ml-1 hover:text-red-500">×</button>
-                  </Badge>
-                ))}
+        <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-5 items-start">
+          {/* Exam list — compact rows, one click to select, no buried actions */}
+          <Card className="border-[#E5E7EB] lg:sticky lg:top-4">
+            <CardHeader className="pb-2">
+              <div className="relative">
+                <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#94A3B8]" />
+                <Input value={examSearch} onChange={e => setExamSearch(e.target.value)} placeholder="Search exams..." className="h-8 pl-8 text-sm" />
               </div>
+            </CardHeader>
+            <CardContent className="p-2 space-y-1 max-h-[70vh] overflow-y-auto">
+              {filteredExams.length === 0 && <p className="text-xs text-[#94A3B8] text-center py-4">No matches</p>}
+              {filteredExams.map(exam => (
+                <button
+                  key={exam.id}
+                  onClick={() => setSelectedExamId(exam.id)}
+                  className={`w-full text-left rounded-lg p-2.5 transition-colors border ${
+                    selectedExamId === exam.id ? "bg-[#EFF6FF] border-[#BFDBFE]" : "border-transparent hover:bg-[#F8FAFC]"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-sm truncate">{exam.name}</span>
+                    <Badge className={`${STATUS_STYLES[exam.status] || ""} text-[10px] shrink-0`}>{exam.status}</Badge>
+                  </div>
+                  <div className="text-[11px] text-[#94A3B8] mt-0.5 flex items-center gap-1.5">
+                    <span>{exam.examType}</span>·<span>{exam.className}{exam.sectionName ? ` / ${exam.sectionName}` : ""}</span>
+                  </div>
+                </button>
+              ))}
+            </CardContent>
+          </Card>
+
+          {/* Detail pane for the selected exam */}
+          <div className="space-y-5 min-w-0">
+            {selectedExam && (
+              <>
+                <Card className="border-[#E5E7EB]">
+                  <CardContent className="p-4 flex items-start justify-between gap-3 flex-wrap">
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h2 className="text-lg font-semibold text-[#0F172A]">{selectedExam.name}</h2>
+                        <Badge className={STATUS_STYLES[selectedExam.status] || ""}>{selectedExam.status}</Badge>
+                      </div>
+                      <p className="text-sm text-[#64748B] mt-1">
+                        {selectedExam.examType} · {selectedExam.className}{selectedExam.sectionName ? ` / ${selectedExam.sectionName}` : " / All sections"} · {selectedExam.startDate} → {selectedExam.endDate}
+                      </p>
+                      <p className="text-xs text-[#94A3B8] mt-1.5">
+                        {examSubjects.length} subject{examSubjects.length === 1 ? "" : "s"} · {totalMarksSum} total marks · {scheduledSubjectCount}/{examSubjects.length} scheduled
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button size="sm" variant="outline" className="text-xs h-8"
+                        onClick={() => { fetchSectionsByClassDB(selectedExam.classId).then(setSections); setEditExam({ id: selectedExam.id, name: selectedExam.name, examType: selectedExam.examType, classId: selectedExam.classId, sectionId: selectedExam.sectionId || "", startDate: selectedExam.startDate, endDate: selectedExam.endDate }); setEditExamOpen(true); }}>
+                        <PenSquare className="h-3.5 w-3.5 mr-1" /> Edit
+                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button size="sm" variant="outline" className="h-8 w-8 p-0"><MoreVertical className="h-4 w-4" /></Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => updateTermExamStatusDB(selectedExam.id, "Ongoing").then(loadExams)}>
+                            <CircleDot className="h-3.5 w-3.5 mr-2" /> Mark Ongoing
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => updateTermExamStatusDB(selectedExam.id, "Completed").then(loadExams)}>
+                            <CheckCircle2 className="h-3.5 w-3.5 mr-2" /> Mark Completed
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem className="text-red-500 focus:text-red-500" onClick={() => setDeleteExamTarget(selectedExam)}>
+                            <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Exam
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-[#E5E7EB]">
+                  <CardHeader className="pb-2">
+                    <h3 className="font-medium text-sm">Subjects</h3>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    {examSubjects.length === 0 && (
+                      <p className="text-sm text-[#94A3B8] text-center py-4">No subjects yet — add the first one below.</p>
+                    )}
+                    {examSubjects.length > 0 && (
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b bg-[#F8FAFC]">
+                            <th className="p-2.5 text-left text-xs font-semibold text-[#64748B]">Subject</th>
+                            <th className="p-2.5 text-left text-xs font-semibold text-[#64748B] w-28">Total Marks</th>
+                            <th className="p-2.5 text-left text-xs font-semibold text-[#64748B] w-28">Passing</th>
+                            <th className="p-2.5 text-left text-xs font-semibold text-[#64748B]">Teacher</th>
+                            <th className="p-2.5 w-10"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {examSubjects.map(es => (
+                            <tr key={es.id} className="border-b last:border-b-0 hover:bg-[#FAFBFC] group">
+                              <td className="p-2.5 font-medium">{es.subjectName}</td>
+                              <td className="p-2.5 text-[#64748B]">{es.totalMarks}</td>
+                              <td className="p-2.5 text-[#64748B]">{es.passingMarks}</td>
+                              <td className="p-2.5 text-[#94A3B8]">{es.teacherName || "—"}</td>
+                              <td className="p-2.5">
+                                <button
+                                  onClick={() => setDeleteSubjectTarget({ id: es.id, subjectName: es.subjectName || "this subject" })}
+                                  className="p-1 rounded hover:bg-[#FEE2E2] opacity-0 group-hover:opacity-100 transition-opacity"
+                                  title="Remove"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    {/* Inline add row — pick a subject, hit Enter, it's added
+                        and ready for the next one, no dialog in the way. */}
+                    <div className="p-3 border-t flex flex-wrap items-end gap-2 bg-[#FAFBFC]">
+                      <div className="flex-1 min-w-[160px] space-y-1">
+                        <Label className="text-xs">Subject</Label>
+                        <Select value={subjectForm.subjectId} onValueChange={v => setSubjectForm(f => ({ ...f, subjectId: v }))}>
+                          <SelectTrigger className="h-9"><SelectValue placeholder={availableSubjects.length === 0 ? "All subjects added" : "Select subject"} /></SelectTrigger>
+                          <SelectContent>{availableSubjects.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+                        </Select>
+                      </div>
+                      <div className="w-24 space-y-1">
+                        <Label className="text-xs">Total</Label>
+                        <Input type="number" className="h-9" value={subjectForm.totalMarks} onChange={e => setSubjectForm(f => ({ ...f, totalMarks: e.target.value }))} />
+                      </div>
+                      <div className="w-24 space-y-1">
+                        <Label className="text-xs">Passing</Label>
+                        <Input type="number" className="h-9" value={subjectForm.passingMarks} onChange={e => setSubjectForm(f => ({ ...f, passingMarks: e.target.value }))} />
+                      </div>
+                      <Button size="sm" className="h-9" disabled={!subjectForm.subjectId || addingSubject} onClick={handleAddSubject}>
+                        <Plus className="h-3.5 w-3.5 mr-1" /> {addingSubject ? "Adding..." : "Add"}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {examSubjects.length > 0 && (
+                  <DatesheetCard
+                    exam={selectedExam}
+                    examSubjects={examSubjects}
+                    sections={sections}
+                    datesheet={datesheet}
+                    onDatesheetChange={setDatesheet}
+                  />
+                )}
+              </>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       )}
 
       {/* Dialogs */}
@@ -250,16 +379,11 @@ export default function ManageExamsPage() {
             <div><Label>Type</Label>
               <Select value={newExam.examType} onValueChange={v => setNewExam({ ...newExam, examType: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="MidTerm">Mid Term</SelectItem>
-                  <SelectItem value="Final">Final</SelectItem>
-                  <SelectItem value="Monthly">Monthly Test</SelectItem>
-                  <SelectItem value="Quiz">Quiz</SelectItem>
-                </SelectContent>
+                <SelectContent>{EXAM_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div><Label>Class</Label>
-              <Select value={newExam.classId} onValueChange={v => setNewExam({ ...newExam, classId: v })}>
+              <Select value={newExam.classId} onValueChange={v => { setNewExam({ ...newExam, classId: v, sectionId: "" }); fetchSectionsByClassDB(v).then(setSections); }}>
                 <SelectTrigger><SelectValue placeholder="Select class" /></SelectTrigger>
                 <SelectContent>{classes.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
               </Select>
@@ -278,26 +402,10 @@ export default function ManageExamsPage() {
               <div><Label>End Date</Label><Input type="date" value={newExam.endDate} onChange={e => setNewExam({ ...newExam, endDate: e.target.value })} /></div>
             </div>
           </div>
-          <DialogFooter><Button onClick={handleCreateExam}>Create</Button></DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={addSubjectOpen} onOpenChange={setAddSubjectOpen}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Add Subject to Exam</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div><Label>Subject</Label>
-              <Select value={newExamSubject.subjectId} onValueChange={v => setNewExamSubject({ ...newExamSubject, subjectId: v })}>
-                <SelectTrigger><SelectValue placeholder="Select subject" /></SelectTrigger>
-                <SelectContent>{subjects.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div><Label>Total Marks</Label><Input type="number" value={newExamSubject.totalMarks} onChange={e => setNewExamSubject({ ...newExamSubject, totalMarks: e.target.value })} /></div>
-              <div><Label>Passing Marks</Label><Input type="number" value={newExamSubject.passingMarks} onChange={e => setNewExamSubject({ ...newExamSubject, passingMarks: e.target.value })} /></div>
-            </div>
-          </div>
-          <DialogFooter><Button onClick={handleAddSubject}>Add</Button></DialogFooter>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateExamOpen(false)}>Cancel</Button>
+            <Button onClick={handleCreateExam}>Create</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -309,12 +417,7 @@ export default function ManageExamsPage() {
             <div><Label>Type</Label>
               <Select value={editExam.examType} onValueChange={v => setEditExam({ ...editExam, examType: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="MidTerm">Mid Term</SelectItem>
-                  <SelectItem value="Final">Final</SelectItem>
-                  <SelectItem value="Monthly">Monthly Test</SelectItem>
-                  <SelectItem value="Quiz">Quiz</SelectItem>
-                </SelectContent>
+                <SelectContent>{EXAM_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div><Label>Class</Label>

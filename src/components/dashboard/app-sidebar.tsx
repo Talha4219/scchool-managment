@@ -34,7 +34,7 @@ type NavItem = {
   label: string;
   href: string;
   badge?: number;
-  children?: { label: string; href: string; permission?: string }[];
+  children?: { label: string; href: string; permission?: string; hideForRoles?: string[] }[];
   permission?: string;
   // OWNER-only nav items (e.g. cross-branch management) bypass the
   // permission-string gate entirely and instead check session role directly,
@@ -79,8 +79,12 @@ const navItems: NavItem[] = [
       { label: "Analytics", href: "/exams/analytics", permission: "exams.analytics" },
       { label: "Online Exams", href: "/exams/online", permission: "exams.online" },
       { label: "Book Library & AI Questions", href: "/exams/books", permission: "exams.books" },
-      { label: "My Results", href: "/results", permission: "results.view" },
-      { label: "Settings", href: "/exams/settings", permission: "exams.settings" },
+      // Hidden for Admin/Principal/Owner — they already have "Results" above
+      // (/exams/results, the real management page); /results itself just
+      // redirects them back to /exams/* for those roles, so showing both
+      // here is pure duplication. Teachers/students/parents still need this
+      // one for their own self-service results view.
+      { label: "My Results", href: "/results", permission: "results.view", hideForRoles: ["ADMIN", "PRINCIPAL", "OWNER"] },
     ],
     permission: "exams.view",
   },
@@ -184,8 +188,10 @@ export function AppSidebar() {
 
   const hasPermission = useCallback((perm?: string) => {
     if (!perm) return true;
-    // A custom role narrows an ADMIN's/PRINCIPAL's automatic bypass too — see usePermission().
-    if ((sessionRole === "ADMIN" || sessionRole === "PRINCIPAL") && !customRoleId) return true;
+    // A custom role narrows an ADMIN's/PRINCIPAL's/OWNER's automatic bypass
+    // too — see usePermission(). OWNER included so the sidebar doesn't
+    // collapse to just Dashboard + Branches for the Owner role.
+    if ((sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") && !customRoleId) return true;
     return permissions[perm] === true;
   }, [permissions, sessionRole, customRoleId]);
 
@@ -228,7 +234,7 @@ export function AppSidebar() {
     if (match(item.label, item.href)) results.push({ icon: item.icon, label: item.label, href: item.href });
     if (item.children) {
       for (const child of item.children) {
-        if (hasPermission(child.permission) && match(child.label, child.href)) results.push({ icon: item.icon, label: child.label, href: child.href });
+        if (hasPermission(child.permission) && !child.hideForRoles?.includes(sessionRole || activeRole) && match(child.label, child.href)) results.push({ icon: item.icon, label: child.label, href: child.href });
       }
     }
     return results;
@@ -386,7 +392,7 @@ export function AppSidebar() {
                             className="overflow-hidden"
                           >
                             <div className="ml-6 mt-0.5 space-y-0.5 border-l-2 border-border pl-2">
-                              {item.children!.filter(child => hasPermission(child.permission)).map(child => {
+                              {item.children!.filter(child => hasPermission(child.permission) && !child.hideForRoles?.includes(displayRole)).map(child => {
                                 const [childPath, childQuery] = child.href.split("?");
                                 const childActive = childQuery
                                   ? pathname === childPath && searchParams.toString() === childQuery.replace("?", "")
@@ -494,9 +500,11 @@ export function AppSidebar() {
                   className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors">
                   {darkMode ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
                 </button>
-                <Link href="/settings" className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors">
-                  <Settings className="h-3.5 w-3.5" />
-                </Link>
+                {hasPermission("settings.view") && (
+                  <Link href="/settings" className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors">
+                    <Settings className="h-3.5 w-3.5" />
+                  </Link>
+                )}
                 <button onClick={() => logout()}
                   className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors">
                   <LogOut className="h-3.5 w-3.5" />

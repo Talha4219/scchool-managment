@@ -26,5 +26,10 @@ export interface MessageStatus {
 
 export interface NotificationProvider {
   sendTemplateMessage(input: TemplateMessageInput): Promise<SendResult>;
+  /** Free-form text — no Meta template approval needed, but Meta only allows
+   *  this within the 24h customer-service window after the recipient last
+   *  messaged the business number. Outside that window Meta rejects it and
+   *  a template send is required instead. */
+  sendTextMessage(to: string, body: string): Promise<SendResult>;
   getMessageStatus(messageId: string): Promise<MessageStatus>;
 }

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
 import { useStudents } from "@/lib/students-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -75,7 +76,7 @@ export default function TransportPage() {
   const routeVehicles = selectedRouteId ? vehicles : [];
   const routeAllocations = selectedRouteId ? allocations : [];
 
-  const formatDate = (d?: string) => d ? new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" }) : "\u2014";
+  const formatDate = (d?: string) => formatDatePK(d);
 
   const openAddRoute = () => {
     setEditingRoute(null);

@@ -28,6 +28,7 @@ import { isValidTimeRange } from "@/lib/validation";
 import { Plus, Trash2, UploadCloud, AlertTriangle, ShieldAlert, Settings, Copy, ArrowUp, ArrowDown, Repeat, Users } from "lucide-react";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 import type { AcademicYear, ClassItem, SectionItem } from "@/lib/types";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
@@ -119,7 +120,7 @@ export default function TimetablePage() {
     setLoading(true);
     let data: TimetableEntry[] = [];
 
-    if (sessionRole === "ADMIN") {
+    if ((sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER")) {
       if (classId && sectionId && activeYearId) {
         data = await fetchTimetableDB(undefined, undefined, { classId, sectionId, academicYearId: activeYearId, status: "all" });
       }
@@ -351,7 +352,7 @@ export default function TimetablePage() {
   });
   const hasDraft = entries.some(e => e.status === "draft");
 
-  if (!loaded) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Loading...</div>;
+  if (!loaded) return <PageSkeleton />;
   if (!can("timetable.view")) return <Unauthorized />;
 
   return (
@@ -360,10 +361,10 @@ export default function TimetablePage() {
         <div>
           <h1 className="text-3xl font-bold text-primary font-headline">Timetable</h1>
           <p className="text-muted-foreground mt-1">
-            {sessionRole === "ADMIN" ? "Build and publish each section's weekly schedule" : "Weekly class schedule"}
+            {(sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") ? "Build and publish each section's weekly schedule" : "Weekly class schedule"}
           </p>
         </div>
-        {sessionRole === "ADMIN" && (
+        {(sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") && (
           <div className="flex gap-2 items-center flex-wrap">
             <Select value={activeYearId} onValueChange={setActiveYearId}>
               <SelectTrigger className="w-36"><SelectValue placeholder="Year" /></SelectTrigger>
@@ -409,22 +410,22 @@ export default function TimetablePage() {
         )}
       </div>
 
-      {sessionRole === "ADMIN" && (!classId || !sectionId) && (
+      {(sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") && (!classId || !sectionId) && (
         <p className="text-sm text-muted-foreground">Select a class and section above to build its timetable.</p>
       )}
 
-      {sessionRole === "ADMIN" && classId && sectionId && teachingPeriods.length === 0 && (
+      {(sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") && classId && sectionId && teachingPeriods.length === 0 && (
         <div className="flex items-start gap-2 rounded-lg bg-warning/10 border border-warning/30 p-3">
           <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
           <p className="text-sm text-foreground">No periods defined for this academic year yet. Click <strong>Manage Periods</strong> above to set up the bell schedule before adding slots.</p>
         </div>
       )}
 
-      {sessionRole === "ADMIN" && classId && sectionId && teachingPeriods.length > 0 && (
+      {(sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") && classId && sectionId && teachingPeriods.length > 0 && (
         <p className="text-xs text-muted-foreground">Click any empty cell below to add a slot.</p>
       )}
 
-      {sessionRole === "ADMIN" && classId && sectionId && (
+      {(sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") && classId && sectionId && (
         <div className="flex items-center gap-2 text-xs">
           {hasDraft
             ? <Badge variant="outline" className="border-warning/40 text-warning">Has unpublished draft slots</Badge>
@@ -484,7 +485,7 @@ export default function TimetablePage() {
                                   </p>
                                 )}
                                 {e.room && <p className="text-[10px] text-muted-foreground">{e.room}</p>}
-                                {sessionRole === "ADMIN" && (
+                                {(sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") && (
                                   <button onClick={() => handleDelete(e.id)} className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-600">
                                     <Trash2 className="h-3 w-3" />
                                   </button>
@@ -492,7 +493,7 @@ export default function TimetablePage() {
                               </div>
                               );
                             })}
-                            {cells.length === 0 && sessionRole === "ADMIN" && classId && sectionId && (
+                            {cells.length === 0 && (sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") && classId && sectionId && (
                               <Popover open={isOpen} onOpenChange={(o) => !o && setOpenCell(null)}>
                                 <PopoverTrigger asChild>
                                   <button

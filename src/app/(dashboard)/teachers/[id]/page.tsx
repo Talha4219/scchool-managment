@@ -107,8 +107,9 @@ export default function TeacherProfilePage() {
     const active = years.find(y => y.isActive) || years[0];
     if (active) {
       setActiveYearId(active.id);
-      setClasses(await fetchClassesDB(active.id));
-      setAssignments(await fetchTeacherAssignmentsDB(teacherId, active.id));
+      const [cls, assigns] = await Promise.all([fetchClassesDB(active.id), fetchTeacherAssignmentsDB(teacherId, active.id)]);
+      setClasses(cls);
+      setAssignments(assigns);
     }
     setLoading(false);
   }, [teacherId]);

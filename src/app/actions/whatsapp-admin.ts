@@ -28,7 +28,7 @@ export async function fetchWhatsAppStatusAction(): Promise<{ configured: boolean
 // like hello_world.
 export async function sendWhatsAppTestMessageAction(to: string, templateName: string, variablesCsv?: string): Promise<SendResult> {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") return { error: "Only admins can send WhatsApp test messages." };
+  if (!session || (session.role !== "ADMIN" && session.role !== "PRINCIPAL")) return { error: "Only admins can send WhatsApp test messages." };
 
   const normalized = normalizeToE164(to);
   if (!normalized) return { error: "Enter a valid phone number, e.g. 03001234567 or +923001234567." };
@@ -75,6 +75,6 @@ export async function sendWhatsAppTestMessageAction(to: string, templateName: st
 
 export async function fetchRecentWhatsAppNotificationsAction(): Promise<WhatsAppNotificationRecord[]> {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") return [];
+  if (!session || (session.role !== "ADMIN" && session.role !== "PRINCIPAL")) return [];
   return fetchRecentWhatsAppNotifications(10);
 }

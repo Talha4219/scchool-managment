@@ -19,27 +19,55 @@ export interface CheckInResult {
 // a device check-in has no teacher to judge lateness, so it's time-based.
 const LATE_AFTER_HOUR = 9;
 
-export async function checkInByCardUid(cardUid: string, source: "device" | "kiosk"): Promise<CheckInResult> {
+// Resolves a student by their student-card UID — errors here mean "this
+// input isn't a recognized card", which callers (kioskCheckInAction) use to
+// decide whether to fall through and try the next identifier type (roll
+// number) instead of surfacing the error immediately.
+export async function resolveStudentByCardUid(cardUid: string): Promise<{ error: string } | { studentId: string; name: string }> {
   const trimmed = cardUid.trim();
   if (!trimmed) return { error: "Empty card ID." };
-
   const cardRes = await query(
     `SELECT sic.student_id, s.name, s.status FROM student_id_cards sic
      JOIN students s ON s.id = sic.student_id WHERE sic.card_uid=$1`,
     [trimmed]
   );
-  if (cardRes.rows.length === 0) return { error: "Card not recognized. Ask the office to enroll it." };
-  const { student_id, name, status: studentStatus } = cardRes.rows[0];
-  if (studentStatus !== "Active") return { error: `${name}'s enrollment is not active.` };
+  if (cardRes.rows.length === 0) return { error: "Card not recognized." };
+  const { student_id, name, status } = cardRes.rows[0];
+  if (status !== "Active") return { error: `${name}'s enrollment is not active.` };
+  return { studentId: student_id, name };
+}
 
+// Resolves a student by their roll number (enrollments.roll_number) — the
+// kiosk fallback for a student with no physical ID card yet. Scoped to
+// branchId when given (an Admin/Teacher operating the kiosk for their own
+// branch) since roll numbers are only unique within a class/section, not
+// school-wide across branches.
+async function resolveStudentByRollNumber(rollNumber: string, branchId: string | null): Promise<{ error: string } | { studentId: string; name: string }> {
+  const trimmed = rollNumber.trim();
+  if (!trimmed || !/^\d+$/.test(trimmed)) return { error: "Not a valid roll number." };
+  const params: (string | number)[] = [parseInt(trimmed, 10)];
+  let sql = `SELECT e.student_id, s.name, s.status FROM enrollments e
+             JOIN students s ON s.id = e.student_id
+             WHERE e.roll_number=$1 AND e.status='Active'`;
+  if (branchId) { params.push(branchId); sql += ` AND s.branch_id=$${params.length}`; }
+  sql += ` ORDER BY e.updated_at DESC NULLS LAST LIMIT 1`;
+  const res = await query(sql, params);
+  if (res.rows.length === 0) return { error: "Roll number not recognized." };
+  const { student_id, name, status } = res.rows[0];
+  if (status !== "Active") return { error: `${name}'s enrollment is not active.` };
+  return { studentId: student_id, name };
+}
+
+async function markStudentCheckIn(studentId: string, name: string, source: "device" | "kiosk"): Promise<CheckInResult> {
   const enrollRes = await query(
     `SELECT e.class_id, e.section_id, e.academic_year_id, c.name as class_name, sec.name as section_name
      FROM enrollments e JOIN classes c ON c.id = e.class_id LEFT JOIN sections sec ON sec.id = e.section_id
      WHERE e.student_id=$1 AND e.status='Active' ORDER BY e.updated_at DESC NULLS LAST LIMIT 1`,
-    [student_id]
+    [studentId]
   );
   if (enrollRes.rows.length === 0) return { error: `${name} has no active class enrollment.` };
   const { class_id, section_id, academic_year_id, class_name, section_name } = enrollRes.rows[0];
+  const student_id = studentId;
 
   const now = new Date();
   const today = now.toISOString().split("T")[0];
@@ -80,6 +108,24 @@ export async function checkInByCardUid(cardUid: string, source: "device" | "kios
     studentName: name, className: class_name, sectionName: section_name || "",
     status: attendanceStatus, time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
   };
+}
+
+export async function checkInByCardUid(cardUid: string, source: "device" | "kiosk"): Promise<CheckInResult> {
+  const resolved = await resolveStudentByCardUid(cardUid);
+  if ("error" in resolved) {
+    return { error: resolved.error === "Card not recognized." ? "Card not recognized. Ask the office to enroll it." : resolved.error };
+  }
+  return markStudentCheckIn(resolved.studentId, resolved.name, source);
+}
+
+// Kiosk fallback for students without a physical card yet — type a roll
+// number instead of tapping/scanning. Same attendance-marking path as the
+// card flow (markStudentCheckIn), just a different way to identify who's
+// checking in.
+export async function checkInByRollNumber(rollNumber: string, source: "device" | "kiosk", branchId: string | null = null): Promise<CheckInResult> {
+  const resolved = await resolveStudentByRollNumber(rollNumber, branchId);
+  if ("error" in resolved) return { error: resolved.error };
+  return markStudentCheckIn(resolved.studentId, resolved.name, source);
 }
 
 export interface StaffCheckInResult {

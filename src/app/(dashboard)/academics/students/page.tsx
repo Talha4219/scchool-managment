@@ -14,6 +14,7 @@ import { fetchAcademicYearsDB, fetchClassesDB, fetchSectionsByClassDB, fetchAllS
 import type { AcademicYear, ClassItem, SectionItem, Enrollment } from "@/lib/types";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 export default function StudentsByClassPage() {
   const { can, loaded } = usePermission();
@@ -30,24 +31,20 @@ export default function StudentsByClassPage() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const years = await fetchAcademicYearsDB();
+    const [years, cls] = await Promise.all([fetchAcademicYearsDB(), fetchClassesDB()]);
     setAcademicYears(years);
     const active = years.find(y => y.isActive);
     const yearId = active?.id || years[0]?.id || "";
     setActiveYearId(yearId);
-
-    const cls = await fetchClassesDB();
     setClasses(cls);
 
-    const allSections = await fetchAllSectionsDB(cls.map(c => c.id));
+    const [allSections, enrs] = await Promise.all([fetchAllSectionsDB(cls.map(c => c.id)), fetchEnrollmentsDB(yearId)]);
     const secMap: Record<string, SectionItem[]> = {};
     for (const s of allSections) {
       if (!secMap[s.classId]) secMap[s.classId] = [];
       secMap[s.classId].push(s);
     }
     setSectionsMap(secMap);
-
-    const enrs = await fetchEnrollmentsDB(yearId);
     setEnrollments(enrs);
 
     setExpandedClasses(new Set(cls.map(c => c.id)));
@@ -111,7 +108,7 @@ export default function StudentsByClassPage() {
     );
   }
 
-  if (!loaded) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Loading...</div>;
+  if (!loaded) return <PageSkeleton />;
   if (!can("classes.students")) return <Unauthorized />;
 
   return (

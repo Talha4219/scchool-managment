@@ -13,10 +13,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import Link from "next/link";
-import { logout, getSession } from "@/app/actions/auth";
+import { useRouter } from "next/navigation";
+import { logout, getSession, getOwnerViewBranchAction, setOwnerViewBranchAction } from "@/app/actions/auth";
+import { fetchBranchesDB, type BranchRecord } from "@/app/actions/branches";
 import { fetchProfilePhotoAction } from "@/app/actions/features";
+import { formatDayMonthPK } from "@/lib/date-format";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Building2 } from "lucide-react";
 import { fetchConversationsDB, fetchUnreadMessageCountDB, type ConversationSummary } from "@/app/actions/messaging";
 import { globalSearchDB, type GlobalSearchResult } from "@/app/actions/academic-core";
+import { usePermission } from "@/hooks/use-permission";
 import { fetchUnresolvedErrorCountAction } from "@/app/actions/error-log-admin";
 import { LanguageSwitcher } from "@/components/ui/language-switcher";
 import { useLanguage } from "@/hooks/use-language";
@@ -33,14 +39,15 @@ function timeAgo(iso: string) {
   if (diffMin < 1) return "now";
   if (diffMin < 60) return `${diffMin}m`;
   if (diffMin < 1440) return `${Math.round(diffMin / 60)}h`;
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return formatDayMonthPK(iso);
 }
 
 const SidebarCollapseCtx = createContext<{ collapsed: boolean; toggle: () => void }>({ collapsed: false, toggle: () => {} });
 export const useSidebarCollapse = () => useContext(SidebarCollapseCtx);
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { isDbLoaded, activeRole, setActiveRole, schoolInfo } = useAppState();
+  const router = useRouter();
+  const { isDbLoaded, activeRole, setActiveRole, schoolInfo, reloadDbData } = useAppState();
   const { notifications, markNotificationRead } = useNotifications();
   const { t, tn } = useLanguage();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -50,16 +57,43 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
 
+  // Global "view branch as" selector for OWNER — the selection scopes every
+  // branch-aware query app-wide (students, fees, HR, attendance, sidebar
+  // nav, everything), not just this dropdown. See src/lib/auth-scope.ts and
+  // setOwnerViewBranchAction/getOwnerViewBranchAction in actions/auth.ts.
+  const [ownerBranches, setOwnerBranches] = useState<BranchRecord[]>([]);
+  const [ownerViewBranchId, setOwnerViewBranchId] = useState<string>("");
+
   useEffect(() => {
     getSession().then(s => {
       setSessionRole(s?.role ?? null);
       setSessionName(s?.name ?? null);
       setSessionEmail(s?.email ?? null);
       if (s?.role === 'STUDENT' || s?.role === 'PARENT') fetchProfilePhotoAction().then(setProfilePhoto);
+      if (s?.role === 'OWNER') {
+        fetchBranchesDB().then(setOwnerBranches);
+        getOwnerViewBranchAction().then(id => setOwnerViewBranchId(id ?? ""));
+      }
     });
   }, []);
 
+  // No full window reload: refresh the App Router's server-rendered data,
+  // force every "use client" page under this layout to remount (most fetch
+  // once in a mount effect, not on every render — a key change is what
+  // actually re-triggers that) via contentKey, and re-pull the legacy
+  // useAppState demo/DB dataset (fees, library, etc.) that a subset of older
+  // pages still read from instead of fetching directly.
+  const [contentKey, setContentKey] = useState(0);
+  const handleOwnerBranchChange = async (value: string) => {
+    const branchId = value === "ALL" ? null : value;
+    await setOwnerViewBranchAction(branchId);
+    router.refresh();
+    await reloadDbData();
+    setContentKey(k => k + 1);
+  };
+
   const isAdmin = sessionRole === "ADMIN";
+  const { can: canSettings } = usePermission();
   const displayName = sessionName || "User";
   const displayRole = sessionRole || activeRole;
   const displayInitials = displayName.split(" ").filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join("");
@@ -227,6 +261,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              {sessionRole === "OWNER" && ownerBranches.length > 0 && (
+                <Select value={ownerViewBranchId || "ALL"} onValueChange={v => { setOwnerViewBranchId(v === "ALL" ? "" : v); handleOwnerBranchChange(v); }}>
+                  <SelectTrigger className="h-10 w-[180px] rounded-full bg-secondary/50 border-0 text-xs">
+                    <Building2 className="h-3.5 w-3.5 shrink-0 mr-1" />
+                    <SelectValue placeholder="All Branches" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ALL">All Branches</SelectItem>
+                    {ownerBranches.map(b => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              )}
               <LanguageSwitcher />
 
               {/* Unresolved error alert (admin only) */}
@@ -387,9 +433,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   <DropdownMenuItem asChild className="rounded-xl text-xs font-medium cursor-pointer">
                     <Link href="/profile" className="flex items-center gap-2"><User className="h-3.5 w-3.5" /> {t("common.myProfile")}</Link>
                   </DropdownMenuItem>
-                  <DropdownMenuItem asChild className="rounded-xl text-xs font-medium cursor-pointer">
-                    <Link href="/settings" className="flex items-center gap-2"><Settings className="h-3.5 w-3.5" /> {t("common.settings")}</Link>
-                  </DropdownMenuItem>
+                  {canSettings("settings.view") && (
+                    <DropdownMenuItem asChild className="rounded-xl text-xs font-medium cursor-pointer">
+                      <Link href="/settings" className="flex items-center gap-2"><Settings className="h-3.5 w-3.5" /> {t("common.settings")}</Link>
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuSeparator />
                   {isAdmin && (
                     <>
@@ -421,7 +469,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <Loader2 className="h-8 w-8 animate-spin text-primary" />
                 <p className="text-sm text-muted-foreground font-medium">{t("common.loadingData")}</p>
               </div>
-            ) : children}
+            ) : <div key={contentKey}>{children}</div>}
           </main>
         </div>
       </div>

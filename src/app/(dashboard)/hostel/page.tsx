@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
 import { useStudents } from "@/lib/students-context";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -81,7 +82,7 @@ export default function HostelPage() {
   const occupiedBeds = allocations.filter(a => a.status === "Active").length;
   const availableBeds = totalBeds - occupiedBeds;
 
-  const formatDate = (d?: string) => d ? new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" }) : "\u2014";
+  const formatDate = (d?: string) => formatDatePK(d);
 
   const openAddHostel = () => {
     setEditingHostel(null);

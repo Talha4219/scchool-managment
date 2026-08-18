@@ -35,10 +35,24 @@ export const initializeDatabase = async () => {
         code VARCHAR(20) UNIQUE,
         address TEXT,
         phone VARCHAR(50),
+        email VARCHAR(255),
+        logo_url TEXT,
+        established_date VARCHAR(20),
+        capacity INTEGER,
+        grade_levels TEXT,
+        shift VARCHAR(50),
         principal_user_id INTEGER,
         is_active BOOLEAN NOT NULL DEFAULT true,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      -- Branch profile fields added after the original table — defensive for
+      -- installs that already had a branches table before this column set existed.
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS logo_url TEXT;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS established_date VARCHAR(20);
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS capacity INTEGER;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS grade_levels TEXT;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift VARCHAR(50);
 
       CREATE TABLE IF NOT EXISTS school_info (
         id SERIAL PRIMARY KEY,
@@ -46,8 +60,24 @@ export const initializeDatabase = async () => {
         registration_number VARCHAR(100),
         address TEXT,
         contact_email VARCHAR(255),
-        academic_year VARCHAR(50)
+        academic_year VARCHAR(50),
+        phone VARCHAR(50),
+        website VARCHAR(255),
+        principal VARCHAR(255),
+        logo_url TEXT,
+        founding_year VARCHAR(10),
+        currency VARCHAR(10),
+        timezone VARCHAR(50)
       );
+      -- Org-profile fields added after the original table — defensive for
+      -- installs that already had a school_info table before this column set existed.
+      ALTER TABLE school_info ADD COLUMN IF NOT EXISTS phone VARCHAR(50);
+      ALTER TABLE school_info ADD COLUMN IF NOT EXISTS website VARCHAR(255);
+      ALTER TABLE school_info ADD COLUMN IF NOT EXISTS principal VARCHAR(255);
+      ALTER TABLE school_info ADD COLUMN IF NOT EXISTS logo_url TEXT;
+      ALTER TABLE school_info ADD COLUMN IF NOT EXISTS founding_year VARCHAR(10);
+      ALTER TABLE school_info ADD COLUMN IF NOT EXISTS currency VARCHAR(10);
+      ALTER TABLE school_info ADD COLUMN IF NOT EXISTS timezone VARCHAR(50);
 
       CREATE TABLE IF NOT EXISTS subjects (
         id VARCHAR(50) PRIMARY KEY,
@@ -444,7 +474,11 @@ export const initializeDatabase = async () => {
       -- Academic Core relational tables
       CREATE TABLE IF NOT EXISTS academic_years (id VARCHAR(50) PRIMARY KEY, name VARCHAR(100), start_date VARCHAR(50), end_date VARCHAR(50), is_active BOOLEAN DEFAULT false);
       CREATE TABLE IF NOT EXISTS classes (id VARCHAR(50) PRIMARY KEY, name VARCHAR(100), grade_level VARCHAR(50), academic_year_id VARCHAR(50));
-      CREATE TABLE IF NOT EXISTS sections (id VARCHAR(50) PRIMARY KEY, name VARCHAR(100), capacity INT DEFAULT 30, teacher_name VARCHAR(255), class_id VARCHAR(50), section_group VARCHAR(100));
+      CREATE TABLE IF NOT EXISTS sections (id VARCHAR(50) PRIMARY KEY, name VARCHAR(100), capacity INT DEFAULT 30, teacher_name VARCHAR(255), class_id VARCHAR(50), section_group VARCHAR(100), class_teacher_id INT);
+      -- The real homeroom-teacher link (teacher_name above was always just a
+      -- free-text display label, not a login/permission link). Nullable FK to
+      -- users.id — one class teacher per section, admin-assigned.
+      ALTER TABLE sections ADD COLUMN IF NOT EXISTS class_teacher_id INT;
       CREATE TABLE IF NOT EXISTS enrollments (id VARCHAR(50) PRIMARY KEY, student_id VARCHAR(50), class_id VARCHAR(50), section_id VARCHAR(50), academic_year_id VARCHAR(50), roll_number INT DEFAULT 0, status VARCHAR(20) DEFAULT 'Active', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS student_promotions (id VARCHAR(50) PRIMARY KEY, student_id VARCHAR(50), from_class_id VARCHAR(50), from_section_id VARCHAR(50), to_class_id VARCHAR(50), to_section_id VARCHAR(50), academic_year_id VARCHAR(50), promoted_by VARCHAR(255), promoted_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS teacher_class_subjects (id VARCHAR(50) PRIMARY KEY, teacher_id INT, class_id VARCHAR(50), section_id VARCHAR(50), subject_id VARCHAR(50), academic_year_id VARCHAR(50));
@@ -554,6 +588,13 @@ export const initializeDatabase = async () => {
       -- Multi-branch: NULL for OWNER (sees every branch) and for legacy rows
       -- until backfilled below. Everyone else is scoped to exactly one branch.
       ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      -- Contact for direct-to-user WhatsApp notifications (e.g. substitution
+      -- approval requests to a branch principal) — not tied to a specific
+      -- role's profile table since any user role may need this.
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_opt_in BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_opt_in_at TIMESTAMPTZ;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_opt_out_at TIMESTAMPTZ;
       ALTER TABLE classes ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
       ALTER TABLE students ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
       ALTER TABLE admission_applications ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
@@ -601,9 +642,18 @@ export const initializeDatabase = async () => {
       -- rows (column default) and for rows that existed before this changed.
       ALTER TABLE students ADD COLUMN IF NOT EXISTS whatsapp_opt_in BOOLEAN NOT NULL DEFAULT true;
       ALTER TABLE students ALTER COLUMN whatsapp_opt_in SET DEFAULT true;
-      UPDATE students SET whatsapp_opt_in = true WHERE whatsapp_opt_in = false AND whatsapp_opt_out_at IS NULL;
       ALTER TABLE students ADD COLUMN IF NOT EXISTS whatsapp_opt_in_at TIMESTAMPTZ;
       ALTER TABLE students ADD COLUMN IF NOT EXISTS whatsapp_opt_out_at TIMESTAMPTZ;
+      UPDATE students SET whatsapp_opt_in = true WHERE whatsapp_opt_in = false AND whatsapp_opt_out_at IS NULL;
+      -- Profile fields the Edit dialog already collects but that previously
+      -- only lived in the client-side legacy students-context store — adding
+      -- them here so the new student profile page (and the Edit dialog, once
+      -- wired through) can persist real data instead of local-only state.
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS dob DATE;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS gender VARCHAR(20);
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS address TEXT;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS guardian_relation VARCHAR(50);
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS phone VARCHAR(50);
       ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS whatsapp_opt_in BOOLEAN NOT NULL DEFAULT false;
       ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS whatsapp_opt_in_at TIMESTAMPTZ;
       ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS whatsapp_opt_out_at TIMESTAMPTZ;
@@ -620,6 +670,12 @@ export const initializeDatabase = async () => {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      -- The literal body text to paste into Meta Business Manager when
+      -- creating each template there, using Meta's numbered {{1}}, {{2}}...
+      -- placeholder syntax (Meta templates don't support named placeholders —
+      -- our own variables column above maps names to these positions in
+      -- the same order for notificationService.send()).
+      ALTER TABLE whatsapp_templates ADD COLUMN IF NOT EXISTS body TEXT;
 
       -- Seed the 8 template slots from the integration spec. status starts
       -- 'PENDING' — these are NOT auto-approved; an admin must create the
@@ -633,16 +689,44 @@ export const initializeDatabase = async () => {
       -- the translation") even though the template itself is Active in Meta
       -- Business Manager. Match whatever locale the template was actually
       -- created under there.
-      INSERT INTO whatsapp_templates (id, name, meta_template_name, language, category, status, description, variables) VALUES
-        ('wat_student_absence', 'STUDENT_ABSENCE', 'student_absence', 'en', 'UTILITY', 'PENDING', 'Sent to a parent when their child is marked absent.', '["parentName","studentName","date"]'),
-        ('wat_fee_reminder', 'FEE_REMINDER', 'fee_reminder', 'en', 'UTILITY', 'PENDING', 'Sent ahead of a fee due date.', '["parentName","studentName","amount","dueDate"]'),
-        ('wat_fee_overdue', 'FEE_OVERDUE', 'fee_overdue', 'en', 'UTILITY', 'PENDING', 'Sent when a fee voucher is past due.', '["parentName","studentName","amount","dueDate"]'),
-        ('wat_exam_reminder', 'EXAM_REMINDER', 'exam_reminder', 'en', 'UTILITY', 'PENDING', 'Sent ahead of an exam.', '["studentName","examName","date"]'),
-        ('wat_ptm_reminder', 'PTM_REMINDER', 'ptm_reminder', 'en', 'UTILITY', 'PENDING', 'Parent-teacher meeting reminder.', '["parentName","studentName","date","time"]'),
-        ('wat_school_announcement', 'SCHOOL_ANNOUNCEMENT', 'school_announcement', 'en', 'MARKETING', 'PENDING', 'General school announcement broadcast.', '["title","message"]'),
-        ('wat_teacher_meeting', 'TEACHER_MEETING', 'teacher_meeting', 'en', 'UTILITY', 'PENDING', 'Staff meeting notification to a teacher.', '["teacherName","date","time"]'),
-        ('wat_event_reminder', 'EVENT_REMINDER', 'event_reminder', 'en', 'UTILITY', 'PENDING', 'Sent ahead of a school event.', '["recipientName","eventName","date"]')
+      INSERT INTO whatsapp_templates (id, name, meta_template_name, language, category, status, description, variables, body) VALUES
+        ('wat_student_absence', 'STUDENT_ABSENCE', 'student_absence', 'en', 'UTILITY', 'PENDING', 'Sent to a parent when their child is marked absent.', '["parentName","studentName","date"]',
+          'Dear {{1}}, this is to inform you that {{2}} was marked absent on {{3}}. Please contact the school office if you have any questions.'),
+        ('wat_fee_reminder', 'FEE_REMINDER', 'fee_reminder', 'en', 'UTILITY', 'PENDING', 'Sent ahead of a fee due date.', '["parentName","studentName","amount","dueDate"]',
+          'Dear {{1}}, a fee payment of {{3}} for {{2}} is due on {{4}}. Please make the payment on time to avoid late charges.'),
+        ('wat_fee_overdue', 'FEE_OVERDUE', 'fee_overdue', 'en', 'UTILITY', 'PENDING', 'Sent when a fee voucher is past due.', '["parentName","studentName","amount","dueDate"]',
+          'Dear {{1}}, the fee payment of {{3}} for {{2}} was due on {{4}} and is now overdue. Please settle it at your earliest convenience.'),
+        ('wat_exam_reminder', 'EXAM_REMINDER', 'exam_reminder', 'en', 'UTILITY', 'PENDING', 'Sent ahead of an exam.', '["studentName","examName","date"]',
+          'Hi {{1}}, this is a reminder that your {{2}} exam is scheduled for {{3}}. Please be prepared and arrive on time.'),
+        ('wat_ptm_reminder', 'PTM_REMINDER', 'ptm_reminder', 'en', 'UTILITY', 'PENDING', 'Parent-teacher meeting reminder.', '["parentName","studentName","date","time"]',
+          'Dear {{1}}, you are invited to a Parent-Teacher Meeting regarding {{2}} on {{3}} at {{4}}. We look forward to seeing you.'),
+        ('wat_school_announcement', 'SCHOOL_ANNOUNCEMENT', 'school_announcement', 'en', 'MARKETING', 'PENDING', 'General school announcement broadcast.', '["title","message"]',
+          '{{1}}
+
+{{2}}'),
+        ('wat_teacher_meeting', 'TEACHER_MEETING', 'teacher_meeting', 'en', 'UTILITY', 'PENDING', 'Staff meeting notification to a teacher.', '["teacherName","date","time"]',
+          'Dear {{1}}, you are requested to attend a staff meeting on {{2}} at {{3}}.'),
+        ('wat_event_reminder', 'EVENT_REMINDER', 'event_reminder', 'en', 'UTILITY', 'PENDING', 'Sent ahead of a school event.', '["recipientName","eventName","date"]',
+          'Hi {{1}}, this is a reminder about the upcoming event: {{2}} on {{3}}. We hope to see you there.'),
+        ('wat_substitution_approval', 'SUBSTITUTION_APPROVAL', 'substitution_approval', 'en', 'UTILITY', 'PENDING', 'Fallback for the branch principal/admin substitution-approval alert, used when the free-text message (the default — no template needed) can''t be delivered because the 24h WhatsApp conversation window is closed.', '["teacher_name","date","reason","periods_summary"]',
+          '{{1}} is {{3}} on {{2}}. The following periods need a substitute:
+
+{{4}}
+
+Please review and approve in the school management dashboard.')
       ON CONFLICT (name) DO NOTHING;
+
+      -- Backfill body text for rows that already existed before this column
+      -- was added (ON CONFLICT DO NOTHING above skips them).
+      UPDATE whatsapp_templates SET body = 'Dear {{1}}, this is to inform you that {{2}} was marked absent on {{3}}. Please contact the school office if you have any questions.' WHERE name = 'STUDENT_ABSENCE' AND body IS NULL;
+      UPDATE whatsapp_templates SET body = 'Dear {{1}}, a fee payment of {{3}} for {{2}} is due on {{4}}. Please make the payment on time to avoid late charges.' WHERE name = 'FEE_REMINDER' AND body IS NULL;
+      UPDATE whatsapp_templates SET body = 'Dear {{1}}, the fee payment of {{3}} for {{2}} was due on {{4}} and is now overdue. Please settle it at your earliest convenience.' WHERE name = 'FEE_OVERDUE' AND body IS NULL;
+      UPDATE whatsapp_templates SET body = 'Hi {{1}}, this is a reminder that your {{2}} exam is scheduled for {{3}}. Please be prepared and arrive on time.' WHERE name = 'EXAM_REMINDER' AND body IS NULL;
+      UPDATE whatsapp_templates SET body = 'Dear {{1}}, you are invited to a Parent-Teacher Meeting regarding {{2}} on {{3}} at {{4}}. We look forward to seeing you.' WHERE name = 'PTM_REMINDER' AND body IS NULL;
+      UPDATE whatsapp_templates SET body = E'{{1}}\n\n{{2}}' WHERE name = 'SCHOOL_ANNOUNCEMENT' AND body IS NULL;
+      UPDATE whatsapp_templates SET body = 'Dear {{1}}, you are requested to attend a staff meeting on {{2}} at {{3}}.' WHERE name = 'TEACHER_MEETING' AND body IS NULL;
+      UPDATE whatsapp_templates SET body = 'Hi {{1}}, this is a reminder about the upcoming event: {{2}} on {{3}}. We hope to see you there.' WHERE name = 'EVENT_REMINDER' AND body IS NULL;
+      UPDATE whatsapp_templates SET body = E'{{1}} is {{3}} on {{2}}. The following periods need a substitute:\n\n{{4}}\n\nPlease review and approve in the school management dashboard.' WHERE name = 'SUBSTITUTION_APPROVAL' AND body IS NULL;
 
       ALTER TABLE alumni ADD COLUMN IF NOT EXISTS source_student_id VARCHAR(50) REFERENCES students(id);
       CREATE INDEX IF NOT EXISTS idx_alumni_source_student ON alumni(source_student_id);
@@ -709,6 +793,12 @@ export const initializeDatabase = async () => {
         created_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(timetable_entry_id, date)
       );
+      -- Auto-assigned substitutions ('auto' status) sit pending until the
+      -- branch principal (or an admin) approves them — approved_by/at track
+      -- that sign-off, distinct from created_by which is always 'system' for
+      -- the auto-engine's own rows.
+      ALTER TABLE timetable_substitutions ADD COLUMN IF NOT EXISTS approved_by INTEGER;
+      ALTER TABLE timetable_substitutions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
       CREATE INDEX IF NOT EXISTS idx_tt_sub_date ON timetable_substitutions(date);
       CREATE INDEX IF NOT EXISTS idx_tt_sub_substitute ON timetable_substitutions(substitute_teacher_id);
 

@@ -24,7 +24,11 @@ export function usePermission() {
         // restricted to an explicit permission set instead of everything.
         // PRINCIPAL = "Admin, branch-scoped": same permission bypass, data
         // scoping is enforced separately by scopeBranch() in each action.
-        if ((session.role === "ADMIN" || session.role === "PRINCIPAL") && !cr) {
+        // OWNER gets the same bypass — no role_permissions row exists for
+        // OWNER (it predates the branches feature for most schools), so
+        // without this every permission-gated nav item/page silently
+        // resolved to false and disappeared from the Owner's sidebar.
+        if ((session.role === "ADMIN" || session.role === "PRINCIPAL" || session.role === "OWNER") && !cr) {
           setLoaded(true);
           return;
         }
@@ -37,7 +41,7 @@ export function usePermission() {
 
   const can = useCallback(
     (permission: string) => {
-      if ((role === "ADMIN" || role === "PRINCIPAL") && !customRoleId) return true;
+      if ((role === "ADMIN" || role === "PRINCIPAL" || role === "OWNER") && !customRoleId) return true;
       return perms[permission] === true;
     },
     [role, customRoleId, perms]

@@ -27,6 +27,7 @@ import {
 import type { AcademicYear, ClassItem, SectionItem } from "@/lib/types";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 const GRADE_LEVELS = ["Playgroup", "Nursery", "Prep", "Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
 
@@ -289,7 +290,7 @@ export default function ClassesPage() {
     );
   }
 
-  if (!loaded) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Loading...</div>;
+  if (!loaded) return <PageSkeleton />;
   if (!can("classes.grades")) return <Unauthorized />;
 
   return (

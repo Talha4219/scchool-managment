@@ -56,7 +56,7 @@ export async function initiateFeePaymentAction(feeRecordId: string, gateway: Gat
     if (session.role === "PARENT" && fee.parent_email !== session.email) {
       return { error: "You can only pay your ward's fee voucher." };
     }
-    if (session.role !== "ADMIN" && session.role !== "STUDENT" && session.role !== "PARENT") {
+    if (session.role !== "ADMIN" && session.role !== "PRINCIPAL" && session.role !== "OWNER" && session.role !== "STUDENT" && session.role !== "PARENT") {
       return { error: "Not authorized to pay fees." };
     }
 
@@ -207,7 +207,7 @@ export async function fetchNotificationChannelsStatusAction(): Promise<{ email: 
 // a real send, never automatic.
 export async function sendFeeReminderAction(feeRecordId: string): Promise<{ error?: string }> {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") return { error: "Only admins can send fee reminders." };
+  if (!session || (session.role !== "ADMIN" && session.role !== "PRINCIPAL")) return { error: "Only admins can send fee reminders." };
 
   const feeRes = await query(
     `SELECT f.student_id, f.amount, f.discount, f.amount_paid, f.due_date, f.voucher_id, s.name as student_name, s.parent_name
@@ -237,7 +237,7 @@ export async function sendFeeReminderAction(feeRecordId: string): Promise<{ erro
 // Bulk version for the Fees admin page's "Remind All Overdue" action.
 export async function sendOverdueFeeRemindersAction(): Promise<{ sent: number; skipped: number; error?: string }> {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") return { sent: 0, skipped: 0, error: "Only admins can send fee reminders." };
+  if (!session || (session.role !== "ADMIN" && session.role !== "PRINCIPAL")) return { sent: 0, skipped: 0, error: "Only admins can send fee reminders." };
 
   const res = await query(
     `SELECT f.id, f.student_id, f.status, f.amount, f.discount, f.amount_paid, f.due_date, f.voucher_id, s.name as student_name, s.parent_name

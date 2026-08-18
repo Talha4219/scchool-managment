@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { fetchAllSectionsDB } from "@/app/actions/academic-core";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
 import { useNotifications } from "@/lib/notifications-context";
 import { useAttendance } from "@/lib/attendance-context";
 import { useExams } from "@/lib/exams-context";
@@ -25,15 +26,17 @@ import {
 } from "recharts";
 import {
   fetchUsersDB, fetchAnnouncementsDB, fetchTimetableDB,
-  fetchLeaveRequestsDB, fetchLibraryBooksDB, fetchBookIssuesDB,
-  fetchAssignmentsDB, fetchSubmissionsDB,
+  fetchLeaveRequestsDB, approveLeaveDB, rejectLeaveDB, fetchLibraryBooksDB, fetchBookIssuesDB,
+  fetchAssignmentsDB, fetchSubmissionsDB, fetchIncidentsDB,
   type Announcement, type Assignment, type AssignmentSubmission,
 } from "@/app/actions/features";
 import {
   fetchAcademicYearsDB, fetchClassesDB, fetchEnrollmentsDB,
   fetchReportCardsDB, fetchStudentTermResultsDB, fetchTermExamsDB,
+  fetchMyTeachingSummaryDB,
 } from "@/app/actions/academic-core";
 import { fetchStaffAttendanceSummaryDB, fetchStaffAttendanceDB } from "@/app/actions/staff-attendance";
+import { fetchSubstitutionsForDateDB, fetchPendingSubstitutionApprovalCountDB, type SubstitutionRecord } from "@/app/actions/substitutions";
 import { useLanguage } from "@/hooks/use-language";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -101,6 +104,212 @@ function SoftCard({ title, action, children, className = "" }: { title?: string;
   );
 }
 
+// ── "School Today" summary bar + Action Required box (Admin/Principal/Owner) ──
+// The one-screen answer to "is my school running well today, and where do I
+// need to act?" — a condensed status bar (students/teachers/discipline/fees)
+// plus a priority-sorted action list, both built from data the rest of the
+// dashboard already has (no new tables). Intentionally excludes anything
+// without a real data source yet (lesson-plan completion, maintenance
+// tickets, counseling cases, vendor payments) rather than showing fake zeros.
+type ActionPriority = "high" | "medium" | "low";
+const ACTION_PRIORITY_STYLE: Record<ActionPriority, string> = {
+  high: "bg-red-50 border-red-200 text-red-700 hover:bg-red-100/70",
+  medium: "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100/70",
+  low: "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100/70",
+};
+const ACTION_PRIORITY_DOT: Record<ActionPriority, string> = {
+  high: "bg-red-500", medium: "bg-amber-500", low: "bg-emerald-500",
+};
+const ACTION_PRIORITY_LABEL: Record<ActionPriority, string> = {
+  high: "🔴 High", medium: "🟠 Medium", low: "🟢 Normal",
+};
+
+function SchoolTodayBar({
+  totalStudents, presentCount, absentCount, lateCount,
+  teacherIds, pendingAppsCount, pendingLeavesCount, paidFees, totalFees,
+}: {
+  totalStudents: number; presentCount: number; absentCount: number; lateCount: number;
+  teacherIds: number[]; pendingAppsCount: number; pendingLeavesCount: number; paidFees: number; totalFees: number;
+}) {
+  const [teacherAtt, setTeacherAtt] = useState({ present: 0, absent: 0, late: 0 });
+  const [disciplineOpen, setDisciplineOpen] = useState(0);
+  const [pendingSubs, setPendingSubs] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      fetchStaffAttendanceDB(todayISO()),
+      fetchIncidentsDB(),
+      fetchPendingSubstitutionApprovalCountDB(),
+    ]).then(([staffAtt, incidents, subCount]) => {
+      // staff_attendance covers every staff role — filter down to teachers
+      // specifically so this card matches the "Teachers" label above it.
+      const teacherIdSet = new Set(teacherIds);
+      const teacherRows = staffAtt.filter(r => teacherIdSet.has(r.userId));
+      setTeacherAtt({
+        present: teacherRows.filter(r => r.status === "Present").length,
+        absent: teacherRows.filter(r => r.status === "Absent").length,
+        late: teacherRows.filter(r => r.status === "Late").length,
+      });
+      setDisciplineOpen(incidents.filter(r => r.status === "Open" || r.status === "Investigating").length);
+      setPendingSubs(subCount);
+      setLoaded(true);
+    });
+  }, [teacherIds]);
+
+  const feePct = totalFees > 0 ? Math.round((paidFees / totalFees) * 100) : 0;
+
+  const actionItems: { priority: ActionPriority; label: string; href: string }[] = [
+    absentCount > 0 && { priority: "high", label: `${absentCount} student${absentCount > 1 ? "s" : ""} absent today`, href: "/attendance" },
+    teacherAtt.absent > 0 && { priority: "high", label: `${teacherAtt.absent} teacher${teacherAtt.absent > 1 ? "s" : ""} absent — check substitute coverage`, href: "/attendance" },
+    pendingSubs > 0 && { priority: "high", label: `${pendingSubs} substitution${pendingSubs > 1 ? "s" : ""} awaiting your approval`, href: "/attendance" },
+    disciplineOpen > 0 && { priority: "medium", label: `${disciplineOpen} open discipline case${disciplineOpen > 1 ? "s" : ""}`, href: "/discipline" },
+    pendingAppsCount > 0 && { priority: "medium", label: `${pendingAppsCount} admission application${pendingAppsCount > 1 ? "s" : ""} pending`, href: "/admissions" },
+    pendingLeavesCount > 0 && { priority: "low", label: `${pendingLeavesCount} staff leave request${pendingLeavesCount > 1 ? "s" : ""} pending`, href: "/hr" },
+  ].filter(Boolean) as { priority: ActionPriority; label: string; href: string }[];
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl border bg-gradient-to-br from-primary/5 via-transparent to-transparent p-5">
+        <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-4">School Today — {fmtToday()}</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-5">
+          <div>
+            <p className="text-[11px] text-muted-foreground font-semibold mb-1">Students ({totalStudents})</p>
+            <p className="text-sm font-bold">
+              <span className="text-emerald-600">{presentCount} present</span>
+              {" · "}<span className="text-red-600">{absentCount} absent</span>
+              {lateCount > 0 && <>{" · "}<span className="text-amber-600">{lateCount} late</span></>}
+            </p>
+          </div>
+          <div>
+            <p className="text-[11px] text-muted-foreground font-semibold mb-1">Teachers ({teacherIds.length})</p>
+            {loaded ? (
+              <p className="text-sm font-bold">
+                <span className="text-emerald-600">{teacherAtt.present} present</span>
+                {" · "}<span className="text-red-600">{teacherAtt.absent} absent</span>
+                {teacherAtt.late > 0 && <>{" · "}<span className="text-amber-600">{teacherAtt.late} late</span></>}
+              </p>
+            ) : <div className="skeleton h-5 w-32" />}
+          </div>
+          <div>
+            <p className="text-[11px] text-muted-foreground font-semibold mb-1">Discipline</p>
+            {loaded ? (
+              <p className="text-sm font-bold">
+                {disciplineOpen > 0 ? <span className="text-red-600">{disciplineOpen} open case{disciplineOpen > 1 ? "s" : ""}</span> : <span className="text-emerald-600">All clear</span>}
+              </p>
+            ) : <div className="skeleton h-5 w-20" />}
+          </div>
+          <div>
+            <p className="text-[11px] text-muted-foreground font-semibold mb-1">Fee Collection</p>
+            <p className="text-sm font-bold">{feePct}%</p>
+          </div>
+        </div>
+      </div>
+
+      {loaded && actionItems.length > 0 && (
+        <div className="rounded-2xl border p-5">
+          <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">🔴 Needs Your Attention</h2>
+          <div className="space-y-2">
+            {actionItems.map((item, i) => (
+              <Link key={i} href={item.href} className={`flex items-center gap-3 p-3 rounded-xl border text-xs font-semibold transition-colors ${ACTION_PRIORITY_STYLE[item.priority]}`}>
+                <span className={`w-2 h-2 rounded-full shrink-0 ${ACTION_PRIORITY_DOT[item.priority]}`} />
+                <span className="shrink-0 opacity-70">{ACTION_PRIORITY_LABEL[item.priority]}</span>
+                {item.label}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Class Substitutions widget (Admin/Principal/Owner) ──────────────────────
+// Separate from the Pending Approvals card by design: substitutions are a
+// distinct, higher-frequency operational concern (daily, tied to today's
+// timetable) from admissions/leave-request approvals. Also surfaces staff
+// leave (applied or approved) since a leave is usually *why* a substitution
+// exists — seeing both together answers "who's out and who's covering" in
+// one place instead of two.
+const SUB_STATUS_STYLE: Record<string, string> = {
+  auto: "bg-amber-100 text-amber-700",
+  confirmed: "bg-green-100 text-green-700",
+  manual_override: "bg-purple-100 text-purple-700",
+  unfilled: "bg-red-100 text-red-700",
+};
+const SUB_STATUS_TEXT: Record<string, string> = {
+  auto: "Pending Approval", confirmed: "Confirmed", manual_override: "Manual", unfilled: "Unfilled",
+};
+
+function SubstitutionsWidget({ leaveRequests, onLeaveUpdated }: { leaveRequests: any[]; onLeaveUpdated: () => void }) {
+  const [subs, setSubs] = useState<SubstitutionRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchSubstitutionsForDateDB(todayISO()).then(s => { setSubs(s); setLoading(false); });
+  }, []);
+
+  const relevantLeaves = leaveRequests.filter((l: any) => l.status === "Approved" || l.status === "Pending");
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+      <SoftCard title="Class Substitutions (Today)" action={<Badge className="h-5 min-w-5 px-1.5 rounded-full text-[10px]">{subs.length}</Badge>}>
+        <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
+          {loading ? (
+            <p className="text-xs text-muted-foreground text-center py-8">Loading…</p>
+          ) : subs.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-8">No substitutions today</p>
+          ) : (
+            subs.map(s => (
+              <div key={s.id} className="flex items-start gap-3 p-3 rounded-2xl bg-secondary/40">
+                <div className="h-8 w-8 rounded-xl bg-blue-500/10 flex items-center justify-center shrink-0"><UserCheck className="h-3.5 w-3.5 text-blue-600" /></div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-foreground truncate">{s.className} · {s.subjectName}</p>
+                  <p className="text-[10px] text-muted-foreground">{s.originalTeacherName} → {s.substituteTeacherName || "unassigned"} · {s.startTime}-{s.endTime}</p>
+                </div>
+                <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full shrink-0 ${SUB_STATUS_STYLE[s.status] || "bg-secondary text-muted-foreground"}`}>
+                  {SUB_STATUS_TEXT[s.status] || s.status}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+        <Link href="/attendance">
+          <Button variant="ghost" className="w-full h-9 text-xs font-semibold rounded-xl mt-3 text-primary hover:text-primary">View All Substitutions</Button>
+        </Link>
+      </SoftCard>
+
+      <SoftCard title="Staff Leave" action={<Badge className="h-5 min-w-5 px-1.5 rounded-full text-[10px]">{relevantLeaves.length}</Badge>}>
+        <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
+          {relevantLeaves.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-8">No leave applied or approved</p>
+          ) : (
+            relevantLeaves.map((l: any) => (
+              <div key={l.id} className="flex items-start gap-3 p-3 rounded-2xl bg-secondary/40">
+                <div className={`h-8 w-8 rounded-xl flex items-center justify-center shrink-0 ${l.status === "Approved" ? "bg-green-500/10" : "bg-warning/10"}`}>
+                  <Clock className={`h-3.5 w-3.5 ${l.status === "Approved" ? "text-green-600" : "text-warning"}`} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-foreground truncate">{l.employeeName}</p>
+                  <p className="text-[10px] text-muted-foreground">{l.days || ""} {l.days === 1 ? "day" : "days"}{l.reason ? ` · ${l.reason}` : ""}</p>
+                </div>
+                {l.status === "Pending" ? (
+                  <div className="flex gap-1 shrink-0">
+                    <Button size="sm" className="h-6 px-2 text-[10px]" onClick={() => approveLeaveDB(l.id, "Admin").then(onLeaveUpdated)}>Approve</Button>
+                    <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => rejectLeaveDB(l.id).then(onLeaveUpdated)}>Reject</Button>
+                  </div>
+                ) : (
+                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-full shrink-0 bg-green-100 text-green-700">{l.status}</span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </SoftCard>
+    </div>
+  );
+}
+
 const quickActions = [
   { label: "Add Student", href: "/students", color: "from-[#2563EB] to-[#3B82F6]", icon: UserPlus },
   { label: "Attendance", href: "/attendance", color: "from-[#06B6D4] to-[#22D3EE]", icon: CalendarCheck },
@@ -113,7 +322,11 @@ function SkeletonCard() {
   return <div className="soft-card p-5"><div className="skeleton h-8 w-8 rounded-full mb-4 ml-auto" /><div className="skeleton h-3 w-20 mb-2" /><div className="skeleton h-7 w-28 mb-2" /><div className="skeleton h-3 w-16" /></div>;
 }
 
-const fmtToday = () => new Date().toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+const fmtToday = () => {
+  const now = new Date();
+  const weekday = now.toLocaleDateString("en-US", { weekday: "long" });
+  return `${weekday}, ${formatDatePK(now)}`;
+};
 const todayISO = () => new Date().toISOString().split("T")[0];
 
 const ATT_STATUS_BADGE: Record<string, string> = {
@@ -123,6 +336,45 @@ const ATT_STATUS_BADGE: Record<string, string> = {
 
 // Self-service widget — a teacher's own attendance, distinct from the
 // "My Classes' Attendance" KPI above it (which is their students', not theirs).
+function MyClassesWidget() {
+  const [summary, setSummary] = useState<Awaited<ReturnType<typeof fetchMyTeachingSummaryDB>> | null>(null);
+
+  useEffect(() => { fetchMyTeachingSummaryDB().then(setSummary); }, []);
+
+  if (!summary) return null;
+  if (summary.classTeacherOf.length === 0 && summary.teaches.length === 0) return null;
+
+  return (
+    <SoftCard title="My Classes">
+      <div className="space-y-3">
+        {summary.classTeacherOf.length > 0 && (
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">Class Teacher Of</p>
+            <div className="flex flex-wrap gap-1.5">
+              {summary.classTeacherOf.map(c => (
+                <Badge key={c.sectionId} className="bg-primary/10 text-primary border-0">{c.className} – {c.sectionName}</Badge>
+              ))}
+            </div>
+          </div>
+        )}
+        {summary.teaches.length > 0 && (
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">Subjects You Teach</p>
+            <div className="space-y-1.5">
+              {summary.teaches.map((t, i) => (
+                <div key={i} className="flex items-center justify-between text-xs">
+                  <span className="text-foreground">{t.className} – {t.sectionName}</span>
+                  <span className="text-muted-foreground">{t.subjectName}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </SoftCard>
+  );
+}
+
 function MyAttendanceWidget() {
   const [today, setToday] = useState<string | null>(null);
   const [percentage, setPercentage] = useState<number | null>(null);
@@ -317,6 +569,8 @@ export default function DashboardPage() {
   const activeStudents = students.filter(s => s.status === "Active").length;
   const todayAtt = attendance.filter(a => a.date === todayISO());
   const presentCount = todayAtt.filter(a => a.status === "Present").length;
+  const absentCount = todayAtt.filter(a => a.status === "Absent").length;
+  const lateCount = todayAtt.filter(a => a.status === "Late").length;
   const attPct = todayAtt.length > 0 ? Math.round((presentCount / todayAtt.length) * 100) : 0;
   const totalFees = feeRecords.reduce((s, f) => s + f.amount, 0);
   const paidFees = feeRecords.filter(f => f.status === "Paid").reduce((s, f) => s + f.amount, 0);
@@ -544,6 +798,7 @@ export default function DashboardPage() {
           </div>
 
           <div className="space-y-4">
+            <MyClassesWidget />
             <MyAttendanceWidget />
             <CoveringTodayWidget />
             <SoftCard title={t("dash.resultsOverview")} action={<Badge variant="outline" className="text-[10px]">{t("dash.thisTerm")}</Badge>}>
@@ -694,6 +949,13 @@ export default function DashboardPage() {
         </Badge>
       </div>
 
+      <SchoolTodayBar
+        totalStudents={totalStudents} presentCount={presentCount} absentCount={absentCount} lateCount={lateCount}
+        teacherIds={teachers.map(t => t.id)}
+        pendingAppsCount={pendingApps.length} pendingLeavesCount={pendingLeaves.length}
+        paidFees={paidFees} totalFees={totalFees}
+      />
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard label={t("dash.totalStudents")} value={<AnimatedCounter value={totalStudents} />} valueColor="text-primary" sub={`+${studentTrend}% ${t("dash.vsLastTerm")}`} trend="up" icon={Users} href="/students" />
         <KpiCard label={t("dash.totalTeachers")} value={<AnimatedCounter value={teachers.length} />} sub={t("dash.optimalStaffing")} icon={GraduationCap} href="/teachers" />
@@ -754,6 +1016,10 @@ export default function DashboardPage() {
           </Link>
         </SoftCard>
       </div>
+
+      {(sessionRole === "ADMIN" || sessionRole === "PRINCIPAL" || sessionRole === "OWNER") && (
+        <SubstitutionsWidget leaveRequests={leaveRequests} onLeaveUpdated={() => fetchLeaveRequestsDB().then(setLeaveRequests)} />
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <SoftCard title={t("dash.recentAdmissions")} className="lg:col-span-2" action={<Link href="/admissions" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">{t("dash.viewAll")} <ChevronRight className="h-3 w-3" /></Link>}>

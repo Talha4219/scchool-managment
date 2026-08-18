@@ -1,7 +1,8 @@
 import { query } from "@/lib/db";
 import { normalizeToE164 } from "@/lib/whatsapp/phone";
-import { createWhatsAppNotification, createWhatsAppMessage } from "@/lib/whatsapp/notification-store";
+import { createWhatsAppNotification, createWhatsAppMessage, markMessageSent, markMessageFailed } from "@/lib/whatsapp/notification-store";
 import { enqueueJob } from "@/lib/whatsapp/queue";
+import { whatsAppProvider } from "@/lib/whatsapp/client";
 
 // The seam business modules call through — attendance/fees/exams/PTM never
 // touch WhatsAppProvider or Meta's API directly (see academic-core.ts /
@@ -11,12 +12,13 @@ import { enqueueJob } from "@/lib/whatsapp/queue";
 
 export type NotificationType =
   | "STUDENT_ABSENCE" | "FEE_REMINDER" | "FEE_OVERDUE" | "EXAM_REMINDER"
-  | "PTM_REMINDER" | "SCHOOL_ANNOUNCEMENT" | "TEACHER_MEETING" | "EVENT_REMINDER" | "TEST_MESSAGE";
+  | "PTM_REMINDER" | "SCHOOL_ANNOUNCEMENT" | "TEACHER_MEETING" | "EVENT_REMINDER" | "TEST_MESSAGE"
+  | "SUBSTITUTION_APPROVAL";
 
 export interface SendNotificationInput {
   type: NotificationType;
-  recipientType: "PARENT" | "TEACHER";
-  /** studentId for PARENT (their contact lives on the student record), teacher user id for TEACHER. */
+  recipientType: "PARENT" | "TEACHER" | "PRINCIPAL";
+  /** studentId for PARENT (their contact lives on the student record), user id (as a string) for TEACHER/PRINCIPAL. */
   recipientId: string;
   channel: "WHATSAPP";
   data: Record<string, string>;
@@ -34,17 +36,27 @@ export interface SendNotificationResult {
   metaMessageId?: string;
 }
 
-async function resolveRecipient(recipientType: "PARENT" | "TEACHER", recipientId: string): Promise<
-  { error: string } | { phone: string | null; optedIn: boolean }
+// WhatsApp notifications are mandatory for every recipient — no opt-out.
+// This only resolves a phone number now; whatsapp_opt_in columns still exist
+// in the DB (harmless) but are no longer read or enforced here.
+async function resolveRecipient(recipientType: "PARENT" | "TEACHER" | "PRINCIPAL", recipientId: string): Promise<
+  { error: string } | { phone: string | null }
 > {
   if (recipientType === "PARENT") {
-    const res = await query(`SELECT parent_phone, whatsapp_opt_in FROM students WHERE id=$1`, [recipientId]);
+    const res = await query(`SELECT parent_phone FROM students WHERE id=$1`, [recipientId]);
     if (res.rows.length === 0) return { error: "Student not found." };
-    return { phone: res.rows[0].parent_phone, optedIn: res.rows[0].whatsapp_opt_in === true };
+    return { phone: res.rows[0].parent_phone };
   }
-  const res = await query(`SELECT phone, whatsapp_opt_in FROM teacher_profiles WHERE user_id=$1`, [recipientId]);
+  if (recipientType === "PRINCIPAL") {
+    // Principals don't have a teacher_profiles row — contact lives directly
+    // on users (see also ADMIN/OWNER, which could reuse this same path).
+    const res = await query(`SELECT phone FROM users WHERE id=$1`, [recipientId]);
+    if (res.rows.length === 0) return { error: "Principal not found." };
+    return { phone: res.rows[0].phone };
+  }
+  const res = await query(`SELECT phone FROM teacher_profiles WHERE user_id=$1`, [recipientId]);
   if (res.rows.length === 0) return { error: "Teacher profile not found." };
-  return { phone: res.rows[0].phone, optedIn: res.rows[0].whatsapp_opt_in === true };
+  return { phone: res.rows[0].phone };
 }
 
 async function resolveApprovedTemplate(type: NotificationType): Promise<
@@ -87,12 +99,6 @@ export const notificationService = {
       templateId: template.id, createdByUserId: input.createdByUserId,
     });
 
-    if (!recipient.optedIn) {
-      const msg = "Recipient has not opted in to WhatsApp notifications.";
-      await query(`UPDATE whatsapp_notifications SET status='CANCELLED', error_message=$1, updated_at=NOW() WHERE id=$2`, [msg, notificationId]);
-      return { error: msg, notificationId };
-    }
-
     const normalizedPhone = normalizeToE164(recipient.phone);
     if (!normalizedPhone) {
       const msg = "No valid phone number on file for this recipient.";
@@ -119,5 +125,71 @@ export const notificationService = {
     );
 
     return { notificationId };
+  },
+
+  /** Free-form text — no Meta template, no approval wait, sent synchronously
+   *  (not queued, unlike send() above) since it's a single message, not a
+   *  batch. Only deliverable within Meta's 24h customer-service window; a
+   *  recipient who hasn't messaged the business number recently will get a
+   *  rejection from Meta, surfaced here as {error}. Use send() with an
+   *  approved template for anything that needs to reach someone outside
+   *  that window. */
+  async sendFreeText(input: { type: NotificationType; recipientType: "PARENT" | "TEACHER" | "PRINCIPAL"; recipientId: string; message: string; createdByUserId?: number }): Promise<SendNotificationResult> {
+    const recipient = await resolveRecipient(input.recipientType, input.recipientId);
+    if ("error" in recipient) return { error: recipient.error };
+
+    const notificationId = await createWhatsAppNotification({
+      recipientType: input.recipientType, recipientId: input.recipientId, notificationType: input.type,
+      createdByUserId: input.createdByUserId,
+    });
+
+    const normalizedPhone = normalizeToE164(recipient.phone);
+    if (!normalizedPhone) {
+      const msg = "No valid phone number on file for this recipient.";
+      await query(`UPDATE whatsapp_notifications SET status='FAILED', failed_at=NOW(), error_message=$1, updated_at=NOW() WHERE id=$2`, [msg, notificationId]);
+      return { error: msg, notificationId };
+    }
+
+    const messageId = await createWhatsAppMessage({
+      notificationId, phoneNumber: normalizedPhone, templateName: "(free text)", templateLanguage: "n/a",
+    });
+
+    const result = await whatsAppProvider.sendTextMessage(normalizedPhone, input.message);
+    if (result.error) {
+      await markMessageFailed(messageId, notificationId, result.errorCode, result.error);
+      return { error: result.error, notificationId };
+    }
+    await markMessageSent(messageId, notificationId, result.metaMessageId!);
+    return { notificationId, metaMessageId: result.metaMessageId };
+  },
+
+  /** Try free text first (instant, no template needed); if that fails —
+   *  most commonly because the recipient's 24h conversation window with the
+   *  business number is closed — fall back to the approved Meta template for
+   *  this NotificationType (see send() above). The two message bodies differ
+   *  because they're different delivery mechanisms: free text is one
+   *  arbitrary string, a template fills fixed {{n}} placeholders from
+   *  templateData. Requires a whatsapp_templates row with this type
+   *  APPROVED, or the fallback itself fails the same way send() normally
+   *  does (see resolveApprovedTemplate). */
+  async sendFreeTextWithTemplateFallback(input: {
+    type: NotificationType;
+    recipientType: "PARENT" | "TEACHER" | "PRINCIPAL";
+    recipientId: string;
+    message: string;
+    templateData: Record<string, string>;
+    createdByUserId?: number;
+  }): Promise<SendNotificationResult & { usedTemplate?: boolean }> {
+    const freeTextResult = await this.sendFreeText({
+      type: input.type, recipientType: input.recipientType, recipientId: input.recipientId,
+      message: input.message, createdByUserId: input.createdByUserId,
+    });
+    if (!freeTextResult.error) return { ...freeTextResult, usedTemplate: false };
+
+    const templateResult = await this.send({
+      type: input.type, recipientType: input.recipientType, recipientId: input.recipientId,
+      channel: "WHATSAPP", data: input.templateData, createdByUserId: input.createdByUserId,
+    });
+    return { ...templateResult, usedTemplate: true };
   },
 };

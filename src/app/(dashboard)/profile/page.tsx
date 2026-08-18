@@ -199,7 +199,7 @@ export default function ProfilePage() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground font-semibold">Account Created</p>
-                <p className="font-semibold text-primary">{new Date(displayProfile.createdAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</p>
+                <p className="font-semibold text-primary">{formatDatePK(displayProfile.createdAt)}</p>
               </div>
             </div>
           </div>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -559,7 +560,7 @@ export default function AdmissionsPage() {
 
                   <div className="hidden print:block text-center text-xs text-[#94A3B8] pt-4 border-t mt-6">
                     <p>This is a computer-generated application form.</p>
-                    <p>Generated on: {new Date().toLocaleDateString('en-PK', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                    <p>Generated on: {formatDatePK(new Date())}</p>
                   </div>
                 </div>
 
@@ -589,7 +590,7 @@ export default function AdmissionsPage() {
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-[#0F172A]">{docType}</p>
                             {doc ? (
-                              <p className="text-xs text-[#94A3B8] truncate">{new Date(doc.uploadedAt).toLocaleDateString()}</p>
+                              <p className="text-xs text-[#94A3B8] truncate">{formatDatePK(doc.uploadedAt)}</p>
                             ) : (
                               <p className="text-xs text-[#CBD5E1]">Not uploaded</p>
                             )}
@@ -654,7 +655,7 @@ export default function AdmissionsPage() {
               ) : (
                 <img src={viewDoc.fileData} alt={viewDoc.documentType} className="w-full max-h-[70vh] object-contain rounded-lg border border-[#E5E7EB] bg-[#F8FAFC]" />
               )}
-              <p className="text-xs text-[#94A3B8]">{viewDoc.fileName} · Uploaded {new Date(viewDoc.uploadedAt).toLocaleDateString()}{viewDoc.uploadedBy ? ` by ${viewDoc.uploadedBy}` : ""}</p>
+              <p className="text-xs text-[#94A3B8]">{viewDoc.fileName} · Uploaded {formatDatePK(viewDoc.uploadedAt)}{viewDoc.uploadedBy ? ` by ${viewDoc.uploadedBy}` : ""}</p>
             </div>
           )}
           <DialogFooter>

@@ -23,6 +23,13 @@ const mapRowToSchoolInfo = (row: any): SchoolInfo => ({
   address: row.address,
   contactEmail: row.contact_email,
   academicYear: row.academic_year,
+  phone: row.phone || undefined,
+  website: row.website || undefined,
+  principal: row.principal || undefined,
+  logoUrl: row.logo_url || undefined,
+  foundingYear: row.founding_year || undefined,
+  currency: row.currency || undefined,
+  timezone: row.timezone || undefined,
 });
 
 const mapRowToStudent = (row: any): StudentRecord => ({
@@ -242,13 +249,18 @@ export async function fetchDBState() {
 
 // Write Operations
 export async function updateSchoolInfoDB(info: SchoolInfo) {
-  const auth = await requireRole('ADMIN');
+  const auth = await requireRole('ADMIN', 'OWNER');
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
   await query(
-    `UPDATE school_info SET name=$1, registration_number=$2, address=$3, contact_email=$4, academic_year=$5`,
-    [info.name, info.registrationNumber, info.address, info.contactEmail, info.academicYear]
+    `UPDATE school_info SET name=$1, registration_number=$2, address=$3, contact_email=$4, academic_year=$5,
+     phone=$6, website=$7, principal=$8, logo_url=$9, founding_year=$10, currency=$11, timezone=$12`,
+    [
+      info.name, info.registrationNumber, info.address, info.contactEmail, info.academicYear,
+      info.phone || null, info.website || null, info.principal || null, info.logoUrl || null,
+      info.foundingYear || null, info.currency || null, info.timezone || null,
+    ]
   );
 }
 
@@ -260,21 +272,55 @@ export async function addStudentDB(st: StudentRecord) {
 
   // NOTE: `class` and `section` columns are DEPRECATED — use enrollments table for grade/section assignment
   await query(
-    `INSERT INTO students (id, name, admission_number, class, section, parent_name, status, parent_email, email, profile_photo, branch_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-    [st.id, st.name, st.admissionNumber, st.class, st.section, st.parentName, st.status, st.parentEmail, st.email, st.profilePhoto || null, scopeBranch(auth.session)]
+    `INSERT INTO students (id, name, admission_number, class, section, parent_name, status, parent_email, email, profile_photo, branch_id, dob, gender, address, guardian_relation, phone)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+    [
+      st.id, st.name, st.admissionNumber, st.class, st.section, st.parentName, st.status, st.parentEmail, st.email, st.profilePhoto || null, scopeBranch(auth.session),
+      st.dateOfBirth || null, st.gender || null, st.address || null, st.guardianRelation || null, st.phone || null,
+    ]
   );
   return st;
 }
 
 export async function updateStudentDB(st: StudentRecord) {
-  const auth = await requireRole('ADMIN');
+  const auth = await requireRole('ADMIN', 'TEACHER');
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
+
+  if (auth.session.role === 'TEACHER') {
+    // A class teacher may edit contact/profile fields for students in their
+    // own section — never class/section/status/admission number, which stay
+    // admin-only so a class teacher can't smuggle a transfer or withdrawal
+    // through the profile-edit form.
+    const check = await query(
+      `SELECT 1 FROM enrollments e JOIN sections sec ON sec.id = e.section_id
+       WHERE e.student_id=$1 AND e.status='Active' AND sec.class_teacher_id=$2 LIMIT 1`,
+      [st.id, auth.session.userId]
+    );
+    if (check.rows.length === 0) return;
+    await query(
+      `UPDATE students SET parent_name=$1, parent_email=$2, email=$3, profile_photo=$4,
+         dob=$5, gender=$6, address=$7, guardian_relation=$8, phone=$9
+       WHERE id=$10`,
+      [
+        st.parentName, st.parentEmail, st.email, st.profilePhoto || null,
+        st.dateOfBirth || null, st.gender || null, st.address || null, st.guardianRelation || null, st.phone || null,
+        st.id,
+      ]
+    );
+    return;
+  }
+
   await query(
-    `UPDATE students SET name=$1, class=$2, section=$3, parent_name=$4, status=$5, parent_email=$6, email=$7, admission_number=$8, profile_photo=$9 WHERE id=$10`,
-    [st.name, st.class, st.section, st.parentName, st.status, st.parentEmail, st.email, st.admissionNumber, st.profilePhoto || null, st.id]
+    `UPDATE students SET name=$1, class=$2, section=$3, parent_name=$4, status=$5, parent_email=$6, email=$7, admission_number=$8, profile_photo=$9,
+       dob=$10, gender=$11, address=$12, guardian_relation=$13, phone=$14
+     WHERE id=$15`,
+    [
+      st.name, st.class, st.section, st.parentName, st.status, st.parentEmail, st.email, st.admissionNumber, st.profilePhoto || null,
+      st.dateOfBirth || null, st.gender || null, st.address || null, st.guardianRelation || null, st.phone || null,
+      st.id,
+    ]
   );
 }
 
@@ -602,6 +648,19 @@ export async function recordFeePaymentDB(
   // already established above so the audit trail always has a real actor instead
   // of falling through to the "online gateway" no-session case in the ledger writer.
   return writeFeePaymentLedgerEntryDB(feeRecordId, amount, method, date, recordedByUserId ?? auth.session.userId, type);
+}
+
+// One student's fee vouchers (not the per-voucher payment ledger below) —
+// backs the Fees tab on the student profile page. Branch-scoped indirectly
+// via the student row itself, same trust boundary as reading their other
+// profile data through fetchStudentProfileDB.
+export async function fetchStudentFeeRecordsDB(studentId: string): Promise<FeeRecord[]> {
+  const session = await getSession();
+  if (!session) return [];
+  try {
+    const res = await query("SELECT * FROM fee_records WHERE student_id=$1 ORDER BY due_date DESC", [studentId]);
+    return res.rows.map(mapRowToFeeRecord);
+  } catch { return []; }
 }
 
 export interface FeePaymentHistoryEntry {

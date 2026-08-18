@@ -2,6 +2,8 @@
 
 import { useMemo, useState, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { useStudents } from "@/lib/students-context";
+import { formatDatePK } from "@/lib/date-format";
 import {
   fetchAcademicYearsDB, fetchClassesDB, fetchEnrollmentsDB,
   fetchSchoolResultsOverviewDB, fetchSchoolAttendanceOverviewDB,
@@ -71,8 +73,9 @@ function getGrade(avg: number) {
 
 export default function ReportsPage() {
   const {
-    schoolInfo, students, feeRecords, applications,
+    schoolInfo, feeRecords, applications,
   } = useAppState();
+  const { students } = useStudents();
   const { can, loaded: permsLoaded } = usePermission();
 
   // Real relational data — the legacy `classes`/`exams`/`attendance` arrays from
@@ -504,7 +507,7 @@ export default function ReportsPage() {
                       <TableCell className="text-xs text-muted-foreground">{f.month || "—"}</TableCell>
                       <TableCell className="text-right font-bold text-primary">Rs. {f.amount.toLocaleString()}</TableCell>
                       <TableCell className="text-right font-bold">Rs. {f.netDue.toLocaleString()}</TableCell>
-                      <TableCell className="text-xs">{f.dueDate ? new Date(f.dueDate).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</TableCell>
+                      <TableCell className="text-xs">{f.dueDate ? formatDatePK(f.dueDate) : "—"}</TableCell>
                       <TableCell className="text-center">
                         <Badge variant="outline" className={STATUS_COLORS[f.status] || ""}>{f.status}</Badge>
                       </TableCell>
@@ -608,7 +611,7 @@ export default function ReportsPage() {
                       <TableCell className="font-semibold text-primary">{a.firstName} {a.lastName}</TableCell>
                       <TableCell>{a.applyingForClass}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {a.submittedAt ? new Date(a.submittedAt).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                        {a.submittedAt ? formatDatePK(a.submittedAt) : "—"}
                       </TableCell>
                       <TableCell className="text-center">
                         <Badge variant="outline" className={

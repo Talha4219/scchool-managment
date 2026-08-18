@@ -2,8 +2,8 @@
 
 import { randomBytes, createHash } from "crypto";
 import { query, checkDbConnection } from "@/lib/db";
-import { checkInByCardUid, checkInByStaffCardUid, type CheckInResult } from "@/lib/attendance-checkin";
-import { requireRole } from "@/lib/auth-scope";
+import { checkInByCardUid, checkInByStaffCardUid, checkInByRollNumber, resolveStudentByCardUid, type CheckInResult } from "@/lib/attendance-checkin";
+import { requireRole, scopeBranch } from "@/lib/auth-scope";
 
 // ── Device API keys (Settings → Attendance Devices, ADMIN only) ────────────
 
@@ -108,19 +108,31 @@ export async function removeStudentCardAction(id: string): Promise<{ error?: str
 // cheap readers do this natively — no driver/SDK needed). Unlike the device
 // API route, this trusts the signed-in ADMIN/TEACHER session instead of an
 // API key, since a real person is sitting at this browser.
-export async function kioskCheckInAction(cardUid: string): Promise<CheckInResult> {
+export async function kioskCheckInAction(input: string): Promise<CheckInResult> {
   const auth = await requireRole("ADMIN", "TEACHER");
   if ("error" in auth) return { error: auth.error };
   const isOnline = await checkDbConnection();
   if (!isOnline) return { error: "Database offline." };
+  const trimmed = input.trim();
+
   // Same badge/card population as the device endpoint — check which table
   // the UID belongs to before dispatching so a staff badge tapped at the
   // kiosk works too, not just student cards.
-  const staffCard = await query("SELECT 1 FROM staff_id_cards WHERE card_uid=$1", [cardUid.trim()]);
+  const staffCard = await query("SELECT 1 FROM staff_id_cards WHERE card_uid=$1", [trimmed]);
   if (staffCard.rows.length > 0) {
-    const staffResult = await checkInByStaffCardUid(cardUid, "kiosk");
+    const staffResult = await checkInByStaffCardUid(trimmed, "kiosk");
     if (staffResult.error) return { error: staffResult.error };
     return { studentName: staffResult.staffName, status: staffResult.status, time: staffResult.time };
   }
-  return checkInByCardUid(cardUid, "kiosk");
+
+  // A student without an enrolled card can type their roll number instead —
+  // try a card match first (most kiosk input is a real scanner tap), and
+  // only fall through to roll-number lookup when the input isn't a
+  // recognized card at all (so an "already checked in today" error on a
+  // real card never gets masked by a roll-number retry).
+  const cardMatch = await resolveStudentByCardUid(trimmed);
+  if (!("error" in cardMatch) || cardMatch.error !== "Card not recognized.") {
+    return checkInByCardUid(trimmed, "kiosk");
+  }
+  return checkInByRollNumber(trimmed, "kiosk", scopeBranch(auth.session));
 }

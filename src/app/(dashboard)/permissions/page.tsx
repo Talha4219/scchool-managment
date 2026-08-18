@@ -34,7 +34,7 @@ const PERMISSION_GROUPS: Record<string, { color: string; perms: string[] }> = {
   Classes: { color: "purple", perms: ['classes.view', 'classes.create', 'classes.edit', 'classes.delete', 'classes.grades', 'classes.students'] },
   Assignments: { color: "purple", perms: ['assignments.view', 'assignments.create', 'assignments.grade', 'assignments.delete'] },
   Attendance: { color: "green", perms: ['attendance.view', 'attendance.mark', 'attendance.staff.manage'] },
-  Exams: { color: "amber", perms: ['exams.view', 'exams.create', 'exams.edit', 'exams.delete', 'exams.dashboard', 'exams.manage', 'exams.marks', 'exams.results', 'exams.report-cards', 'exams.analytics', 'exams.online', 'exams.books', 'exams.settings'] },
+  Exams: { color: "amber", perms: ['exams.view', 'exams.create', 'exams.edit', 'exams.delete', 'exams.dashboard', 'exams.manage', 'exams.marks', 'exams.results', 'exams.report-cards', 'exams.analytics', 'exams.online', 'exams.books'] },
   Results: { color: "blue", perms: ['results.view', 'results.enter', 'results.approve', 'results.publish'] },
   Fees: { color: "amber", perms: ['fees.view', 'fees.create', 'fees.edit', 'fees.delete'] },
   Timetable: { color: "blue", perms: ['timetable.view', 'timetable.create', 'timetable.edit', 'timetable.delete', 'timetable.substitute'] },

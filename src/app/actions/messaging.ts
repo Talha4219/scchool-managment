@@ -22,10 +22,10 @@ async function resolveContacts(userId: number, role: string, session: SessionPay
   // directories aren't a real contact list for anyone but OWNER.
   const branchId = scopeBranch(session);
   const adminParams: (number | string)[] = [userId];
-  let adminSql = `SELECT id, name FROM users WHERE role='ADMIN' AND id != $1`;
+  let adminSql = `SELECT id, name, role FROM users WHERE role IN ('ADMIN','PRINCIPAL') AND id != $1`;
   if (branchId) { adminParams.push(branchId); adminSql += ` AND branch_id=$${adminParams.length}`; }
   const admins = await query(adminSql, adminParams);
-  for (const r of admins.rows) contacts.set(r.id, { userId: r.id, name: r.name, role: 'ADMIN' });
+  for (const r of admins.rows) contacts.set(r.id, { userId: r.id, name: r.name, role: r.role === 'PRINCIPAL' ? 'ADMIN' : r.role });
 
   if (role === 'ADMIN' || role === 'PRINCIPAL' || role === 'OWNER') {
     const params: (number | string)[] = [userId];

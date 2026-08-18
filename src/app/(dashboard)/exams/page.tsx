@@ -13,6 +13,7 @@ import { fetchAcademicYearsDB, fetchTermExamsDB, fetchReportCardsDB } from "@/ap
 import type { AcademicYear, TermExam } from "@/lib/types";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 export default function ExamsDashboardPage() {
   const { can, loaded } = usePermission();
@@ -41,7 +42,7 @@ export default function ExamsDashboardPage() {
     fetchReportCardsDB(activeYearId).then(setReportCards);
   }, [activeYearId]);
 
-  if (!loaded) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Loading...</div>;
+  if (!loaded) return <PageSkeleton />;
   if (!can("exams.dashboard")) return <Unauthorized />;
 
   return (

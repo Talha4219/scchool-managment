@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { getSession } from "@/app/actions/auth";
+import { formatDatePK, formatDateTimePK } from "@/lib/date-format";
 import { Unauthorized } from "@/components/unauthorized";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,12 +10,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import {
   MessageSquare, Send, History, LayoutTemplate, ListChecks, RefreshCw,
-  Clock, CheckCircle2, XCircle, Loader2,
+  Clock, CheckCircle2, XCircle, Loader2, Eye,
 } from "lucide-react";
 import {
   fetchWhatsAppTemplatesAction, updateWhatsAppTemplateStatusAction,
@@ -99,6 +101,7 @@ function OverviewTab() {
 function TemplatesTab() {
   const { toast } = useToast();
   const [templates, setTemplates] = useState<WhatsAppTemplateRecord[]>([]);
+  const [viewing, setViewing] = useState<WhatsAppTemplateRecord | null>(null);
   const load = () => { fetchWhatsAppTemplatesAction().then(setTemplates); };
   useEffect(() => { load(); }, []);
 
@@ -144,8 +147,9 @@ function TemplatesTab() {
                     {t.status}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-xs text-muted-foreground">{new Date(t.updatedAt).toLocaleDateString()}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">{formatDatePK(t.updatedAt)}</TableCell>
                 <TableCell className="text-right">
+                  <Button size="sm" variant="ghost" className="h-7 text-xs mr-1" onClick={() => setViewing(t)}><Eye className="h-3 w-3 mr-1" /> View</Button>
                   {t.status !== "APPROVED" && <Button size="sm" variant="outline" className="h-7 text-xs mr-1" onClick={() => handleApprove(t.id)}>Mark Approved</Button>}
                   {t.status !== "REJECTED" && <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => handleReject(t.id)}>Reject</Button>}
                 </TableCell>
@@ -154,6 +158,80 @@ function TemplatesTab() {
           </TableBody>
         </Table>
       </CardContent>
+
+      <Dialog open={!!viewing} onOpenChange={(open) => !open && setViewing(null)}>
+        <DialogContent className="max-w-lg">
+          {viewing && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  {viewing.name}
+                  <Badge className={`border-0 ${viewing.status === "APPROVED" ? "bg-green-100 text-green-700" : viewing.status === "REJECTED" ? "bg-red-100 text-red-700" : viewing.status === "DISABLED" ? "bg-gray-100 text-gray-500" : "bg-amber-100 text-amber-700"}`}>
+                    {viewing.status}
+                  </Badge>
+                </DialogTitle>
+                {viewing.description && <DialogDescription>{viewing.description}</DialogDescription>}
+              </DialogHeader>
+              <div className="space-y-4 text-sm">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Meta Template Name</p>
+                    <p className="font-mono text-xs mt-0.5">{viewing.metaTemplateName}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Language</p>
+                    <p className="mt-0.5">{viewing.language}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Category</p>
+                    <p className="mt-0.5">{viewing.category}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Last Updated</p>
+                    <p className="mt-0.5">{formatDateTimePK(viewing.updatedAt)}</p>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Variables</p>
+                  {viewing.variables.length > 0 ? (
+                    <div className="space-y-1">
+                      {viewing.variables.map((v, i) => (
+                        <div key={v} className="flex items-center gap-2 text-xs">
+                          <span className="font-mono px-2 py-0.5 rounded-md bg-secondary/50 border">{`{{${i + 1}}}`}</span>
+                          <span className="text-muted-foreground">← {v}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No variables — static message.</p>
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Template Body (paste into Meta)</p>
+                    {viewing.body && (
+                      <Button
+                        size="sm" variant="ghost" className="h-6 text-[11px] px-2"
+                        onClick={() => { navigator.clipboard.writeText(viewing.body!); toast({ title: "Copied to clipboard" }); }}
+                      >
+                        Copy
+                      </Button>
+                    )}
+                  </div>
+                  {viewing.body ? (
+                    <pre className="rounded-xl border bg-secondary/20 p-3 text-xs leading-relaxed whitespace-pre-wrap font-mono">{viewing.body}</pre>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No body text saved for this template yet.</p>
+                  )}
+                  <p className="text-[11px] text-muted-foreground mt-1.5 italic">
+                    Create this exact text as a {viewing.category} template named <span className="font-mono">{viewing.metaTemplateName}</span> ({viewing.language}) in Meta Business Manager, submit for review, then mark it Approved above once Meta confirms.
+                  </p>
+                </div>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
@@ -224,9 +302,9 @@ function HistoryTab() {
                 <TableCell className="font-mono text-[10px]">{e.templateName || "—"}</TableCell>
                 <TableCell className="text-xs">WHATSAPP</TableCell>
                 <TableCell><Badge className={`border-0 ${statusColor[e.status] || "bg-gray-100 text-gray-600"}`}>{e.status}</Badge></TableCell>
-                <TableCell className="text-[10px] text-muted-foreground">{e.sentAt ? new Date(e.sentAt).toLocaleString() : "—"}</TableCell>
-                <TableCell className="text-[10px] text-muted-foreground">{e.deliveredAt ? new Date(e.deliveredAt).toLocaleString() : "—"}</TableCell>
-                <TableCell className="text-[10px] text-muted-foreground">{e.readAt ? new Date(e.readAt).toLocaleString() : "—"}</TableCell>
+                <TableCell className="text-[10px] text-muted-foreground">{formatDateTimePK(e.sentAt)}</TableCell>
+                <TableCell className="text-[10px] text-muted-foreground">{formatDateTimePK(e.deliveredAt)}</TableCell>
+                <TableCell className="text-[10px] text-muted-foreground">{formatDateTimePK(e.readAt)}</TableCell>
                 <TableCell className="text-[10px] text-red-600 max-w-[200px] truncate" title={e.errorMessage || ""}>{e.errorMessage || "—"}</TableCell>
               </TableRow>
             ))}
@@ -355,7 +433,7 @@ function SendTab() {
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function WhatsAppAdminPage() {
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
-  useEffect(() => { getSession().then(s => setIsAdmin(s?.role === "ADMIN")); }, []);
+  useEffect(() => { getSession().then(s => setIsAdmin(s?.role === "ADMIN" || s?.role === "PRINCIPAL" || s?.role === "OWNER")); }, []);
 
   if (isAdmin === null) return null;
   if (!isAdmin) return <Unauthorized />;

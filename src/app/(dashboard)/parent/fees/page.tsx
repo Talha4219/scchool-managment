@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getParentPortalData, type ParentPortalData } from "@/app/actions/features";
+import { formatDatePK } from "@/lib/date-format";
 import { fetchGatewayAvailabilityAction, initiateFeePaymentAction, type Gateway } from "@/app/actions/payments";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -21,8 +22,7 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 function formatDate(dateStr?: string) {
-  if (!dateStr) return "—";
-  return new Date(dateStr).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
+  return formatDatePK(dateStr);
 }
 
 function netDue(f: FeeRecord) {
@@ -48,7 +48,7 @@ function openVoucherWindow(f: FeeRecord, schoolName: string) {
     : "";
   const statusColor = { Paid: "#166534", Unpaid: "#1d4ed8", Overdue: "#991b1b", Partial: "#92400e" }[f.status] || "#111";
   const statusBg = { Paid: "#dcfce7", Unpaid: "#dbeafe", Overdue: "#fee2e2", Partial: "#fef3c7" }[f.status] || "#f3f4f6";
-  const generated = new Date().toLocaleDateString("en-PK", { year: "numeric", month: "long", day: "numeric" });
+  const generated = formatDatePK(new Date());
 
   win.document.write(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Fee Voucher — ${f.voucherId}</title>

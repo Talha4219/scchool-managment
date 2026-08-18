@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
 import { useStudents } from "@/lib/students-context";
 import { getSession } from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
@@ -157,7 +158,7 @@ function MaterialsDialog({ course, canManage, trigger }: { course: Course; canMa
                       <div className="min-w-0">
                         <p className="text-sm font-semibold truncate">{n.title}</p>
                         {n.description && <p className="text-xs text-muted-foreground line-clamp-1">{n.description}</p>}
-                        <p className="text-[10px] text-muted-foreground">{n.createdByName}{n.createdByName ? " · " : ""}{new Date(n.createdAt).toLocaleDateString()}</p>
+                        <p className="text-[10px] text-muted-foreground">{n.createdByName}{n.createdByName ? " · " : ""}{formatDatePK(n.createdAt)}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">

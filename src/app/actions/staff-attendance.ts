@@ -135,7 +135,7 @@ export async function checkOutStaffDB(userId: number, date: string, checkoutTime
 export async function fetchStaffAttendanceSummaryDB(userId: number, startDate: string, endDate: string): Promise<Record<string, number> & { total: number; percentage: number }> {
   const auth = await requireSession();
   if ('error' in auth) return { total: 0, percentage: 0 };
-  const scopedUserId = auth.session.role === 'ADMIN' ? userId : auth.session.userId;
+  const scopedUserId = (auth.session.role === 'ADMIN' || auth.session.role === 'PRINCIPAL' || auth.session.role === 'OWNER') ? userId : auth.session.userId;
   try {
     const res = await query(
       "SELECT status, COUNT(*)::int as count FROM staff_attendance WHERE user_id=$1 AND date >= $2 AND date <= $3 GROUP BY status",
@@ -152,7 +152,7 @@ export async function fetchStaffAttendanceSummaryDB(userId: number, startDate: s
 export async function fetchStaffAttendanceHistoryDB(userId: number, startDate: string, endDate: string): Promise<StaffAttendanceRecord[]> {
   const auth = await requireSession();
   if ('error' in auth) return [];
-  const scopedUserId = auth.session.role === 'ADMIN' ? userId : auth.session.userId;
+  const scopedUserId = (auth.session.role === 'ADMIN' || auth.session.role === 'PRINCIPAL' || auth.session.role === 'OWNER') ? userId : auth.session.userId;
   try {
     const res = await query(
       `SELECT sa.*, u.name as user_name FROM staff_attendance sa JOIN users u ON u.id = sa.user_id

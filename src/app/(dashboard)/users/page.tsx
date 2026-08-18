@@ -2,13 +2,13 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { useAppState } from "@/lib/state-context";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import {
@@ -28,14 +28,16 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
-  Lock, ShieldAlert, Trash2, Plus, Users, KeyRound, Pencil, Clock, CheckCircle2, XCircle,
+  ShieldAlert, Trash2, Plus, Users, KeyRound, Pencil, Clock, CheckCircle2, XCircle,
   Eye, Phone, CreditCard, GraduationCap, Briefcase, Download, ShieldCheck, UserX, UserCheck2,
 } from "lucide-react";
 import { exportToCsv } from "@/lib/export-csv";
+import { formatDatePK } from "@/lib/date-format";
 
 type User = {
   id: number; name: string; email: string; role: string; createdAt: Date; status: string;
   customRoleId: string | null; customRoleName: string | null; customRoleColor: string | null;
+  branchId: string | null; branchName: string | null;
 };
 
 type PendingUser = {
@@ -53,6 +55,8 @@ const BRANCH_SCOPED_ROLES = new Set(["ADMIN", "TEACHER", "EMPLOYEE", "PRINCIPAL"
 
 const roleBadge: Record<string, string> = {
   ADMIN: "bg-blue-100 text-blue-800",
+  PRINCIPAL: "bg-blue-100 text-blue-800",
+  OWNER: "bg-amber-100 text-amber-800",
   TEACHER: "bg-green-100 text-green-800",
   STUDENT: "bg-orange-100 text-orange-800",
   PARENT: "bg-purple-100 text-purple-800",
@@ -67,7 +71,6 @@ const customColorBadge: Record<string, string> = {
 };
 
 export default function UsersPage() {
-  const { activeRole } = useAppState();
   const { toast } = useToast();
   const { can, loaded: permsLoaded } = usePermission();
   const [users, setUsers] = useState<User[]>([]);
@@ -76,6 +79,11 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [branchFilter, setBranchFilter] = useState("ALL");
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // Dialogs
   const [createOpen, setCreateOpen] = useState(false);
@@ -87,7 +95,7 @@ export default function UsersPage() {
   // Forms — a role field value is either a bare system role ("TEACHER") or
   // "custom:<id>" for a custom role; split apart right before hitting the DB.
   const [createForm, setCreateForm] = useState({ name: "", email: "", password: "", roleValue: "STUDENT", branchId: "" });
-  const [editRoleValue, setEditRoleValue] = useState("STUDENT");
+  const [editForm, setEditForm] = useState({ name: "", email: "", roleValue: "STUDENT", branchId: "" });
   const [newPassword, setNewPassword] = useState("");
   const [branches, setBranches] = useState<BranchRecord[]>([]);
   const [isOwner, setIsOwner] = useState(false);
@@ -111,18 +119,8 @@ export default function UsersPage() {
     });
   }, []);
 
-  if (activeRole !== "ADMIN") {
-    if (!permsLoaded) return null;
-    if (!can("users.view")) return <Unauthorized />;
-
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
-        <Lock className="h-12 w-12 text-muted-foreground" />
-        <h2 className="text-xl font-bold text-primary">Admin Access Only</h2>
-        <p className="text-muted-foreground text-sm">User management is restricted to administrators.</p>
-      </div>
-    );
-  }
+  if (!permsLoaded) return null;
+  if (!can("users.view")) return <Unauthorized />;
 
   const parseRoleValue = (v: string): { role: string; customRoleId: string | null } => {
     if (v.startsWith("custom:")) {
@@ -137,8 +135,61 @@ export default function UsersPage() {
     const matchSearch = u.name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase());
     const matchRole = roleFilter === "ALL"
       || (roleFilter === "CUSTOM" ? !!u.customRoleId : (u.role === roleFilter && !u.customRoleId));
-    return matchSearch && matchRole;
+    const matchStatus = statusFilter === "ALL" || u.status === statusFilter;
+    const matchBranch = branchFilter === "ALL" || u.branchId === branchFilter;
+    return matchSearch && matchRole && matchStatus && matchBranch;
   });
+
+  const allFilteredSelected = filtered.length > 0 && filtered.every(u => selectedIds.has(u.id));
+  const toggleSelectAll = () => {
+    setSelectedIds(prev => {
+      if (allFilteredSelected) return new Set();
+      const next = new Set(prev);
+      filtered.forEach(u => next.add(u.id));
+      return next;
+    });
+  };
+  const toggleSelectOne = (id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const selectedUsers = filtered.filter(u => selectedIds.has(u.id));
+
+  const handleBulkDeactivate = async () => {
+    setBulkBusy(true);
+    const results = await Promise.all(selectedUsers.filter(u => u.status !== "INACTIVE").map(u => deactivateUserDB(u.id)));
+    const failed = results.filter(r => r.error).length;
+    setBulkBusy(false);
+    toast({ title: failed ? `Deactivated ${results.length - failed}, ${failed} failed.` : `${results.length} user(s) deactivated.` });
+    clearSelection();
+    load();
+  };
+
+  const handleBulkReactivate = async () => {
+    setBulkBusy(true);
+    const results = await Promise.all(selectedUsers.filter(u => u.status === "INACTIVE").map(u => reactivateUserDB(u.id)));
+    const failed = results.filter(r => r.error).length;
+    setBulkBusy(false);
+    toast({ title: failed ? `Reactivated ${results.length - failed}, ${failed} failed.` : `${results.length} user(s) reactivated.` });
+    clearSelection();
+    load();
+  };
+
+  const handleBulkDelete = async () => {
+    setBulkBusy(true);
+    const results = await Promise.all(selectedUsers.map(u => deleteUserDB(u.id)));
+    const failed = results.filter(r => r.error).length;
+    setBulkBusy(false);
+    setBulkDeleteOpen(false);
+    toast({ title: failed ? `Deleted ${results.length - failed}, ${failed} failed.` : `${results.length} user(s) deleted.` });
+    clearSelection();
+    load();
+  };
 
   const handleCreate = async () => {
     if (!createForm.name || !createForm.email || !createForm.password) {
@@ -153,12 +204,19 @@ export default function UsersPage() {
     load();
   };
 
-  const handleUpdateRole = async () => {
+  const handleUpdateUser = async () => {
     if (!editUser) return;
-    const { role, customRoleId } = parseRoleValue(editRoleValue);
-    const res = await updateUserDB(editUser.id, { role: role as any, customRoleId });
+    if (!editForm.name.trim() || !editForm.email.trim()) {
+      toast({ title: "Name and email are required.", variant: "destructive" }); return;
+    }
+    const { role, customRoleId } = parseRoleValue(editForm.roleValue);
+    const res = await updateUserDB(editUser.id, {
+      name: editForm.name.trim(), email: editForm.email.trim(),
+      role: role as any, customRoleId,
+      ...(isOwner ? { branchId: editForm.branchId || null } : {}),
+    });
     if (res.error) { toast({ title: res.error, variant: "destructive" }); return; }
-    toast({ title: "Role updated." });
+    toast({ title: "User updated." });
     setEditUser(null);
     load();
   };
@@ -208,7 +266,7 @@ export default function UsersPage() {
 
   const counts = {
     ALL: users.length,
-    ADMIN: users.filter(u => u.role === "ADMIN" && !u.customRoleId).length,
+    PRINCIPAL: users.filter(u => u.role === "PRINCIPAL" && !u.customRoleId).length,
     TEACHER: users.filter(u => u.role === "TEACHER" && !u.customRoleId).length,
     STUDENT: users.filter(u => u.role === "STUDENT" && !u.customRoleId).length,
     PARENT: users.filter(u => u.role === "PARENT" && !u.customRoleId).length,
@@ -285,7 +343,7 @@ export default function UsersPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
-        {(["ALL", "ADMIN", "TEACHER", "STUDENT", "PARENT", "EMPLOYEE", "CUSTOM"] as const).map(r => (
+        {(["ALL", "PRINCIPAL", "TEACHER", "STUDENT", "PARENT", "EMPLOYEE", "CUSTOM"] as const).map(r => (
           <button key={r} onClick={() => setRoleFilter(r)} className={`p-4 rounded-xl border text-left transition-all ${roleFilter === r ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}>
             <p className="text-xs font-semibold text-muted-foreground">{r === "ALL" ? "All Users" : r === "CUSTOM" ? "Custom Roles" : r.charAt(0) + r.slice(1).toLowerCase()}</p>
             <p className="text-2xl font-bold text-primary mt-1">{counts[r]}</p>
@@ -319,7 +377,7 @@ export default function UsersPage() {
                     <TableCell className="font-semibold text-primary">{u.name}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{u.email}</TableCell>
                     <TableCell><Badge className={`${roleBadge[u.role] ?? "bg-gray-100 text-gray-800"} border-0 text-xs`}>{u.role}</Badge></TableCell>
-                    <TableCell className="text-muted-foreground text-xs">{new Date(u.createdAt).toLocaleDateString()}</TableCell>
+                    <TableCell className="text-muted-foreground text-xs">{formatDatePK(u.createdAt)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
                         {u.profile && (
@@ -345,11 +403,28 @@ export default function UsersPage() {
 
       <Card className="border-none shadow-sm">
         <CardHeader className="pb-3">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Users className="h-5 w-5 text-primary" />
             <CardTitle>Registered Users</CardTitle>
-            <div className="ml-auto flex gap-2">
-              <Input placeholder="Search name or email..." value={search} onChange={e => setSearch(e.target.value)} className="w-64" />
+            <div className="ml-auto flex flex-wrap gap-2">
+              <Input placeholder="Search name or email..." value={search} onChange={e => setSearch(e.target.value)} className="w-56" />
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-32"><SelectValue placeholder="Status" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Status</SelectItem>
+                  <SelectItem value="ACTIVE">Active</SelectItem>
+                  <SelectItem value="INACTIVE">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+              {isOwner && branches.length > 0 && (
+                <Select value={branchFilter} onValueChange={setBranchFilter}>
+                  <SelectTrigger className="w-40"><SelectValue placeholder="Branch" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ALL">All Branches</SelectItem>
+                    {branches.map(b => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              )}
               <Button variant="outline" size="sm" className="gap-1" onClick={() => {
                 exportToCsv("users", ["Name", "Email", "Role", "Custom Role", "Status"],
                   filtered.map(u => [u.name, u.email, u.role, u.customRoleName || "", u.status]));
@@ -358,18 +433,43 @@ export default function UsersPage() {
               </Button>
             </div>
           </div>
+          {selectedIds.size > 0 && (
+            <div className="flex items-center gap-2 mt-3 p-2.5 rounded-lg bg-primary/5 border border-primary/20">
+              <span className="text-sm font-medium text-primary">{selectedIds.size} selected</span>
+              <div className="ml-auto flex gap-1.5">
+                <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" disabled={bulkBusy} onClick={handleBulkReactivate}>
+                  <UserCheck2 className="h-3.5 w-3.5" /> Reactivate
+                </Button>
+                <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" disabled={bulkBusy} onClick={handleBulkDeactivate}>
+                  <UserX className="h-3.5 w-3.5" /> Deactivate
+                </Button>
+                <Button size="sm" variant="destructive" className="h-7 gap-1 text-xs" disabled={bulkBusy} onClick={() => setBulkDeleteOpen(true)}>
+                  <Trash2 className="h-3.5 w-3.5" /> Delete
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={clearSelection}>Clear</Button>
+              </div>
+            </div>
+          )}
         </CardHeader>
         <CardContent className="p-0">
           {loading ? (
             <div className="p-6"><div className="space-y-3">{[1,2,3,4].map(i => <div key={i} className="flex items-center gap-4 py-2"><Skeleton className="h-4 w-32" /><Skeleton className="h-4 w-44" /><Skeleton className="h-4 w-16" /><Skeleton className="h-4 w-24" /><Skeleton className="h-8 w-16 ml-auto rounded" /></div>)}</div></div>
           ) : (
             <Table>
-              <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Email</TableHead><TableHead>Role</TableHead><TableHead>Status</TableHead><TableHead>Joined</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-10"><Checkbox checked={allFilteredSelected} onCheckedChange={toggleSelectAll} aria-label="Select all" /></TableHead>
+                  <TableHead>Name</TableHead><TableHead>Email</TableHead><TableHead>Role</TableHead>
+                  {isOwner && <TableHead>Branch</TableHead>}
+                  <TableHead>Status</TableHead><TableHead>Joined</TableHead><TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
               <TableBody>
                 {filtered.length === 0 ? (
-                  <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">No users found.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={isOwner ? 8 : 7} className="text-center text-muted-foreground py-8">No users found.</TableCell></TableRow>
                 ) : filtered.map(u => (
                   <TableRow key={u.id} className={u.status === "INACTIVE" ? "opacity-60" : ""}>
+                    <TableCell><Checkbox checked={selectedIds.has(u.id)} onCheckedChange={() => toggleSelectOne(u.id)} aria-label={`Select ${u.name}`} /></TableCell>
                     <TableCell className="font-semibold">{u.name}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{u.email}</TableCell>
                     <TableCell>
@@ -380,15 +480,23 @@ export default function UsersPage() {
                         )}
                       </div>
                     </TableCell>
+                    {isOwner && <TableCell className="text-muted-foreground text-xs">{u.branchName || "—"}</TableCell>}
                     <TableCell>
                       <Badge variant="secondary" className={u.status === "INACTIVE" ? "bg-secondary text-muted-foreground" : "bg-green-100 text-green-800"}>
                         {u.status === "INACTIVE" ? "Inactive" : "Active"}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-muted-foreground text-xs">{new Date(u.createdAt).toLocaleDateString()}</TableCell>
+                    <TableCell className="text-muted-foreground text-xs">{formatDatePK(u.createdAt)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => { setEditUser(u); setEditRoleValue(u.customRoleId ? `custom:${u.customRoleId}` : u.role); }} title="Edit role"><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => {
+                          setEditUser(u);
+                          setEditForm({
+                            name: u.name, email: u.email,
+                            roleValue: u.customRoleId ? `custom:${u.customRoleId}` : u.role,
+                            branchId: u.branchId || "",
+                          });
+                        }} title="Edit user"><Pencil className="h-3.5 w-3.5" /></Button>
                         <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setResetUser(u)} title="Reset password"><KeyRound className="h-3.5 w-3.5" /></Button>
                         <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => handleToggleActive(u)} title={u.status === "INACTIVE" ? "Reactivate" : "Deactivate"}>
                           {u.status === "INACTIVE" ? <UserCheck2 className="h-3.5 w-3.5 text-green-600" /> : <UserX className="h-3.5 w-3.5 text-amber-600" />}
@@ -404,14 +512,29 @@ export default function UsersPage() {
         </CardContent>
       </Card>
 
-      {/* Edit Role Dialog */}
+      {/* Edit User Dialog */}
       <Dialog open={!!editUser} onOpenChange={o => !o && setEditUser(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Edit Role — {editUser?.name}</DialogTitle></DialogHeader>
-          <div className="py-2 space-y-2"><Label>Role</Label>
-            <RoleSelect value={editRoleValue} onChange={setEditRoleValue} />
+          <DialogHeader><DialogTitle>Edit User — {editUser?.name}</DialogTitle></DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1"><Label>Full Name</Label><Input value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} /></div>
+            <div className="space-y-1"><Label>Email</Label><Input type="email" value={editForm.email} onChange={e => setEditForm(f => ({ ...f, email: e.target.value }))} /></div>
+            <div className="space-y-1"><Label>Role</Label>
+              <RoleSelect value={editForm.roleValue} onChange={v => setEditForm(f => ({ ...f, roleValue: v }))} />
+            </div>
+            {isOwner && BRANCH_SCOPED_ROLES.has(editForm.roleValue) && (
+              <div className="space-y-1">
+                <Label>Branch</Label>
+                <Select value={editForm.branchId} onValueChange={v => setEditForm(f => ({ ...f, branchId: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Select branch" /></SelectTrigger>
+                  <SelectContent>
+                    {branches.map(b => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
-          <DialogFooter><Button onClick={handleUpdateRole}>Save Changes</Button></DialogFooter>
+          <DialogFooter><Button onClick={handleUpdateUser}>Save Changes</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -432,6 +555,20 @@ export default function UsersPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteUser(null)}>Cancel</Button>
             <Button variant="destructive" onClick={handleDelete}>Delete</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Delete Dialog */}
+      <Dialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Delete {selectedUsers.length} User(s)</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground py-2">
+            Are you sure you want to delete <strong>{selectedUsers.length}</strong> selected user(s)? This cannot be undone.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkDeleteOpen(false)}>Cancel</Button>
+            <Button variant="destructive" disabled={bulkBusy} onClick={handleBulkDelete}>Delete</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

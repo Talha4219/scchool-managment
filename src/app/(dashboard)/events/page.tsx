@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
 import { useStudents } from "@/lib/students-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -38,8 +39,7 @@ const STATUS_COLORS: Record<string, string> = {
 const EVENT_CATEGORIES = ["Academic", "Sports", "Cultural", "Social", "Religious", "Workshop"];
 
 function formatDate(d: string) {
-  if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
+  return formatDatePK(d);
 }
 
 export default function EventsPage() {

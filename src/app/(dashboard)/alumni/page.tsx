@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAppState } from "@/lib/state-context";
+import { formatDatePK } from "@/lib/date-format";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,10 +22,7 @@ import {
 } from "lucide-react";
 
 function formatDate(d: string) {
-  if (!d) return "—";
-  // Pinned to UTC to keep server and client rendering the same calendar day
-  // for a date-only string — see accounting/page.tsx's formatDate for why.
-  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
+  return formatDatePK(d);
 }
 
 export default function AlumniPage() {

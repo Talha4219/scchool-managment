@@ -10,6 +10,10 @@ export interface SchoolInfo {
   phone?: string;
   website?: string;
   principal?: string;
+  logoUrl?: string;
+  foundingYear?: string;
+  currency?: string;
+  timezone?: string;
 }
 
 export interface StudentRecord {
@@ -148,6 +152,8 @@ export interface Section {
   capacity: number;
   teacherName?: string;
   group?: string;
+  classTeacherId?: number | null;
+  classTeacherName?: string | null;
 }
 
 export interface TeacherRecord {

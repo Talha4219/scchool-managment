@@ -16,7 +16,7 @@ export interface ErrorLogEntry {
 
 async function requireAdmin() {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") return null;
+  if (!session || (session.role !== "ADMIN" && session.role !== "PRINCIPAL" && session.role !== "OWNER")) return null;
   return session;
 }
 
@@ -43,6 +43,17 @@ export async function resolveErrorLogEntryAction(id: string): Promise<{ error?: 
   await query(
     `UPDATE error_log SET resolved = true, resolved_at = NOW(), resolved_by = $1 WHERE id = $2`,
     [session.name, id]
+  );
+  return {};
+}
+
+export async function resolveErrorLogEntriesAction(ids: string[]): Promise<{ error?: string }> {
+  const session = await requireAdmin();
+  if (!session) return { error: "Not authorized." };
+  if (ids.length === 0) return {};
+  await query(
+    `UPDATE error_log SET resolved = true, resolved_at = NOW(), resolved_by = $1 WHERE id = ANY($2)`,
+    [session.name, ids]
   );
   return {};
 }
