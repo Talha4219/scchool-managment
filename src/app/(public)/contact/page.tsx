@@ -18,7 +18,7 @@ export default function ContactPage() {
     <div className="min-h-screen bg-white">
       {/* Hero */}
       <div className="relative h-64 sm:h-72 overflow-hidden">
-        <Image src="/hero-banner.png" alt="Contact" fill className="object-cover" />
+        <Image src="/hero-banner.webp" alt="Contact" fill className="object-cover" />
         <div className="absolute inset-0 bg-[#0B1B3D]/80" />
         <div className="relative z-10 h-full flex flex-col items-center justify-center text-center px-4">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/20 text-sky-300 text-xs font-semibold uppercase tracking-widest mb-4">

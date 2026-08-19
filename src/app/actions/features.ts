@@ -66,7 +66,7 @@ export async function fetchAnnouncementsDB(role?: string, viewerUserId?: number)
   const session = await getSession();
   if (!session) return [];
   try {
-    let sql = 'SELECT * FROM announcements';
+    let sql = 'SELECT id, title, content, date, author_id, author_name, target_role, target_class, priority FROM announcements';
     const params: string[] = [];
     const branchConditions: string[] = [];
     const branchId = scopeBranch(session);
@@ -158,7 +158,8 @@ export async function fetchAssignmentsDB(
     // classes.branch_id (this previously had no auth check or scoping at
     // all, so any request could pull the full school-wide assignment list).
     const branchId = scopeBranch(session);
-    let sql = branchId ? 'SELECT a.* FROM assignments a JOIN classes c ON c.id = a.class_id WHERE 1=1' : 'SELECT * FROM assignments a WHERE 1=1';
+    const assignmentCols = 'a.id, a.title, a.description, a.due_date, a.class_name, a.subject, a.teacher_name, a.created_at, a.class_id, a.section_id, a.subject_id, a.teacher_id, a.attachment_data, a.attachment_name';
+    let sql = branchId ? `SELECT ${assignmentCols} FROM assignments a JOIN classes c ON c.id = a.class_id WHERE 1=1` : `SELECT ${assignmentCols} FROM assignments a WHERE 1=1`;
     const params: (string | number)[] = [];
     if (className) { params.push(className); sql += ` AND a.class_name=$${params.length}`; }
     if (teacherName) { params.push(teacherName); sql += ` AND a.teacher_name=$${params.length}`; }
@@ -237,7 +238,7 @@ export async function deleteAssignmentDB(id: string): Promise<{ error?: string }
 
 export async function fetchSubmissionsDB(assignmentId: string): Promise<AssignmentSubmission[]> {
   try {
-    const res = await query('SELECT * FROM assignment_submissions WHERE assignment_id=$1', [assignmentId]);
+    const res = await query('SELECT id, assignment_id, student_id, student_name, submitted_at, notes, grade, feedback, is_late, graded_at, attachment_data, attachment_name FROM assignment_submissions WHERE assignment_id=$1', [assignmentId]);
     return res.rows.map(r => ({
       id: r.id, assignmentId: r.assignment_id, studentId: r.student_id,
       studentName: r.student_name, submittedAt: r.submitted_at,
@@ -354,7 +355,7 @@ export async function fetchTimetableDB(
   opts?: { status?: 'draft' | 'active' | 'all'; classId?: string; sectionId?: string; academicYearId?: string; teacherId?: number }
 ): Promise<TimetableEntry[]> {
   try {
-    let sql = 'SELECT * FROM timetable_entries WHERE 1=1';
+    let sql = 'SELECT id, class_name, subject_name, teacher_name, day_of_week, start_time, end_time, room, class_id, section_id, subject_id, teacher_id, academic_year_id, status, competency_override FROM timetable_entries WHERE 1=1';
     const params: (string | number)[] = [];
     if (className) { params.push(className); sql += ` AND class_name=$${params.length}`; }
     if (teacherName) { params.push(teacherName); sql += ` AND teacher_name=$${params.length}`; }
@@ -383,7 +384,7 @@ async function insertTimetableEntry(data: TimetableEntryInput, opts?: { competen
     // No override — this one is a physical impossibility, not a policy call.
     if (data.teacherId) {
       const clash = await query(
-        `SELECT * FROM timetable_entries
+        `SELECT id, class_name, subject_name, teacher_name, day_of_week, start_time, end_time, room, class_id, section_id, subject_id, teacher_id, academic_year_id, status, competency_override FROM timetable_entries
          WHERE teacher_id=$1 AND day_of_week=$2 AND COALESCE(academic_year_id,'')=COALESCE($3,'')
            AND COALESCE(status,'draft') != 'archived'
            AND start_time < $4 AND end_time > $5`,
@@ -510,7 +511,7 @@ export interface TimetablePublication {
 export async function fetchTimetablePublicationsDB(classId: string, sectionId: string): Promise<TimetablePublication[]> {
   try {
     const res = await query(
-      'SELECT * FROM timetable_publications WHERE class_id=$1 AND section_id=$2 ORDER BY published_at DESC',
+      'SELECT id, class_id, section_id, academic_year_id, published_by_name, published_at FROM timetable_publications WHERE class_id=$1 AND section_id=$2 ORDER BY published_at DESC',
       [classId, sectionId]
     );
     return res.rows.map(r => ({
@@ -529,7 +530,7 @@ export interface PeriodSlot {
 
 export async function fetchPeriodSlotsDB(academicYearId: string): Promise<PeriodSlot[]> {
   try {
-    const res = await query('SELECT * FROM period_slots WHERE academic_year_id=$1 ORDER BY period_number', [academicYearId]);
+    const res = await query('SELECT id, academic_year_id, period_number, label, start_time, end_time, is_break FROM period_slots WHERE academic_year_id=$1 ORDER BY period_number', [academicYearId]);
     return res.rows.map(r => ({
       id: r.id, academicYearId: r.academic_year_id, periodNumber: r.period_number,
       label: r.label, startTime: r.start_time, endTime: r.end_time, isBreak: !!r.is_break,
@@ -703,7 +704,15 @@ export async function updateUserDB(
     const { customRoleId, branchId, ...prismaData } = data;
     if (Object.keys(prismaData).length > 0) await prisma.user.update({ where: { id }, data: prismaData });
     if (customRoleId !== undefined) await query('UPDATE users SET custom_role_id=$1 WHERE id=$2', [customRoleId, id]);
-    if (branchId !== undefined) await query('UPDATE users SET branch_id=$1 WHERE id=$2', [branchId, id]);
+    if (branchId !== undefined) {
+      await query('UPDATE users SET branch_id=$1 WHERE id=$2', [branchId, id]);
+      // Clearing a Principal's branch here must also clear the branch's own
+      // pointer back to them — otherwise the branch keeps claiming this
+      // person as its principal while they themselves show as unassigned,
+      // the exact dangling-reference bug this app hit when that was done
+      // by hand via a direct SQL update instead of through this action.
+      if (branchId === null) await query('UPDATE branches SET principal_user_id=NULL WHERE principal_user_id=$1', [id]);
+    }
     await logAudit({ actor: auth.session, action: 'UPDATE', entityType: 'user', entityId: String(id), summary: `Updated user #${id}`, after: data });
     return {};
   } catch (err: any) {
@@ -820,7 +829,7 @@ export async function fetchCustomRolesDB(): Promise<CustomRole[]> {
   const session = await getSession();
   if (!session) return [];
   try {
-    const res = await query('SELECT * FROM custom_roles ORDER BY name');
+    const res = await query('SELECT id, name, base_role, description, color, created_at FROM custom_roles ORDER BY name');
     return res.rows.map(r => ({
       id: r.id, name: r.name, baseRole: r.base_role, description: r.description || '',
       color: r.color || 'blue', createdAt: r.created_at,
@@ -1019,7 +1028,7 @@ export async function fetchTeacherProfileDB(userId: number): Promise<TeacherProf
   if (!session) return null;
   try {
     if (!(await ownsUserId(session, userId))) return null;
-    const res = await query('SELECT * FROM teacher_profiles WHERE user_id=$1', [userId]);
+    const res = await query('SELECT id, user_id, phone, cnic, specialization, qualification, experience_years, joining_date, address, profile_photo, degree_photo, employee_id, employment_type, status, pay_scale_id, designation FROM teacher_profiles WHERE user_id=$1', [userId]);
     if (!res.rows.length) return null;
     return mapTeacherProfile(res.rows[0]);
   } catch { return null; }
@@ -1119,7 +1128,7 @@ export interface PayScale { id: string; label: string; sortOrder: number; }
 
 export async function fetchPayScalesDB(): Promise<PayScale[]> {
   try {
-    const res = await query('SELECT * FROM pay_scales ORDER BY sort_order, label');
+    const res = await query('SELECT id, label, sort_order FROM pay_scales ORDER BY sort_order, label');
     return res.rows.map(r => ({ id: r.id, label: r.label, sortOrder: r.sort_order }));
   } catch { return []; }
 }
@@ -1146,7 +1155,7 @@ export interface TeacherQualification {
 
 export async function fetchTeacherQualificationsDB(teacherId: number): Promise<TeacherQualification[]> {
   try {
-    const res = await query('SELECT * FROM teacher_qualifications WHERE teacher_id=$1 ORDER BY year_completed DESC NULLS LAST', [teacherId]);
+    const res = await query('SELECT id, teacher_id, degree_title, institution, year_completed, specialization, certificate_file_path FROM teacher_qualifications WHERE teacher_id=$1 ORDER BY year_completed DESC NULLS LAST', [teacherId]);
     return res.rows.map(r => ({
       id: r.id, teacherId: r.teacher_id, degreeTitle: r.degree_title, institution: r.institution ?? '',
       yearCompleted: r.year_completed, specialization: r.specialization, certificateFilePath: r.certificate_file_path,
@@ -1214,7 +1223,7 @@ export async function deleteTeacherCompetencyDB(id: string): Promise<{ error?: s
 
 export async function fetchParentsDB(): Promise<ParentRecord[]> {
   try {
-    const res = await query('SELECT * FROM parents ORDER BY name ASC');
+    const res = await query('SELECT id, name, email, phone, student_ids, status FROM parents ORDER BY name ASC');
     return res.rows.map(r => ({
       id: r.id, name: r.name, email: r.email, phone: r.phone,
       studentIds: JSON.parse(r.student_ids || '[]'),
@@ -1297,7 +1306,7 @@ export async function changePasswordDB(oldPassword: string, newPassword: string)
 
 export async function fetchExamSessionsDB(): Promise<ExamSession[]> {
   try {
-    const res = await query('SELECT * FROM exam_sessions ORDER BY created_at DESC');
+    const res = await query('SELECT id, name, term, deadline, status, classes, subjects, total_marks, created_at, created_by FROM exam_sessions ORDER BY created_at DESC');
     return res.rows.map(r => ({
       id: r.id,
       name: r.name,
@@ -1354,7 +1363,7 @@ export async function deleteExamSessionDB(id: string): Promise<{ error?: string 
 export async function fetchExamMarksBySessionDB(sessionId: string): Promise<ExamMarkEntry[]> {
   try {
     const res = await query(
-      'SELECT * FROM exam_marks WHERE session_id=$1 ORDER BY class_name, subject_name',
+      'SELECT id, session_id, subject_name, class_name, teacher_id, teacher_name, student_results, status, submitted_at FROM exam_marks WHERE session_id=$1 ORDER BY class_name, subject_name',
       [sessionId]
     );
     return res.rows.map(r => ({
@@ -1374,7 +1383,7 @@ export async function fetchExamMarksBySessionDB(sessionId: string): Promise<Exam
 export async function fetchExamMarksByTeacherDB(teacherId: number): Promise<ExamMarkEntry[]> {
   try {
     const res = await query(
-      'SELECT * FROM exam_marks WHERE teacher_id=$1 ORDER BY session_id, class_name, subject_name',
+      'SELECT id, session_id, subject_name, class_name, teacher_id, teacher_name, student_results, status, submitted_at FROM exam_marks WHERE teacher_id=$1 ORDER BY session_id, class_name, subject_name',
       [teacherId]
     );
     return res.rows.map(r => ({
@@ -1398,7 +1407,7 @@ export async function fetchExamMarksForTeacherDB(
 ): Promise<ExamMarkEntry | null> {
   try {
     const res = await query(
-      'SELECT * FROM exam_marks WHERE session_id=$1 AND class_name=$2 AND subject_name=$3 LIMIT 1',
+      'SELECT id, session_id, subject_name, class_name, teacher_id, teacher_name, student_results, status, submitted_at FROM exam_marks WHERE session_id=$1 AND class_name=$2 AND subject_name=$3 LIMIT 1',
       [sessionId, className, subjectName]
     );
     if (!res.rows.length) return null;
@@ -1457,7 +1466,7 @@ export async function upsertExamMarksDB(data: {
 
 export async function fetchClassCompilationsDB(sessionId?: string): Promise<ClassCompilation[]> {
   try {
-    let sql = 'SELECT * FROM class_compilations';
+    let sql = 'SELECT id, session_id, class_name, teacher_name, status, submitted_at, admin_notes FROM class_compilations';
     const params: any[] = [];
     if (sessionId) { sql += ' WHERE session_id=$1'; params.push(sessionId); }
     sql += ' ORDER BY submitted_at DESC';
@@ -1475,7 +1484,7 @@ export async function fetchAllMarksForClassesDB(classNames: string[]): Promise<E
   try {
     const placeholders = classNames.map((_, i) => `$${i + 1}`).join(',');
     const res = await query(
-      `SELECT * FROM exam_marks WHERE class_name IN (${placeholders}) ORDER BY session_id, class_name, subject_name`,
+      `SELECT id, session_id, subject_name, class_name, teacher_id, teacher_name, student_results, status, submitted_at FROM exam_marks WHERE class_name IN (${placeholders}) ORDER BY session_id, class_name, subject_name`,
       classNames
     );
     return res.rows.map(r => ({
@@ -1527,7 +1536,7 @@ export async function submitClassCompilationDB(
 
 export async function fetchTeacherSubjectAssignmentsDB(teacherId?: number): Promise<TeacherSubjectAssignment[]> {
   try {
-    let sql = 'SELECT * FROM teacher_subject_assignments';
+    let sql = 'SELECT id, teacher_id, teacher_name, subject_name, class_name FROM teacher_subject_assignments';
     const params: any[] = [];
     if (teacherId !== undefined) {
       sql += ' WHERE teacher_id=$1';
@@ -1581,7 +1590,7 @@ export async function approveClassCompilationDB(
   try {
     await query("UPDATE class_compilations SET status='approved' WHERE id=$1", [compilationId]);
 
-    const sessionRes = await query("SELECT * FROM exam_sessions WHERE id=$1", [sessionId]);
+    const sessionRes = await query("SELECT subjects, total_marks, classes FROM exam_sessions WHERE id=$1", [sessionId]);
     if (!sessionRes.rows.length) return { error: 'Session not found.' };
     const sess = sessionRes.rows[0];
     const subjects: string[] = sess.subjects || [];
@@ -1603,7 +1612,7 @@ export async function approveClassCompilationDB(
     type StuData = { studentId: string; studentName: string; total: number; subjectScores: { subject: string; score: number }[] };
     const sectionMap = new Map<string, StuData>();
     const marksRes = await query(
-      "SELECT * FROM exam_marks WHERE session_id=$1 AND class_name=$2",
+      "SELECT subject_name, student_results FROM exam_marks WHERE session_id=$1 AND class_name=$2",
       [sessionId, className]
     );
     for (const row of marksRes.rows) {
@@ -1622,7 +1631,7 @@ export async function approveClassCompilationDB(
     // Build grade-wide totals (across all classes in same grade)
     const gradeMap = new Map<string, number>();
     for (const gc of gradeClasses) {
-      const gcRes = await query("SELECT * FROM exam_marks WHERE session_id=$1 AND class_name=$2", [sessionId, gc]);
+      const gcRes = await query("SELECT student_results FROM exam_marks WHERE session_id=$1 AND class_name=$2", [sessionId, gc]);
       for (const row of gcRes.rows) {
         for (const r of (row.student_results || []) as StudentExamScore[]) {
           gradeMap.set(r.studentId, (gradeMap.get(r.studentId) ?? 0) + r.score);
@@ -1683,7 +1692,7 @@ export async function fetchResultPositionsDB(
   className?: string
 ): Promise<ResultPosition[]> {
   try {
-    let sql = "SELECT * FROM result_positions WHERE session_id=$1";
+    let sql = "SELECT id, session_id, class_name, grade_name, student_id, student_name, total_marks, max_possible, percentage, section_position, section_total, grade_position, grade_total, subject_scores, calculated_at FROM result_positions WHERE session_id=$1";
     const params: any[] = [sessionId];
     if (className) { sql += " AND class_name=$2"; params.push(className); }
     sql += " ORDER BY class_name, section_position";
@@ -1722,7 +1731,7 @@ export async function fetchPublishedResultsForStudentDB(
 ): Promise<{ session: ExamSession; position: ResultPosition }[]> {
   try {
     const sessRes = await query(
-      "SELECT * FROM exam_sessions WHERE status='published' ORDER BY created_at DESC"
+      "SELECT id, name, term, deadline, status, classes, subjects, total_marks, created_at, created_by FROM exam_sessions WHERE status='published' ORDER BY created_at DESC"
     );
     const sessions: ExamSession[] = sessRes.rows.map(r => ({
       id: r.id, name: r.name, term: r.term, deadline: r.deadline,
@@ -1734,7 +1743,7 @@ export async function fetchPublishedResultsForStudentDB(
     const results: { session: ExamSession; position: ResultPosition }[] = [];
     for (const session of sessions) {
       const posRes = await query(
-        'SELECT * FROM result_positions WHERE session_id=$1 AND student_id=$2 LIMIT 1',
+        'SELECT id, session_id, class_name, grade_name, student_id, student_name, total_marks, max_possible, percentage, section_position, section_total, grade_position, grade_total, subject_scores, calculated_at FROM result_positions WHERE session_id=$1 AND student_id=$2 LIMIT 1',
         [session.id, studentId]
       );
       if (!posRes.rows.length) continue;
@@ -1790,7 +1799,7 @@ export async function fetchCoursesDB(gradeLevel?: string): Promise<import('@/lib
   const session = await getSession();
   if (!session) return [];
   try {
-    let sql = 'SELECT * FROM courses';
+    let sql = 'SELECT id, title, code, description, grade_level, teacher_name, credits, learning_outcomes, prerequisites, is_active FROM courses';
     const params: string[] = [];
     if (gradeLevel) { params.push(gradeLevel); sql += ` WHERE grade_level=$${params.length}`; }
     const branchId = scopeBranch(session);
@@ -1859,7 +1868,7 @@ export async function fetchCourseMaterialsDB(courseId: string): Promise<import('
   const session = await getSession();
   if (!session) return [];
   try {
-    const res = await query('SELECT * FROM course_materials WHERE course_id=$1 ORDER BY created_at DESC', [courseId]);
+    const res = await query('SELECT id, course_id, title, type, url, file_name, description, created_by_name, created_at FROM course_materials WHERE course_id=$1 ORDER BY created_at DESC', [courseId]);
     return res.rows.map(r => ({
       id: r.id, courseId: r.course_id, title: r.title, type: r.type, url: r.url,
       fileName: r.file_name, description: r.description, createdByName: r.created_by_name, createdAt: r.created_at,
@@ -1902,7 +1911,7 @@ export async function fetchLibraryBooksDB(category?: string): Promise<import('@/
   const session = await getSession();
   if (!session) return [];
   try {
-    let sql = 'SELECT * FROM library_books';
+    let sql = 'SELECT id, title, author, isbn, category, publisher, publish_year, total_copies, available_copies, rack_number, barcode, is_digital, digital_url, status FROM library_books';
     const params: string[] = [];
     if (category) { params.push(category); sql += ` WHERE category=$${params.length}`; }
     const branchId = scopeBranch(session);
@@ -1954,7 +1963,7 @@ export async function returnBookDB(issueId: string): Promise<{ error?: string }>
 
 export async function fetchBookIssuesDB(studentId?: string): Promise<import('@/lib/types').BookIssue[]> {
   try {
-    let sql = 'SELECT * FROM book_issues';
+    let sql = 'SELECT id, book_id, book_title, student_id, student_name, issued_date, due_date, returned_date, status, fine, fine_paid FROM book_issues';
     const params: string[] = [];
     if (studentId) { params.push(studentId); sql += ` WHERE student_id=$${params.length}`; }
     sql += ' ORDER BY issued_date DESC';
@@ -1977,7 +1986,7 @@ export async function fetchHostelsDB(): Promise<import('@/lib/types').Hostel[]> 
   const session = await getSession();
   if (!session) return [];
   const branchId = scopeBranch(session);
-  const sql = branchId ? 'SELECT * FROM hostels WHERE branch_id=$1 ORDER BY name' : 'SELECT * FROM hostels ORDER BY name';
+  const sql = branchId ? 'SELECT id, name, type, warden_name, contact_phone, total_rooms, total_beds, address FROM hostels WHERE branch_id=$1 ORDER BY name' : 'SELECT id, name, type, warden_name, contact_phone, total_rooms, total_beds, address FROM hostels ORDER BY name';
   try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, name: r.name, type: r.type, wardenName: r.warden_name, contactPhone: r.contact_phone, totalRooms: r.total_rooms, totalBeds: r.total_beds, address: r.address })); } catch { return []; }
 }
 
@@ -1994,7 +2003,7 @@ export async function createHostelDB(data: Omit<import('@/lib/types').Hostel, 'i
 
 export async function fetchHostelRoomsDB(hostelId: string): Promise<import('@/lib/types').HostelRoom[]> {
   try {
-    const res = await query('SELECT * FROM hostel_rooms WHERE hostel_id=$1 ORDER BY room_number', [hostelId]);
+    const res = await query('SELECT id, hostel_id, room_number, floor, total_beds, occupied_beds, monthly_fee, is_active FROM hostel_rooms WHERE hostel_id=$1 ORDER BY room_number', [hostelId]);
     return res.rows.map(r => ({ id: r.id, hostelId: r.hostel_id, roomNumber: r.room_number, floor: r.floor, totalBeds: r.total_beds, occupiedBeds: r.occupied_beds, monthlyFee: r.monthly_fee, isActive: r.is_active }));
   } catch { return []; }
 }
@@ -2026,7 +2035,7 @@ export async function fetchHostelAllocationsDB(hostelId?: string): Promise<impor
     // hostels.branch_id when listing across all hostels (a specific
     // hostelId is already a scoped lookup by the caller).
     const branchId = hostelId ? null : scopeBranch(session);
-    let sql = branchId ? 'SELECT ha.* FROM hostel_allocations ha JOIN hostels h ON h.id = ha.hostel_id' : 'SELECT * FROM hostel_allocations ha';
+    let sql = branchId ? 'SELECT ha.id, ha.hostel_id, ha.hostel_name, ha.room_id, ha.room_number, ha.student_id, ha.student_name, ha.start_date, ha.end_date, ha.status, ha.fee_amount, ha.fee_paid FROM hostel_allocations ha JOIN hostels h ON h.id = ha.hostel_id' : 'SELECT id, hostel_id, hostel_name, room_id, room_number, student_id, student_name, start_date, end_date, status, fee_amount, fee_paid FROM hostel_allocations ha';
     const conditions: string[] = [];
     const params: string[] = [];
     if (hostelId) { params.push(hostelId); conditions.push(`ha.hostel_id=$${params.length}`); }
@@ -2043,7 +2052,7 @@ export async function fetchTransportRoutesDB(): Promise<import('@/lib/types').Tr
   const session = await getSession();
   if (!session) return [];
   const branchId = scopeBranch(session);
-  const sql = branchId ? 'SELECT * FROM transport_routes WHERE branch_id=$1 ORDER BY route_name' : 'SELECT * FROM transport_routes ORDER BY route_name';
+  const sql = branchId ? 'SELECT id, route_name, start_point, end_point, stops, distance, fee_amount, is_active FROM transport_routes WHERE branch_id=$1 ORDER BY route_name' : 'SELECT id, route_name, start_point, end_point, stops, distance, fee_amount, is_active FROM transport_routes ORDER BY route_name';
   try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, routeName: r.route_name, startPoint: r.start_point, endPoint: r.end_point, stops: r.stops || [], distance: r.distance, feeAmount: r.fee_amount, isActive: r.is_active })); } catch { return []; }
 }
 
@@ -2060,7 +2069,7 @@ export async function createTransportRouteDB(data: Omit<import('@/lib/types').Tr
 
 export async function fetchTransportVehiclesDB(routeId?: string): Promise<import('@/lib/types').TransportVehicle[]> {
   try {
-    let sql = 'SELECT * FROM transport_vehicles';
+    let sql = 'SELECT id, vehicle_number, type, capacity, route_id, driver_name, driver_phone, registration_date, fitness_expiry, insurance_expiry, is_active FROM transport_vehicles';
     const params: string[] = [];
     if (routeId) { params.push(routeId); sql += ` WHERE route_id=$${params.length}`; }
     sql += ' ORDER BY vehicle_number';
@@ -2074,7 +2083,8 @@ export async function fetchEmployeesDB(): Promise<import('@/lib/types').Employee
   const session = await getSession();
   if (!session) return [];
   const branchId = scopeBranch(session);
-  const sql = branchId ? 'SELECT * FROM employees WHERE branch_id=$1 ORDER BY name' : 'SELECT * FROM employees ORDER BY name';
+  const employeeCols = 'id, user_id, name, email, phone, department, designation, employment_type, joining_date, cnic, address, emergency_contact, emergency_phone, qualification, experience, status, bank_name, bank_account, profile_photo, pay_scale_id';
+  const sql = branchId ? `SELECT ${employeeCols} FROM employees WHERE branch_id=$1 ORDER BY name` : `SELECT ${employeeCols} FROM employees ORDER BY name`;
   try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, userId: r.user_id, name: r.name, email: r.email, phone: r.phone, department: r.department, designation: r.designation, employmentType: r.employment_type, joiningDate: r.joining_date, cnic: r.cnic, address: r.address, emergencyContact: r.emergency_contact, emergencyPhone: r.emergency_phone, qualification: r.qualification, experience: r.experience, status: r.status, bankName: r.bank_name, bankAccount: r.bank_account, profilePhoto: r.profile_photo, payScaleId: r.pay_scale_id ?? null })); } catch { return []; }
 }
 
@@ -2173,7 +2183,7 @@ export async function fetchLeaveRequestsDB(employeeId?: number): Promise<import(
     // employees.branch_id when the caller is viewing everyone's (not just
     // their own self-service list).
     const branchId = employeeId === undefined ? scopeBranch(session) : null;
-    let sql = branchId ? 'SELECT lr.* FROM leave_requests lr JOIN employees e ON e.user_id = lr.employee_id' : 'SELECT * FROM leave_requests lr';
+    let sql = branchId ? 'SELECT lr.id, lr.employee_id, lr.employee_name, lr.leave_type, lr.start_date, lr.end_date, lr.total_days, lr.reason, lr.status, lr.approved_by, lr.applied_at FROM leave_requests lr JOIN employees e ON e.user_id = lr.employee_id' : 'SELECT id, employee_id, employee_name, leave_type, start_date, end_date, total_days, reason, status, approved_by, applied_at FROM leave_requests lr';
     const conditions: string[] = [];
     const params: any[] = [];
     if (employeeId !== undefined) { params.push(employeeId); conditions.push(`lr.employee_id=$${params.length}`); }
@@ -2286,8 +2296,8 @@ export async function fetchSalaryStructuresDB(): Promise<import('@/lib/types').S
     // every employee's salary breakdown across every branch).
     const branchId = scopeBranch(session);
     const sql = branchId
-      ? 'SELECT ss.* FROM salary_structures ss JOIN employees e ON e.user_id = ss.employee_id WHERE e.branch_id=$1 ORDER BY ss.employee_name'
-      : 'SELECT * FROM salary_structures ORDER BY employee_name';
+      ? 'SELECT ss.id, ss.name, ss.employee_id, ss.employee_name, ss.basic_salary, ss.allowances, ss.deductions, ss.total_salary, ss.is_active FROM salary_structures ss JOIN employees e ON e.user_id = ss.employee_id WHERE e.branch_id=$1 ORDER BY ss.employee_name'
+      : 'SELECT id, name, employee_id, employee_name, basic_salary, allowances, deductions, total_salary, is_active FROM salary_structures ORDER BY employee_name';
     const res = await query(sql, branchId ? [branchId] : []);
     return res.rows.map(r => ({ id: r.id, name: r.name, employeeId: r.employee_id, employeeName: r.employee_name, basicSalary: r.basic_salary, allowances: r.allowances || [], deductions: r.deductions || [], totalSalary: r.total_salary, isActive: r.is_active }));
   } catch { return []; }
@@ -2347,8 +2357,8 @@ export async function bulkGeneratePayslipsDB(month: string, year: number): Promi
   try {
     const branchId = scopeBranch(session);
     const structures = branchId
-      ? await query('SELECT ss.* FROM salary_structures ss JOIN employees e ON e.user_id = ss.employee_id WHERE ss.is_active = true AND e.branch_id=$1', [branchId])
-      : await query('SELECT * FROM salary_structures WHERE is_active = true');
+      ? await query('SELECT ss.employee_id, ss.employee_name, ss.basic_salary, ss.allowances, ss.deductions FROM salary_structures ss JOIN employees e ON e.user_id = ss.employee_id WHERE ss.is_active = true AND e.branch_id=$1', [branchId])
+      : await query('SELECT employee_id, employee_name, basic_salary, allowances, deductions FROM salary_structures WHERE is_active = true');
     const existing = await query('SELECT employee_id FROM payslips WHERE month=$1 AND year=$2', [month, year]);
     const already = new Set(existing.rows.map((r: any) => r.employee_id));
     let generated = 0, skipped = 0;
@@ -2387,7 +2397,7 @@ export async function fetchPayslipsDB(employeeId?: number): Promise<import('@/li
   if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'OWNER') employeeId = session.userId;
   try {
     const branchId = employeeId === undefined ? scopeBranch(session) : null;
-    let sql = branchId ? 'SELECT p.* FROM payslips p JOIN employees e ON e.user_id = p.employee_id' : 'SELECT * FROM payslips p';
+    let sql = branchId ? 'SELECT p.id, p.employee_id, p.employee_name, p.month, p.year, p.basic_salary, p.allowances, p.deductions, p.gross_pay, p.total_deductions, p.net_pay, p.tax_amount, p.overtime_pay, p.status, p.generated_at FROM payslips p JOIN employees e ON e.user_id = p.employee_id' : 'SELECT id, employee_id, employee_name, month, year, basic_salary, allowances, deductions, gross_pay, total_deductions, net_pay, tax_amount, overtime_pay, status, generated_at FROM payslips p';
     const conditions: string[] = [];
     const params: any[] = [];
     if (employeeId !== undefined) { params.push(employeeId); conditions.push(`p.employee_id=$${params.length}`); }
@@ -2402,7 +2412,7 @@ export async function fetchPayslipsDB(employeeId?: number): Promise<import('@/li
 // Accounting ──────────────────────────────────────────────────────────────────
 export async function fetchAccountEntriesDB(type?: string): Promise<import('@/lib/types').AccountEntry[]> {
   try {
-    let sql = 'SELECT * FROM account_entries';
+    let sql = 'SELECT id, date, type, category, description, amount, payment_method, reference, created_by FROM account_entries';
     const params: string[] = [];
     if (type) { params.push(type); sql += ` WHERE type=$${params.length}`; }
     sql += ' ORDER BY date DESC';
@@ -2421,12 +2431,12 @@ export async function createAccountEntryDB(data: Omit<import('@/lib/types').Acco
 }
 
 export async function fetchBudgetAllocationsDB(): Promise<import('@/lib/types').BudgetAllocation[]> {
-  try { const res = await query('SELECT * FROM budget_allocations ORDER BY fiscal_year, department'); return res.rows.map(r => ({ id: r.id, department: r.department, category: r.category, allocatedAmount: r.allocated_amount, spentAmount: r.spent_amount, fiscalYear: r.fiscal_year, notes: r.notes })); } catch { return []; }
+  try { const res = await query('SELECT id, department, category, allocated_amount, spent_amount, fiscal_year, notes FROM budget_allocations ORDER BY fiscal_year, department'); return res.rows.map(r => ({ id: r.id, department: r.department, category: r.category, allocatedAmount: r.allocated_amount, spentAmount: r.spent_amount, fiscalYear: r.fiscal_year, notes: r.notes })); } catch { return []; }
 }
 
 // Scholarship ─────────────────────────────────────────────────────────────────
 export async function fetchScholarshipsDB(): Promise<import('@/lib/types').Scholarship[]> {
-  try { const res = await query('SELECT * FROM scholarships ORDER BY name'); return res.rows.map(r => ({ id: r.id, name: r.name, type: r.type, amount: r.amount, totalSlots: r.total_slots, availableSlots: r.available_slots, eligibilityCriteria: r.eligibility_criteria, isActive: r.is_active })); } catch { return []; }
+  try { const res = await query('SELECT id, name, type, amount, total_slots, available_slots, eligibility_criteria, is_active FROM scholarships ORDER BY name'); return res.rows.map(r => ({ id: r.id, name: r.name, type: r.type, amount: r.amount, totalSlots: r.total_slots, availableSlots: r.available_slots, eligibilityCriteria: r.eligibility_criteria, isActive: r.is_active })); } catch { return []; }
 }
 
 export async function createScholarshipDB(data: Omit<import('@/lib/types').Scholarship, 'id'>): Promise<{ error?: string; id?: string }> {
@@ -2462,7 +2472,8 @@ export async function fetchIncidentsDB(): Promise<import('@/lib/types').Incident
   const session = await getSession();
   if (!session) return [];
   const branchId = scopeBranch(session);
-  const sql = branchId ? 'SELECT * FROM incident_reports WHERE branch_id=$1 ORDER BY incident_date DESC' : 'SELECT * FROM incident_reports ORDER BY incident_date DESC';
+  const incidentCols = 'id, student_id, student_name, class, reported_by, incident_date, incident_type, description, severity, location, witnesses, status, action_taken, resolved_at';
+  const sql = branchId ? `SELECT ${incidentCols} FROM incident_reports WHERE branch_id=$1 ORDER BY incident_date DESC` : `SELECT ${incidentCols} FROM incident_reports ORDER BY incident_date DESC`;
   try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, studentId: r.student_id, studentName: r.student_name, class: r.class, reportedBy: r.reported_by, incidentDate: r.incident_date, incidentType: r.incident_type, description: r.description, severity: r.severity, location: r.location, witnesses: r.witnesses, status: r.status, actionTaken: r.action_taken, resolvedAt: r.resolved_at })); } catch { return []; }
 }
 
@@ -2494,7 +2505,7 @@ export async function fetchMedicalRecordsDB(studentId?: string): Promise<import(
   const session = await getSession();
   if (!session) return [];
   try {
-    let sql = 'SELECT * FROM medical_records';
+    let sql = 'SELECT id, student_id, student_name, blood_group, allergies, chronic_conditions, medications, emergency_contact, emergency_phone, insurance_provider, insurance_number FROM medical_records';
     const params: string[] = [];
     if (studentId) { params.push(studentId); sql += ` WHERE student_id=$${params.length}`; }
     const branchId = scopeBranch(session);
@@ -2519,7 +2530,8 @@ export async function fetchEventsDB(): Promise<import('@/lib/types').Event[]> {
   const session = await getSession();
   if (!session) return [];
   const branchId = scopeBranch(session);
-  const sql = branchId ? 'SELECT * FROM events WHERE branch_id=$1 ORDER BY start_date DESC' : 'SELECT * FROM events ORDER BY start_date DESC';
+  const eventCols = 'id, title, description, category, start_date, end_date, start_time, end_time, venue, organizer, max_participants, registration_deadline, status, budget, banner_url';
+  const sql = branchId ? `SELECT ${eventCols} FROM events WHERE branch_id=$1 ORDER BY start_date DESC` : `SELECT ${eventCols} FROM events ORDER BY start_date DESC`;
   try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, title: r.title, description: r.description, category: r.category, startDate: r.start_date, endDate: r.end_date, startTime: r.start_time, endTime: r.end_time, venue: r.venue, organizer: r.organizer, maxParticipants: r.max_participants, registrationDeadline: r.registration_deadline, status: r.status, budget: r.budget, bannerUrl: r.banner_url })); } catch { return []; }
 }
 
@@ -2548,7 +2560,8 @@ export async function fetchAlumniDB(): Promise<import('@/lib/types').Alumni[]> {
   const session = await getSession();
   if (!session) return [];
   const branchId = scopeBranch(session);
-  const sql = branchId ? 'SELECT * FROM alumni WHERE branch_id=$1 ORDER BY graduation_year DESC, name' : 'SELECT * FROM alumni ORDER BY graduation_year DESC, name';
+  const alumniCols = 'id, name, email, phone, graduation_year, class, current_occupation, company, address, linkedin_url, facebook_url, is_donor, donation_amount, status, source_student_id';
+  const sql = branchId ? `SELECT ${alumniCols} FROM alumni WHERE branch_id=$1 ORDER BY graduation_year DESC, name` : `SELECT ${alumniCols} FROM alumni ORDER BY graduation_year DESC, name`;
   try {
     const res = await query(sql, branchId ? [branchId] : []);
     return res.rows.map(r => ({
@@ -2573,7 +2586,7 @@ export async function createAlumniDB(data: Omit<import('@/lib/types').Alumni, 'i
 
 // Placement ───────────────────────────────────────────────────────────────────
 export async function fetchJobPostingsDB(): Promise<import('@/lib/types').JobPosting[]> {
-  try { const res = await query('SELECT * FROM job_postings ORDER BY posted_at DESC'); return res.rows.map(r => ({ id: r.id, companyName: r.company_name, companyLogo: r.company_logo, title: r.title, description: r.description, requirements: r.requirements, location: r.location, salaryRange: r.salary_range, jobType: r.job_type, applicationDeadline: r.application_deadline, postedAt: r.posted_at, status: r.status, contactEmail: r.contact_email })); } catch { return []; }
+  try { const res = await query('SELECT id, company_name, company_logo, title, description, requirements, location, salary_range, job_type, application_deadline, posted_at, status, contact_email FROM job_postings ORDER BY posted_at DESC'); return res.rows.map(r => ({ id: r.id, companyName: r.company_name, companyLogo: r.company_logo, title: r.title, description: r.description, requirements: r.requirements, location: r.location, salaryRange: r.salary_range, jobType: r.job_type, applicationDeadline: r.application_deadline, postedAt: r.posted_at, status: r.status, contactEmail: r.contact_email })); } catch { return []; }
 }
 
 export async function createJobPostingDB(data: Omit<import('@/lib/types').JobPosting, 'id'>): Promise<{ error?: string; id?: string }> {
@@ -2596,7 +2609,7 @@ export async function applyForJobDB(data: Omit<import('@/lib/types').JobApplicat
 
 // Research ────────────────────────────────────────────────────────────────────
 export async function fetchResearchProjectsDB(): Promise<import('@/lib/types').ResearchProject[]> {
-  try { const res = await query('SELECT * FROM research_projects ORDER BY start_date DESC'); return res.rows.map(r => ({ id: r.id, title: r.title, researcherName: r.researcher_name, department: r.department, description: r.description, startDate: r.start_date, endDate: r.end_date, fundingAmount: r.funding_amount, fundingSource: r.funding_source, status: r.status, outcomes: r.outcomes })); } catch { return []; }
+  try { const res = await query('SELECT id, title, researcher_name, department, description, start_date, end_date, funding_amount, funding_source, status, outcomes FROM research_projects ORDER BY start_date DESC'); return res.rows.map(r => ({ id: r.id, title: r.title, researcherName: r.researcher_name, department: r.department, description: r.description, startDate: r.start_date, endDate: r.end_date, fundingAmount: r.funding_amount, fundingSource: r.funding_source, status: r.status, outcomes: r.outcomes })); } catch { return []; }
 }
 
 export async function createResearchProjectDB(data: Omit<import('@/lib/types').ResearchProject, 'id'>): Promise<{ error?: string; id?: string }> {
@@ -2613,7 +2626,8 @@ export async function fetchOnlineExamsDB(): Promise<import('@/lib/types').Online
   const session = await getSession();
   if (!session) return [];
   const branchId = scopeBranch(session);
-  const sql = branchId ? 'SELECT * FROM online_exams WHERE branch_id=$1 ORDER BY start_time DESC' : 'SELECT * FROM online_exams ORDER BY start_time DESC';
+  const oeCols = 'id, title, class_name, subject, duration, total_marks, passing_marks, start_time, end_time, instructions, proctoring_enabled, shuffle_questions, status, exam_subject_id';
+  const sql = branchId ? `SELECT ${oeCols} FROM online_exams WHERE branch_id=$1 ORDER BY start_time DESC` : `SELECT ${oeCols} FROM online_exams ORDER BY start_time DESC`;
   try { const res = await query(sql, branchId ? [branchId] : []); return res.rows.map(r => ({ id: r.id, title: r.title, className: r.class_name, subject: r.subject, duration: r.duration, totalMarks: r.total_marks, passingMarks: r.passing_marks, startTime: r.start_time, endTime: r.end_time, instructions: r.instructions, proctoringEnabled: r.proctoring_enabled, shuffleQuestions: r.shuffle_questions, status: r.status, examSubjectId: r.exam_subject_id ?? null })); } catch { return []; }
 }
 
@@ -2688,7 +2702,7 @@ export async function fetchOnlineExamQuestionsDB(examId: string, opts?: { includ
   const session = await getSession();
   if (!session) return [];
   try {
-    const res = await query('SELECT * FROM online_exam_questions WHERE exam_id=$1 ORDER BY id', [examId]);
+    const res = await query('SELECT id, exam_id, type, question, options, correct_answer, marks FROM online_exam_questions WHERE exam_id=$1 ORDER BY id', [examId]);
     return res.rows.map((r: any) => ({
       id: r.id, examId: r.exam_id, type: r.type, question: r.question,
       options: typeof r.options === 'string' ? JSON.parse(r.options) : (r.options || []),
@@ -2770,7 +2784,7 @@ export async function fetchAvailableOnlineExamsForStudentDB(): Promise<import('@
     const classNames = enrollRes.rows.map((r: any) => r.class_name);
     if (classNames.length === 0) return [];
     const res = await query(
-      `SELECT * FROM online_exams WHERE class_name = ANY($1) AND status IN ('Scheduled','Ongoing','Completed') ORDER BY start_time DESC`,
+      `SELECT id, title, class_name, subject, duration, total_marks, passing_marks, start_time, end_time, instructions, proctoring_enabled, shuffle_questions, status, exam_subject_id FROM online_exams WHERE class_name = ANY($1) AND status IN ('Scheduled','Ongoing','Completed') ORDER BY start_time DESC`,
       [classNames]
     );
     return res.rows.map((r: any) => ({ id: r.id, title: r.title, className: r.class_name, subject: r.subject, duration: r.duration, totalMarks: r.total_marks, passingMarks: r.passing_marks, startTime: r.start_time, endTime: r.end_time, instructions: r.instructions, proctoringEnabled: r.proctoring_enabled, shuffleQuestions: r.shuffle_questions, status: r.status, examSubjectId: r.exam_subject_id ?? null }));
@@ -2785,7 +2799,7 @@ export async function startOnlineExamAttemptDB(examId: string): Promise<{ error?
     const student = await resolveActiveStudent(session);
     if (!student) return { error: 'No active student record found for this account.' };
 
-    const examRes = await query('SELECT * FROM online_exams WHERE id=$1', [examId]);
+    const examRes = await query('SELECT status, start_time, end_time FROM online_exams WHERE id=$1', [examId]);
     if (examRes.rows.length === 0) return { error: 'Exam not found.' };
     const exam = examRes.rows[0];
     if (exam.status === 'Cancelled') return { error: 'This exam has been cancelled.' };
@@ -2794,7 +2808,7 @@ export async function startOnlineExamAttemptDB(examId: string): Promise<{ error?
     if (exam.start_time && now < new Date(exam.start_time)) return { error: 'This exam has not started yet.' };
     if (exam.end_time && now > new Date(exam.end_time)) return { error: 'This exam window has closed.' };
 
-    const existing = await query('SELECT * FROM online_exam_attempts WHERE exam_id=$1 AND student_id=$2', [examId, student.id]);
+    const existing = await query('SELECT id, exam_id, student_id, student_name, answers, score, started_at, submitted_at, status FROM online_exam_attempts WHERE exam_id=$1 AND student_id=$2', [examId, student.id]);
     if (existing.rows.length > 0) {
       const a = existing.rows[0];
       if (a.status !== 'InProgress') return { error: 'You have already submitted this exam.' };
@@ -2822,7 +2836,7 @@ export async function fetchMyOnlineExamAttemptDB(examId: string): Promise<Online
   try {
     const student = await resolveActiveStudent(session);
     if (!student) return null;
-    const res = await query('SELECT * FROM online_exam_attempts WHERE exam_id=$1 AND student_id=$2', [examId, student.id]);
+    const res = await query('SELECT id, exam_id, student_id, student_name, answers, score, started_at, submitted_at, status FROM online_exam_attempts WHERE exam_id=$1 AND student_id=$2', [examId, student.id]);
     if (res.rows.length === 0) return null;
     return mapOnlineExamAttempt(res.rows[0]);
   } catch { return null; }
@@ -2855,12 +2869,12 @@ export async function submitOnlineExamAttemptDB(attemptId: string): Promise<{ er
   try {
     const student = await resolveActiveStudent(session);
     if (!student) return { error: 'No active student record found for this account.' };
-    const attemptRes = await query('SELECT * FROM online_exam_attempts WHERE id=$1', [attemptId]);
+    const attemptRes = await query('SELECT student_id, exam_id, status, score, answers FROM online_exam_attempts WHERE id=$1', [attemptId]);
     if (attemptRes.rows.length === 0) return { error: 'Attempt not found.' };
     const attempt = attemptRes.rows[0];
     if (attempt.student_id !== student.id) return { error: 'Not your attempt.' };
 
-    const questionsRes = await query('SELECT * FROM online_exam_questions WHERE exam_id=$1', [attempt.exam_id]);
+    const questionsRes = await query('SELECT id, marks, type, correct_answer FROM online_exam_questions WHERE exam_id=$1', [attempt.exam_id]);
     const totalMarks = questionsRes.rows.reduce((sum: number, q: any) => sum + q.marks, 0);
     if (attempt.status !== 'InProgress') return { score: attempt.score, totalMarks }; // idempotent re-submit
 
@@ -2899,8 +2913,8 @@ export async function fetchOnlineExamAttemptsDB(examId: string): Promise<OnlineE
   try {
     const branchId = scopeBranch(session);
     const sql = branchId
-      ? 'SELECT a.* FROM online_exam_attempts a JOIN students s ON s.id = a.student_id WHERE a.exam_id=$1 AND s.branch_id=$2 ORDER BY a.submitted_at DESC NULLS LAST, a.started_at DESC'
-      : 'SELECT * FROM online_exam_attempts WHERE exam_id=$1 ORDER BY submitted_at DESC NULLS LAST, started_at DESC';
+      ? 'SELECT a.id, a.exam_id, a.student_id, a.student_name, a.answers, a.score, a.started_at, a.submitted_at, a.status FROM online_exam_attempts a JOIN students s ON s.id = a.student_id WHERE a.exam_id=$1 AND s.branch_id=$2 ORDER BY a.submitted_at DESC NULLS LAST, a.started_at DESC'
+      : 'SELECT id, exam_id, student_id, student_name, answers, score, started_at, submitted_at, status FROM online_exam_attempts WHERE exam_id=$1 ORDER BY submitted_at DESC NULLS LAST, started_at DESC';
     const res = await query(sql, branchId ? [examId, branchId] : [examId]);
     return res.rows.map(mapOnlineExamAttempt);
   } catch { return []; }
@@ -2938,7 +2952,8 @@ export async function fetchCertificateRecordsDB(studentId?: string): Promise<imp
     // students.branch_id when listing everyone's (a specific studentId is
     // already a scoped lookup by the caller).
     const branchId = studentId ? null : scopeBranch(session);
-    let sql = branchId ? 'SELECT cr.* FROM certificate_records cr JOIN students s ON s.id = cr.student_id' : 'SELECT * FROM certificate_records cr';
+    const crCols = 'cr.id, cr.student_id, cr.student_name, cr.certificate_type, cr.certificate_number, cr.issued_date, cr.issued_by, cr.verified, cr.verification_code, cr.document_url';
+    let sql = branchId ? `SELECT ${crCols} FROM certificate_records cr JOIN students s ON s.id = cr.student_id` : `SELECT ${crCols} FROM certificate_records cr`;
     const conditions: string[] = [];
     const params: string[] = [];
     if (studentId) { params.push(studentId); conditions.push(`cr.student_id=$${params.length}`); }
@@ -2962,7 +2977,7 @@ export async function issueCertificateDB(data: Omit<import('@/lib/types').Certif
 
 // Inventory & Assets ──────────────────────────────────────────────────────────
 export async function fetchAssetsDB(): Promise<import('@/lib/types').Asset[]> {
-  try { const res = await query('SELECT * FROM assets ORDER BY name'); return res.rows.map(r => ({ id: r.id, name: r.name, category: r.category, assetTag: r.asset_tag, location: r.location, purchaseDate: r.purchase_date, purchaseCost: r.purchase_cost, currentValue: r.current_value, vendor: r.vendor, warrantyExpiry: r.warranty_expiry, status: r.status, assignedTo: r.assigned_to, notes: r.notes })); } catch { return []; }
+  try { const res = await query('SELECT id, name, category, asset_tag, location, purchase_date, purchase_cost, current_value, vendor, warranty_expiry, status, assigned_to, notes FROM assets ORDER BY name'); return res.rows.map(r => ({ id: r.id, name: r.name, category: r.category, assetTag: r.asset_tag, location: r.location, purchaseDate: r.purchase_date, purchaseCost: r.purchase_cost, currentValue: r.current_value, vendor: r.vendor, warrantyExpiry: r.warranty_expiry, status: r.status, assignedTo: r.assigned_to, notes: r.notes })); } catch { return []; }
 }
 
 export async function createAssetDB(data: Omit<import('@/lib/types').Asset, 'id'>): Promise<{ error?: string; id?: string }> {
@@ -2975,12 +2990,12 @@ export async function createAssetDB(data: Omit<import('@/lib/types').Asset, 'id'
 }
 
 export async function fetchConsumableItemsDB(): Promise<import('@/lib/types').ConsumableItem[]> {
-  try { const res = await query('SELECT * FROM consumable_items ORDER BY name'); return res.rows.map(r => ({ id: r.id, name: r.name, category: r.category, unit: r.unit, quantity: r.quantity, minStockLevel: r.min_stock_level, unitPrice: r.unit_price, supplier: r.supplier, lastRestocked: r.last_restocked })); } catch { return []; }
+  try { const res = await query('SELECT id, name, category, unit, quantity, min_stock_level, unit_price, supplier, last_restocked FROM consumable_items ORDER BY name'); return res.rows.map(r => ({ id: r.id, name: r.name, category: r.category, unit: r.unit, quantity: r.quantity, minStockLevel: r.min_stock_level, unitPrice: r.unit_price, supplier: r.supplier, lastRestocked: r.last_restocked })); } catch { return []; }
 }
 
 // Procurement ─────────────────────────────────────────────────────────────────
 export async function fetchPurchaseRequestsDB(): Promise<import('@/lib/types').PurchaseRequest[]> {
-  try { const res = await query('SELECT * FROM purchase_requests ORDER BY created_at DESC'); return res.rows.map(r => ({ id: r.id, requestedBy: r.requested_by, department: r.department, description: r.description, items: r.items || [], totalCost: r.total_cost, priority: r.priority, status: r.status, createdAt: r.created_at, approvedBy: r.approved_by })); } catch { return []; }
+  try { const res = await query('SELECT id, requested_by, department, description, items, total_cost, priority, status, created_at, approved_by FROM purchase_requests ORDER BY created_at DESC'); return res.rows.map(r => ({ id: r.id, requestedBy: r.requested_by, department: r.department, description: r.description, items: r.items || [], totalCost: r.total_cost, priority: r.priority, status: r.status, createdAt: r.created_at, approvedBy: r.approved_by })); } catch { return []; }
 }
 
 export async function createPurchaseRequestDB(data: Omit<import('@/lib/types').PurchaseRequest, 'id'>): Promise<{ error?: string; id?: string }> {
@@ -2998,7 +3013,7 @@ export async function approvePurchaseRequestDB(id: string, approvedBy: string): 
 
 // Facility ────────────────────────────────────────────────────────────────────
 export async function fetchRoomsDB(): Promise<import('@/lib/types').Room[]> {
-  try { const res = await query('SELECT * FROM rooms ORDER BY building, floor, name'); return res.rows.map(r => ({ id: r.id, name: r.name, type: r.type, capacity: r.capacity, floor: r.floor, building: r.building, hasProjector: r.has_projector, hasAC: r.has_ac, hasComputers: r.has_computers, isActive: r.is_active })); } catch { return []; }
+  try { const res = await query('SELECT id, name, type, capacity, floor, building, has_projector, has_ac, has_computers, is_active FROM rooms ORDER BY building, floor, name'); return res.rows.map(r => ({ id: r.id, name: r.name, type: r.type, capacity: r.capacity, floor: r.floor, building: r.building, hasProjector: r.has_projector, hasAC: r.has_ac, hasComputers: r.has_computers, isActive: r.is_active })); } catch { return []; }
 }
 
 export async function createRoomDB(data: Omit<import('@/lib/types').Room, 'id'>): Promise<{ error?: string; id?: string }> {
@@ -3021,7 +3036,7 @@ export async function bookRoomDB(data: Omit<import('@/lib/types').RoomBooking, '
 
 export async function fetchRoomBookingsDB(date?: string): Promise<import('@/lib/types').RoomBooking[]> {
   try {
-    let sql = 'SELECT * FROM room_bookings';
+    let sql = 'SELECT id, room_id, room_name, booked_by, purpose, date, start_time, end_time, status FROM room_bookings';
     const params: string[] = [];
     if (date) { params.push(date); sql += ` WHERE date=$${params.length}`; }
     sql += ' ORDER BY date, start_time';
@@ -3031,7 +3046,7 @@ export async function fetchRoomBookingsDB(date?: string): Promise<import('@/lib/
 }
 
 export async function fetchMaintenanceRequestsDB(): Promise<import('@/lib/types').MaintenanceRequest[]> {
-  try { const res = await query('SELECT * FROM maintenance_requests ORDER BY reported_date DESC'); return res.rows.map(r => ({ id: r.id, roomId: r.room_id, location: r.location, issueType: r.issue_type, description: r.description, reportedBy: r.reported_by, reportedDate: r.reported_date, priority: r.priority, status: r.status, assignedTo: r.assigned_to, resolvedDate: r.resolved_date, cost: r.cost })); } catch { return []; }
+  try { const res = await query('SELECT id, room_id, location, issue_type, description, reported_by, reported_date, priority, status, assigned_to, resolved_date, cost FROM maintenance_requests ORDER BY reported_date DESC'); return res.rows.map(r => ({ id: r.id, roomId: r.room_id, location: r.location, issueType: r.issue_type, description: r.description, reportedBy: r.reported_by, reportedDate: r.reported_date, priority: r.priority, status: r.status, assignedTo: r.assigned_to, resolvedDate: r.resolved_date, cost: r.cost })); } catch { return []; }
 }
 
 export async function createMaintenanceRequestDB(data: Omit<import('@/lib/types').MaintenanceRequest, 'id'>): Promise<{ error?: string; id?: string }> {
@@ -3089,17 +3104,17 @@ export async function getParentPortalData(): Promise<ParentPortalData | null> {
     const idList = ids.map((_, i) => `$${i + 1}`).join(',');
 
     const attRes = await query(
-      `SELECT * FROM attendance WHERE student_id IN (${idList}) ORDER BY date DESC LIMIT 100`,
+      `SELECT id, student_id, student_name, class, section, date, status FROM attendance WHERE student_id IN (${idList}) ORDER BY date DESC LIMIT 100`,
       ids
     );
 
     const feeRes = await query(
-      `SELECT * FROM fee_records WHERE student_id IN (${idList}) ORDER BY due_date DESC`,
+      `SELECT id, student_id, student_name, amount, due_date, status, voucher_id, payment_date, fee_type, month FROM fee_records WHERE student_id IN (${idList}) ORDER BY due_date DESC`,
       ids
     );
 
     const examRes = await query(
-      "SELECT * FROM exams WHERE published=true ORDER BY date DESC LIMIT 20"
+      "SELECT id, exam_name, subject, class_name, date, student_results FROM exams WHERE published=true ORDER BY date DESC LIMIT 20"
     );
 
     const annRes = await query(

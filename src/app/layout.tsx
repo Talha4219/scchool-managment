@@ -2,11 +2,6 @@
 import type {Metadata} from 'next';
 import { Fraunces, Schibsted_Grotesk, Noto_Nastaliq_Urdu } from 'next/font/google';
 import './globals.css';
-import { StateProvider } from '@/lib/state-context';
-import { NotificationsProvider } from '@/lib/notifications-context';
-import { AttendanceProvider } from '@/lib/attendance-context';
-import { ExamsProvider } from '@/lib/exams-context';
-import { StudentsProvider } from '@/lib/students-context';
 import { Toaster } from '@/components/ui/toaster';
 import { ConfirmProvider } from '@/components/ui/confirm-dialog';
 import { LanguageProvider } from '@/hooks/use-language';
@@ -55,22 +50,12 @@ export default function RootLayout({
         />
       </head>
       <body className="font-sans antialiased bg-background text-foreground">
-        <NotificationsProvider>
-          <AttendanceProvider>
-            <ExamsProvider>
-              <StudentsProvider>
-                <StateProvider>
-                  <LanguageProvider>
-                    <ConfirmProvider>
-                      {children}
-                      <Toaster />
-                    </ConfirmProvider>
-                  </LanguageProvider>
-                </StateProvider>
-              </StudentsProvider>
-            </ExamsProvider>
-          </AttendanceProvider>
-        </NotificationsProvider>
+        <LanguageProvider>
+          <ConfirmProvider>
+            {children}
+            <Toaster />
+          </ConfirmProvider>
+        </LanguageProvider>
       </body>
     </html>
   );

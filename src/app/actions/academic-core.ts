@@ -2008,20 +2008,37 @@ export async function saveAttendanceRecordsDB(sessionId: string, records: { stud
   if (!isOnline) return;
   try {
     const { nanoid } = await import("nanoid");
-    const before = await query("SELECT student_id, status, remarks FROM attendance_records WHERE session_id=$1", [sessionId]);
+    const before = await query("SELECT id, student_id, status, remarks FROM attendance_records WHERE session_id=$1", [sessionId]);
     const beforeByStudent = new Map(before.rows.map((r: any) => [r.student_id, { status: r.status, remarks: r.remarks }]));
+    const existingIdByStudent = new Map(before.rows.map((r: any) => [r.student_id, r.id]));
 
-    for (const r of records) {
-      const existing = await query("SELECT id FROM attendance_records WHERE session_id=$1 AND student_id=$2", [sessionId, r.studentId]);
-      if (existing.rows.length > 0) {
-        await query("UPDATE attendance_records SET status=$1, remarks=$2 WHERE id=$3", [r.status, r.remarks || null, existing.rows[0].id]);
-      } else {
+    // Bulk upsert instead of one existence-check + one insert/update per
+    // record — this used to be up to 2N+1 queries for an N-student class.
+    const toUpdate = records.filter(r => existingIdByStudent.has(r.studentId));
+    const toInsert = records.filter(r => !existingIdByStudent.has(r.studentId));
+
+    if (toUpdate.length > 0) {
+      const values: any[] = [];
+      const rows = toUpdate.map((r, i) => {
+        values.push(existingIdByStudent.get(r.studentId), r.status, r.remarks || null);
+        return `($${i * 3 + 1}::varchar,$${i * 3 + 2}::varchar,$${i * 3 + 3}::text)`;
+      }).join(",");
+      await query(
+        `UPDATE attendance_records AS ar SET status = v.status, remarks = v.remarks
+         FROM (VALUES ${rows}) AS v(id, status, remarks)
+         WHERE ar.id = v.id`,
+        values
+      );
+    }
+
+    if (toInsert.length > 0) {
+      const values: any[] = [];
+      const rows = toInsert.map((r, i) => {
         const id = `ar-${nanoid(8)}`;
-        await query(
-          "INSERT INTO attendance_records (id, session_id, student_id, status, remarks) VALUES ($1,$2,$3,$4,$5)",
-          [id, sessionId, r.studentId, r.status, r.remarks || null]
-        );
-      }
+        values.push(id, sessionId, r.studentId, r.status, r.remarks || null);
+        return `($${i * 5 + 1},$${i * 5 + 2},$${i * 5 + 3},$${i * 5 + 4},$${i * 5 + 5})`;
+      }).join(",");
+      await query(`INSERT INTO attendance_records (id, session_id, student_id, status, remarks) VALUES ${rows}`, values);
     }
 
     await logAudit({
@@ -2793,17 +2810,24 @@ export async function saveQuestionBankItemsDB(items: Omit<QuestionBankItem, 'id'
   const auth = await requireRole('ADMIN', 'TEACHER');
   if ('error' in auth) return { error: auth.error };
   try {
+    if (items.length === 0) return { count: 0 };
     const { nanoid } = await import("nanoid");
-    for (const item of items) {
+    const values: any[] = [];
+    const rows = items.map((item, i) => {
       const id = `qb-${nanoid(8)}`;
-      await query(
-        `INSERT INTO question_bank (id, book_id, class_id, subject_id, question_type, question_text, options, correct_answer, marks, difficulty, status, generated_by_ai, created_by_user_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'draft',$11,$12)`,
-        [id, item.bookId, item.classId, item.subjectId || null, item.questionType, item.questionText,
-         JSON.stringify(item.options || []), item.correctAnswer, item.marks, item.difficulty,
-         item.generatedByAi, auth.session.userId]
+      const base = i * 12;
+      values.push(
+        id, item.bookId, item.classId, item.subjectId || null, item.questionType, item.questionText,
+        JSON.stringify(item.options || []), item.correctAnswer, item.marks, item.difficulty,
+        item.generatedByAi, auth.session.userId
       );
-    }
+      return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},'draft',$${base + 11},$${base + 12})`;
+    }).join(",");
+    await query(
+      `INSERT INTO question_bank (id, book_id, class_id, subject_id, question_type, question_text, options, correct_answer, marks, difficulty, status, generated_by_ai, created_by_user_id)
+       VALUES ${rows}`,
+      values
+    );
     return { count: items.length };
   } catch (e) { logServerError("academic-core", "saveQuestionBankItemsDB error:", e); return { error: "Failed to save questions." }; }
 }
@@ -2873,19 +2897,21 @@ export async function addQuestionBankItemsToOnlineExamDB(examId: string, itemIds
   const auth = await requireRole('ADMIN', 'TEACHER');
   if ('error' in auth) return { error: auth.error };
   try {
+    if (itemIds.length === 0) return { count: 0 };
     const { nanoid } = await import("nanoid");
-    let count = 0;
-    for (const itemId of itemIds) {
-      const res = await query("SELECT * FROM question_bank WHERE id=$1 AND status='approved'", [itemId]);
-      if (res.rows.length === 0) continue;
-      const q = res.rows[0];
+    const res = await query("SELECT * FROM question_bank WHERE id = ANY($1::text[]) AND status='approved'", [itemIds]);
+    if (res.rows.length === 0) return { count: 0 };
+    const values: any[] = [];
+    const rows = res.rows.map((q: any, i: number) => {
       const type = q.question_type === 'MCQ' ? 'MCQ' : q.question_type === 'ShortAnswer' ? 'ShortAnswer' : 'Essay';
-      await query(
-        `INSERT INTO online_exam_questions (id, exam_id, type, question, options, correct_answer, marks) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [`oeq-${nanoid(8)}`, examId, type, q.question_text, JSON.stringify(q.options || []), q.correct_answer, q.marks]
-      );
-      count++;
-    }
-    return { count };
+      const base = i * 7;
+      values.push(`oeq-${nanoid(8)}`, examId, type, q.question_text, JSON.stringify(q.options || []), q.correct_answer, q.marks);
+      return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7})`;
+    }).join(",");
+    await query(
+      `INSERT INTO online_exam_questions (id, exam_id, type, question, options, correct_answer, marks) VALUES ${rows}`,
+      values
+    );
+    return { count: res.rows.length };
   } catch (e) { logServerError("academic-core", "addQuestionBankItemsToOnlineExamDB error:", e); return { error: "Failed to add questions to exam." }; }
 }

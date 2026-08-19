@@ -1703,9 +1703,15 @@ Please review and approve in the school management dashboard.')
     }
     const mainBranchRes = await query("SELECT id FROM branches ORDER BY created_at ASC LIMIT 1");
     const mainBranchId = mainBranchRes.rows[0]?.id || 'branch-main';
-    // OWNER rows are intentionally left NULL (unscoped) — only backfill
-    // non-owner users.
-    await query("UPDATE users SET branch_id=$1 WHERE branch_id IS NULL AND role != 'OWNER'", [mainBranchId]);
+    // OWNER rows are intentionally left NULL (unscoped). PRINCIPAL rows are
+    // too — a NULL branch_id there means "not yet assigned to a branch",
+    // the exact state the Owner's "Assign Principal" flow depends on. This
+    // backfill runs every time initializeDatabase() re-executes (which
+    // happens on every dev-server hot-reload, not just once at first boot),
+    // so without this exclusion an Owner un-assigning a Principal to
+    // reassign them elsewhere would get silently overwritten back to the
+    // default branch on the very next reload.
+    await query("UPDATE users SET branch_id=$1 WHERE branch_id IS NULL AND role NOT IN ('OWNER', 'PRINCIPAL')", [mainBranchId]);
     await query("UPDATE classes SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
     await query("UPDATE employees SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
     await query("UPDATE students SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);

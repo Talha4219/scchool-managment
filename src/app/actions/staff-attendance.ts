@@ -54,23 +54,65 @@ export async function markStaffAttendanceDB(records: { userId: number; date: str
   try {
     const { nanoid } = await import("nanoid");
     const { generateSubstitutionsForTeacherDateDB, clearAutoSubstitutionsForTeacherDateDB } = await import("./substitutions");
-    for (const r of records) {
-      const existing = await query("SELECT id, status FROM staff_attendance WHERE user_id=$1 AND date=$2", [r.userId, r.date]);
-      const previousStatus = existing.rows[0]?.status;
-      if (existing.rows.length > 0) {
-        await query("UPDATE staff_attendance SET status=$1, remarks=$2, marked_by=$3 WHERE id=$4", [r.status, r.remarks || null, auth.session.name, existing.rows[0].id]);
-      } else {
-        const id = `sa-${nanoid(8)}`;
-        await query(
-          "INSERT INTO staff_attendance (id, user_id, date, status, remarks, marked_by, source) VALUES ($1,$2,$3,$4,$5,$6,'manual')",
-          [id, r.userId, r.date, r.status, r.remarks || null, auth.session.name]
-        );
-      }
 
+    // Bulk existence-check + bulk upsert instead of one SELECT and one
+    // INSERT/UPDATE per record — this used to be up to 2N+1 queries for an
+    // N-staff attendance sheet. The substitution trigger below still runs
+    // per-teacher since generate/clear are genuine per-teacher side effects,
+    // not a query pattern that can be batched.
+    const userIds = records.map(r => r.userId);
+    const dates = [...new Set(records.map(r => r.date))];
+    const existingRes = await query(
+      `SELECT id, user_id, date, status FROM staff_attendance WHERE user_id = ANY($1::int[]) AND date = ANY($2::varchar[])`,
+      [userIds, dates]
+    );
+    const existingByKey = new Map(existingRes.rows.map((r: any) => [`${r.user_id}|${r.date}`, r]));
+    const previousStatusByUser = new Map<number, string | undefined>();
+
+    const toUpdate: { id: string; status: string; remarks: string | null }[] = [];
+    const toInsert: { id: string; userId: number; date: string; status: string; remarks: string | null }[] = [];
+    for (const r of records) {
+      const existing = existingByKey.get(`${r.userId}|${r.date}`);
+      previousStatusByUser.set(r.userId, existing?.status);
+      if (existing) {
+        toUpdate.push({ id: existing.id, status: r.status, remarks: r.remarks || null });
+      } else {
+        toInsert.push({ id: `sa-${nanoid(8)}`, userId: r.userId, date: r.date, status: r.status, remarks: r.remarks || null });
+      }
+    }
+
+    if (toUpdate.length > 0) {
+      const values: any[] = [];
+      const rows = toUpdate.map((u, i) => {
+        values.push(u.id, u.status, u.remarks, auth.session.name);
+        return `($${i * 4 + 1}::varchar,$${i * 4 + 2}::varchar,$${i * 4 + 3}::text,$${i * 4 + 4}::varchar)`;
+      }).join(",");
+      await query(
+        `UPDATE staff_attendance AS sa SET status = v.status, remarks = v.remarks, marked_by = v.marked_by
+         FROM (VALUES ${rows}) AS v(id, status, remarks, marked_by)
+         WHERE sa.id = v.id`,
+        values
+      );
+    }
+
+    if (toInsert.length > 0) {
+      const values: any[] = [];
+      const rows = toInsert.map((ins, i) => {
+        values.push(ins.id, ins.userId, ins.date, ins.status, ins.remarks, auth.session.name);
+        return `($${i * 6 + 1},$${i * 6 + 2},$${i * 6 + 3},$${i * 6 + 4},$${i * 6 + 5},$${i * 6 + 6},'manual')`;
+      }).join(",");
+      await query(
+        `INSERT INTO staff_attendance (id, user_id, date, status, remarks, marked_by, source) VALUES ${rows}`,
+        values
+      );
+    }
+
+    for (const r of records) {
       // Whole-day substitution trigger. A correction back to Present clears
       // only the auto-generated rows for that teacher/date — a manual_override
       // an admin already made stays put, matching this session's established
       // "don't clobber an explicit admin choice" convention.
+      const previousStatus = previousStatusByUser.get(r.userId);
       if (r.status === 'Absent' || r.status === 'Leave') {
         await generateSubstitutionsForTeacherDateDB(r.userId, r.date, r.status === 'Absent' ? 'absent' : 'leave');
       } else if (previousStatus === 'Absent' || previousStatus === 'Leave') {

@@ -8,6 +8,11 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useAppState } from "@/lib/state-context";
 import { useNotifications } from "@/lib/notifications-context";
+import { StateProvider } from "@/lib/state-context";
+import { NotificationsProvider } from "@/lib/notifications-context";
+import { AttendanceProvider } from "@/lib/attendance-context";
+import { ExamsProvider } from "@/lib/exams-context";
+import { StudentsProvider } from "@/lib/students-context";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -28,7 +33,9 @@ import { LanguageSwitcher } from "@/components/ui/language-switcher";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Breadcrumbs } from "@/components/dashboard/breadcrumbs";
 import { useLanguage } from "@/hooks/use-language";
-import { Agentation } from "agentation";
+import dynamic from "next/dynamic";
+
+const Agentation = dynamic(() => import("agentation").then(m => ({ default: m.Agentation })), { ssr: false });
 
 const searchResultIcon: Record<GlobalSearchResult["type"], typeof User> = {
   student: User,
@@ -48,6 +55,22 @@ const SidebarCollapseCtx = createContext<{ collapsed: boolean; toggle: () => voi
 export const useSidebarCollapse = () => useContext(SidebarCollapseCtx);
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <NotificationsProvider>
+      <AttendanceProvider>
+        <ExamsProvider>
+          <StudentsProvider>
+            <StateProvider>
+              <DashboardShell>{children}</DashboardShell>
+            </StateProvider>
+          </StudentsProvider>
+        </ExamsProvider>
+      </AttendanceProvider>
+    </NotificationsProvider>
+  );
+}
+
+function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { isDbLoaded, activeRole, setActiveRole, schoolInfo, reloadDbData } = useAppState();

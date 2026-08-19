@@ -326,9 +326,10 @@ export default function UsersPage() {
                 {isOwner && BRANCH_SCOPED_ROLES.has(createForm.roleValue) && (
                   <div className="space-y-1">
                     <Label>Branch</Label>
-                    <Select value={createForm.branchId} onValueChange={v => setCreateForm(f => ({ ...f, branchId: v }))}>
+                    <Select value={createForm.branchId || "NONE"} onValueChange={v => setCreateForm(f => ({ ...f, branchId: v === "NONE" ? "" : v }))}>
                       <SelectTrigger><SelectValue placeholder="Select branch" /></SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="NONE">No Branch (Unassigned)</SelectItem>
                         {branches.map(b => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
@@ -525,9 +526,10 @@ export default function UsersPage() {
             {isOwner && BRANCH_SCOPED_ROLES.has(editForm.roleValue) && (
               <div className="space-y-1">
                 <Label>Branch</Label>
-                <Select value={editForm.branchId} onValueChange={v => setEditForm(f => ({ ...f, branchId: v }))}>
+                <Select value={editForm.branchId || "NONE"} onValueChange={v => setEditForm(f => ({ ...f, branchId: v === "NONE" ? "" : v }))}>
                   <SelectTrigger><SelectValue placeholder="Select branch" /></SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="NONE">No Branch (Unassigned)</SelectItem>
                     {branches.map(b => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
