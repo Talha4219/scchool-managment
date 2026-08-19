@@ -32,6 +32,7 @@ import { fetchUnresolvedErrorCountAction } from "@/app/actions/error-log-admin";
 import { LanguageSwitcher } from "@/components/ui/language-switcher";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Breadcrumbs } from "@/components/dashboard/breadcrumbs";
+import { NavigationProgress } from "@/components/dashboard/navigation-progress";
 import { useLanguage } from "@/hooks/use-language";
 import dynamic from "next/dynamic";
 
@@ -243,7 +244,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   useEffect(() => setHeaderMenusReady(true), []);
 
   return (
-    <SidebarCollapseCtx.Provider value={{ collapsed: sidebarCollapsed, toggle: toggleSidebar }}>
+    <>
+      <Suspense fallback={null}>
+        <NavigationProgress />
+      </Suspense>
+      <SidebarCollapseCtx.Provider value={{ collapsed: sidebarCollapsed, toggle: toggleSidebar }}>
       <div className="flex min-h-screen w-full bg-background">
         <Suspense fallback={<div className="w-[280px] h-full bg-card border-r border-border" />}>
           <AppSidebar />
@@ -553,5 +558,6 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         />
       )}
     </SidebarCollapseCtx.Provider>
+    </>
   );
 }
