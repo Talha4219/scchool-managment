@@ -4,6 +4,7 @@ import { query, checkDbConnection } from "@/lib/db";
 import pool from "@/lib/db";
 import { initializeDatabase } from "@/lib/db-init";
 import { getSession } from "./auth";
+import type { SessionPayload } from "@/lib/auth";
 import { logAudit, type AuditActor } from "@/lib/audit";
 import { logServerError } from "@/lib/error-log";
 import { notificationService } from "@/lib/notification-service";
@@ -13,7 +14,7 @@ import { notificationService } from "@/lib/notification-service";
 // in this file requires at least a logged-in session — these fetchers were
 // previously callable with no auth at all, leaking full class/enrollment/
 // exam/attendance data to anonymous requests.
-import { requireRole, requireSession, scopeBranch } from "@/lib/auth-scope";
+import { requireRole, requireSession, scopeBranch, withinBranch } from "@/lib/auth-scope";
 
 // Powers the "My Classes" dashboard widget: which section(s) this teacher is
 // the class teacher of, and which class/subject combinations they teach.
@@ -254,6 +255,9 @@ export async function deleteClassDB(id: string) {
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
   try {
+    // Don't let a branch-scoped principal delete another branch's class.
+    const target = await query("SELECT branch_id FROM classes WHERE id = $1", [id]);
+    if (target.rows.length === 0 || !withinBranch(auth.session, target.rows[0].branch_id)) return;
     await query("DELETE FROM sections WHERE class_id = $1", [id]);
     await query("DELETE FROM classes WHERE id = $1", [id]);
   } catch (e) {
@@ -292,6 +296,8 @@ export async function updateClassDB(data: { id: string; name: string; gradeLevel
   const isOnline = await checkDbConnection();
   if (!isOnline) return null;
   try {
+    const target = await query("SELECT branch_id FROM classes WHERE id = $1", [data.id]);
+    if (target.rows.length === 0 || !withinBranch(auth.session, target.rows[0].branch_id)) return null;
     await query(`UPDATE classes SET name = $1, grade_level = $2, is_graduating = $3 WHERE id = $4`, [data.name, data.gradeLevel, !!data.isGraduating, data.id]);
     return { id: data.id, name: data.name, gradeLevel: data.gradeLevel, isGraduating: !!data.isGraduating };
   } catch (e) {
@@ -360,6 +366,8 @@ export async function createSectionDB(data: { name: string; capacity: number; te
   const isOnline = await checkDbConnection();
   if (!isOnline) return null;
   try {
+    const cls = await query("SELECT branch_id FROM classes WHERE id = $1", [data.classId]);
+    if (cls.rows.length === 0 || !withinBranch(auth.session, cls.rows[0].branch_id)) return null;
     const { nanoid } = await import("nanoid");
     const id = `sec-${nanoid(8)}`;
     await query(
@@ -375,7 +383,11 @@ export async function deleteSectionDB(id: string) {
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
-  try { await query("DELETE FROM sections WHERE id = $1", [id]); } catch {}
+  try {
+    const sec = await query("SELECT c.branch_id AS branch_id FROM sections s JOIN classes c ON c.id = s.class_id WHERE s.id = $1", [id]);
+    if (sec.rows.length === 0 || !withinBranch(auth.session, sec.rows[0].branch_id)) return;
+    await query("DELETE FROM sections WHERE id = $1", [id]);
+  } catch {}
 }
 
 export async function updateSectionDB(data: { id: string; name: string; capacity: number; teacherName?: string; group?: string }) {
@@ -385,6 +397,8 @@ export async function updateSectionDB(data: { id: string; name: string; capacity
   const isOnline = await checkDbConnection();
   if (!isOnline) return false;
   try {
+    const sec = await query("SELECT c.branch_id AS branch_id FROM sections s JOIN classes c ON c.id = s.class_id WHERE s.id = $1", [data.id]);
+    if (sec.rows.length === 0 || !withinBranch(auth.session, sec.rows[0].branch_id)) return false;
     await query("UPDATE sections SET name=$1, capacity=$2, teacher_name=$3, section_group=$4 WHERE id=$5",
       [data.name, data.capacity, data.teacherName || null, data.group || null, data.id]);
     return true;
@@ -402,6 +416,8 @@ export async function updateSectionClassTeacherDB(sectionId: string, teacherId: 
   if (!isOnline) return { error: 'Database offline' };
   try {
     let teacherName: string | null = null;
+    const secRes = await query("SELECT c.branch_id AS branch_id FROM sections s JOIN classes c ON c.id = s.class_id WHERE s.id = $1", [sectionId]);
+    if (secRes.rows.length === 0 || !withinBranch(auth.session, secRes.rows[0].branch_id)) return { error: 'Section not found.' };
     if (teacherId !== null) {
       const userRes = await query('SELECT name, role FROM users WHERE id=$1', [teacherId]);
       if (userRes.rows.length === 0) return { error: 'Teacher not found.' };
@@ -993,6 +1009,8 @@ export async function createTermExamDB(data: { name: string; examType: string; c
   const isOnline = await checkDbConnection();
   if (!isOnline) return null;
   try {
+    const cls = await query("SELECT branch_id FROM classes WHERE id = $1", [data.classId]);
+    if (cls.rows.length === 0 || !withinBranch(auth.session, cls.rows[0].branch_id)) return null;
     const { nanoid } = await import("nanoid");
     const id = `tx-${nanoid(8)}`;
     await query(
@@ -1003,12 +1021,23 @@ export async function createTermExamDB(data: { name: string; examType: string; c
   } catch { return null; }
 }
 
+// Branch check for term_exam rows (term_exams has no branch_id — scope via
+// its class). Used by admin/teacher write actions whose target id comes from
+// the client, so a branch-scoped principal can't touch another branch's exam.
+async function examInBranch(session: SessionPayload, examId: string): Promise<boolean> {
+  const res = await query(
+    `SELECT c.branch_id AS branch_id FROM term_exams te JOIN classes c ON c.id = te.class_id WHERE te.id = $1`,
+    [examId]
+  );
+  return res.rows.length > 0 && withinBranch(session, res.rows[0].branch_id);
+}
+
 export async function updateTermExamStatusDB(id: string, status: string) {
   const auth = await requireRole('ADMIN', 'TEACHER');
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
-  try { await query("UPDATE term_exams SET status = $1 WHERE id = $2", [status, id]); } catch {}
+  try { if (!(await examInBranch(auth.session, id))) return; await query("UPDATE term_exams SET status = $1 WHERE id = $2", [status, id]); } catch {}
 }
 
 export async function updateTermExamDB(id: string, data: { name?: string; examType?: string; classId?: string; sectionId?: string; startDate?: string; endDate?: string }) {
@@ -1017,6 +1046,11 @@ export async function updateTermExamDB(id: string, data: { name?: string; examTy
   const isOnline = await checkDbConnection();
   if (!isOnline) return false;
   try {
+    if (!(await examInBranch(auth.session, id))) return false;
+    if (data.classId !== undefined) {
+      const cls = await query("SELECT branch_id FROM classes WHERE id = $1", [data.classId]);
+      if (cls.rows.length === 0 || !withinBranch(auth.session, cls.rows[0].branch_id)) return false;
+    }
     const fields: string[] = [];
     const params: any[] = [];
     if (data.name !== undefined) { fields.push(`name = $${params.length + 1}`); params.push(data.name); }
@@ -1038,6 +1072,7 @@ export async function deleteTermExamDB(id: string) {
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
   try {
+    if (!(await examInBranch(auth.session, id))) return;
     const subjRes = await query("SELECT id FROM exam_subjects WHERE exam_id = $1", [id]);
     for (const row of subjRes.rows) {
       await query("DELETE FROM marks_entries WHERE exam_subject_id = $1", [row.id]);
@@ -1322,6 +1357,7 @@ export async function publishExamResultsDB(examId: string) {
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
   try {
+    if (!(await examInBranch(auth.session, examId))) return;
     await query(
       "UPDATE results SET status = 'Published' WHERE exam_id = $1 AND status IN ('Approved', 'Reviewed')",
       [examId]
@@ -2499,6 +2535,8 @@ export async function createTimetableDB(data: {
   const isOnline = await checkDbConnection();
   if (!isOnline) return { error: "Database offline" };
   try {
+    const cls = await query("SELECT branch_id FROM classes WHERE id = $1", [data.classId]);
+    if (cls.rows.length === 0 || !withinBranch(auth.session, cls.rows[0].branch_id)) return { error: "Not authorized for this class" };
     // Conflict checks
     const [teacherConflict, roomConflict, sectionConflict] = await Promise.all([
       query(
@@ -2575,7 +2613,11 @@ export async function deleteTimetableEntryDB(id: string) {
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
-  try { await query("DELETE FROM timetables WHERE id=$1", [id]); } catch {}
+  try {
+    const tt = await query("SELECT c.branch_id AS branch_id FROM timetables tt JOIN classes c ON c.id = tt.class_id WHERE tt.id=$1", [id]);
+    if (tt.rows.length === 0 || !withinBranch(auth.session, tt.rows[0].branch_id)) return;
+    await query("DELETE FROM timetables WHERE id=$1", [id]);
+  } catch {}
 }
 
 // ── Exam Schedules ──────────────────────────────────────────────────────────────
@@ -2981,7 +3023,7 @@ export async function fetchClassBooksDB(classId?: string, subjectId?: string): P
 }
 
 export async function uploadClassBookDB(data: { classId: string; subjectId?: string | null; title: string; author?: string; fileName: string; pdfData: string }): Promise<{ error?: string; id?: string }> {
-  const auth = await requireRole('ADMIN', 'TEACHER');
+  const auth = await requireRole('ADMIN', 'TEACHER', 'OWNER');
   if ('error' in auth) return { error: auth.error };
   try {
     const { nanoid } = await import("nanoid");
@@ -2997,7 +3039,7 @@ export async function uploadClassBookDB(data: { classId: string; subjectId?: str
 }
 
 export async function deleteClassBookDB(id: string): Promise<{ error?: string }> {
-  const auth = await requireRole('ADMIN', 'TEACHER');
+  const auth = await requireRole('ADMIN', 'TEACHER', 'OWNER');
   if ('error' in auth) return { error: auth.error };
   try { await query("UPDATE class_books SET is_active = false WHERE id = $1", [id]); return {}; }
   catch { return { error: "Failed to delete book." }; }
@@ -3012,7 +3054,7 @@ export interface QuestionBankItem {
 }
 
 export async function fetchQuestionBankDB(bookId?: string): Promise<QuestionBankItem[]> {
-  const auth = await requireRole('ADMIN', 'TEACHER');
+  const auth = await requireRole('ADMIN', 'TEACHER', 'OWNER');
   if ('error' in auth) return [];
   try {
     let sql = `SELECT * FROM question_bank`;
@@ -3030,7 +3072,7 @@ export async function fetchQuestionBankDB(bookId?: string): Promise<QuestionBank
 }
 
 export async function saveQuestionBankItemsDB(items: Omit<QuestionBankItem, 'id' | 'status' | 'createdAt'>[]): Promise<{ error?: string; count?: number }> {
-  const auth = await requireRole('ADMIN', 'TEACHER');
+  const auth = await requireRole('ADMIN', 'TEACHER', 'OWNER');
   if ('error' in auth) return { error: auth.error };
   try {
     if (items.length === 0) return { count: 0 };
@@ -3056,7 +3098,7 @@ export async function saveQuestionBankItemsDB(items: Omit<QuestionBankItem, 'id'
 }
 
 export async function updateQuestionBankItemDB(id: string, data: Partial<Pick<QuestionBankItem, 'questionText' | 'options' | 'correctAnswer' | 'marks' | 'status'>>): Promise<{ error?: string }> {
-  const auth = await requireRole('ADMIN', 'TEACHER');
+  const auth = await requireRole('ADMIN', 'TEACHER', 'OWNER');
   if ('error' in auth) return { error: auth.error };
   try {
     const fields: string[] = []; const vals: any[] = []; let i = 1;
@@ -3073,7 +3115,7 @@ export async function updateQuestionBankItemDB(id: string, data: Partial<Pick<Qu
 }
 
 export async function deleteQuestionBankItemDB(id: string): Promise<{ error?: string }> {
-  const auth = await requireRole('ADMIN', 'TEACHER');
+  const auth = await requireRole('ADMIN', 'TEACHER', 'OWNER');
   if ('error' in auth) return { error: auth.error };
   try { await query("DELETE FROM question_bank WHERE id=$1", [id]); return {}; }
   catch { return { error: "Failed to delete question." }; }
@@ -3082,7 +3124,7 @@ export async function deleteQuestionBankItemDB(id: string): Promise<{ error?: st
 // Loads the selected book's PDF and calls the AI flow, saving results as
 // draft question-bank items for review before Approve.
 export async function generateQuestionsFromBookDB(bookId: string, params: { topicHint?: string; mcqCount: number; shortAnswerCount: number; difficulty: 'Easy' | 'Medium' | 'Hard' }): Promise<{ error?: string; count?: number }> {
-  const auth = await requireRole('ADMIN', 'TEACHER');
+  const auth = await requireRole('ADMIN', 'TEACHER', 'OWNER');
   if ('error' in auth) return { error: auth.error };
   try {
     const bookRes = await query('SELECT cb.*, sub.name as subject_name FROM class_books cb LEFT JOIN subjects sub ON sub.id = cb.subject_id WHERE cb.id=$1', [bookId]);
@@ -3117,7 +3159,7 @@ export async function generateQuestionsFromBookDB(bookId: string, params: { topi
 // bank (online_exam_questions) — the two-way bridge between "questions AI
 // generated from a textbook" and "questions a student actually answers."
 export async function addQuestionBankItemsToOnlineExamDB(examId: string, itemIds: string[]): Promise<{ error?: string; count?: number }> {
-  const auth = await requireRole('ADMIN', 'TEACHER');
+  const auth = await requireRole('ADMIN', 'TEACHER', 'OWNER');
   if ('error' in auth) return { error: auth.error };
   try {
     if (itemIds.length === 0) return { count: 0 };

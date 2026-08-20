@@ -14,7 +14,7 @@ import {
 // only in the React components that called them, so a raw request to the server
 // action endpoint bypassed it entirely. See audit finding "Three core server-action
 // files have zero session/role checks".
-import { requireRole, scopeBranch } from '../../lib/auth-scope';
+import { requireRole, scopeBranch, withinBranch } from '../../lib/auth-scope';
 
 // Helper to convert db rows to frontend objects
 const mapRowToSchoolInfo = (row: any): SchoolInfo => ({
@@ -312,6 +312,9 @@ export async function updateStudentDB(st: StudentRecord) {
     return;
   }
 
+  const target = await query("SELECT branch_id FROM students WHERE id = $1", [st.id]);
+  if (target.rows.length === 0 || !withinBranch(auth.session, target.rows[0].branch_id)) return;
+
   await query(
     `UPDATE students SET name=$1, class=$2, section=$3, parent_name=$4, status=$5, parent_email=$6, email=$7, admission_number=$8, profile_photo=$9,
        dob=$10, gender=$11, address=$12, guardian_relation=$13, phone=$14
@@ -345,6 +348,8 @@ export async function deleteStudentDB(id: string) {
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
+  const target = await query("SELECT branch_id FROM students WHERE id=$1", [id]);
+  if (target.rows.length === 0 || !withinBranch(auth.session, target.rows[0].branch_id)) return;
   await query(`DELETE FROM students WHERE id=$1`, [id]);
 }
 
@@ -829,6 +834,11 @@ export async function updateFeePaymentDB(voucherId: string, method: string, date
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
+  const v = await query(
+    `SELECT s.branch_id AS branch_id FROM fee_records fr JOIN students s ON s.id = fr.student_id WHERE fr.id = $1`,
+    [voucherId]
+  );
+  if (v.rows.length === 0 || !withinBranch(auth.session, v.rows[0].branch_id)) return;
   await query(
     `UPDATE fee_records SET payment_method=$1, payment_date=$2 WHERE id=$3`,
     [method, date, voucherId]

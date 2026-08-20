@@ -7,7 +7,7 @@ import bcrypt from 'bcryptjs';
 import { getSession } from '@/app/actions/auth';
 import { logServerError } from '@/lib/error-log';
 import { logAudit } from '@/lib/audit';
-import { scopeBranch } from '@/lib/auth-scope';
+import { scopeBranch, withinBranch } from '@/lib/auth-scope';
 import type { SessionPayload } from '@/lib/auth';
 
 // Guards id-based user mutations (approve/deactivate/delete/reset password/etc.)
@@ -1059,6 +1059,7 @@ export async function updateTeacherProfileDB(
 ): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session || (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL')) return { error: 'Only admins can edit teacher profiles.' };
+  if (!(await ownsUserId(session, userId))) return { error: 'Not authorized for this teacher.' };
   try {
     const fields: string[] = []; const vals: any[] = []; let i = 1;
     if (data.phone !== undefined) { fields.push(`phone=$${i++}`); vals.push(data.phone); }
@@ -2505,7 +2506,11 @@ export async function createIncidentDB(data: Omit<import('@/lib/types').Incident
 }
 
 export async function updateIncidentStatusDB(id: string, status: string, actionTaken?: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session) return { error: 'Not authenticated.' };
   try {
+    const inc = await query('SELECT branch_id FROM incident_reports WHERE id=$1', [id]);
+    if (inc.rows.length === 0 || !withinBranch(session, inc.rows[0].branch_id)) return { error: 'Not authorized for this incident.' };
     const today = new Date().toISOString().split('T')[0];
     if (status === 'Resolved' || status === 'Closed') {
       await query('UPDATE incident_reports SET status=$1, action_taken=$2, resolved_at=$3 WHERE id=$4', [status, actionTaken || '', today, id]);
@@ -2650,7 +2655,7 @@ export async function fetchOnlineExamsDB(): Promise<import('@/lib/types').Online
 export async function createOnlineExamDB(data: Omit<import('@/lib/types').OnlineExam, 'id'>): Promise<{ error?: string; id?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can create exams.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER' && session.role !== 'OWNER') return { error: 'Only admins and teachers can create exams.' };
   try {
     const id = `oe_${Date.now()}`;
     await query(`INSERT INTO online_exams (id, title, class_name, subject, duration, total_marks, passing_marks, start_time, end_time, instructions, proctoring_enabled, shuffle_questions, status, exam_subject_id, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
@@ -2662,7 +2667,7 @@ export async function createOnlineExamDB(data: Omit<import('@/lib/types').Online
 export async function updateOnlineExamDB(id: string, data: Partial<Omit<import('@/lib/types').OnlineExam, 'id'>>): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage exams.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER' && session.role !== 'OWNER') return { error: 'Only admins and teachers can manage exams.' };
   try {
     await query(
       `UPDATE online_exams SET title=COALESCE($1,title), class_name=COALESCE($2,class_name), subject=COALESCE($3,subject),
@@ -2703,7 +2708,7 @@ async function syncOnlineExamScoreToMarksDB(examId: string, studentId: string, s
 export async function deleteOnlineExamDB(id: string): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage exams.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER' && session.role !== 'OWNER') return { error: 'Only admins and teachers can manage exams.' };
   try {
     const attempts = await query('SELECT COUNT(*) FROM online_exam_attempts WHERE exam_id=$1', [id]);
     if (parseInt(attempts.rows[0].count) > 0) return { error: 'Cannot delete an exam that students have already attempted.' };
@@ -2733,7 +2738,7 @@ export async function fetchOnlineExamQuestionsDB(examId: string, opts?: { includ
 export async function createOnlineExamQuestionDB(data: Omit<import('@/lib/types').OnlineExamQuestion, 'id'>): Promise<{ error?: string; id?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage questions.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER' && session.role !== 'OWNER') return { error: 'Only admins and teachers can manage questions.' };
   try {
     const id = `oeq_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     await query(
@@ -2747,7 +2752,7 @@ export async function createOnlineExamQuestionDB(data: Omit<import('@/lib/types'
 export async function updateOnlineExamQuestionDB(id: string, data: Partial<Omit<import('@/lib/types').OnlineExamQuestion, 'id' | 'examId'>>): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage questions.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER' && session.role !== 'OWNER') return { error: 'Only admins and teachers can manage questions.' };
   try {
     await query(
       `UPDATE online_exam_questions SET type=COALESCE($1,type), question=COALESCE($2,question), options=COALESCE($3,options), correct_answer=COALESCE($4,correct_answer), marks=COALESCE($5,marks) WHERE id=$6`,
@@ -2760,7 +2765,7 @@ export async function updateOnlineExamQuestionDB(id: string, data: Partial<Omit<
 export async function deleteOnlineExamQuestionDB(id: string): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
-  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER') return { error: 'Only admins and teachers can manage questions.' };
+  if (session.role !== 'ADMIN' && session.role !== 'PRINCIPAL' && session.role !== 'TEACHER' && session.role !== 'OWNER') return { error: 'Only admins and teachers can manage questions.' };
   try { await query('DELETE FROM online_exam_questions WHERE id=$1', [id]); return {}; } catch { return { error: 'Failed to delete question.' }; }
 }
 

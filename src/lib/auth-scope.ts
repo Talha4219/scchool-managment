@@ -36,7 +36,27 @@ export async function requireSession(): Promise<{ session: SessionPayload } | { 
 // picked a branch to "view as" from the global header selector — so an
 // active selection scopes OWNER just like any other role, everywhere, with
 // zero changes needed at any of this function's ~40 call sites.
+export const UNASSIGNED_BRANCH_ID = '__unassigned__';
+
 export function scopeBranch(session: SessionPayload): string | null {
   if (session.role === 'OWNER') return session.branchId ?? null;
+  // A PRINCIPAL with no branch assignment (users.branch_id IS NULL — the
+  // state the Owner's "Assign Principal" flow depends on) must NOT resolve
+  // to null = "see every branch". Scope them to a branch id that can never
+  // exist so every scoped query returns zero rows until they're assigned
+  // (assignPrincipalDB sets users.branch_id; effective after re-login).
+  if (session.role === 'PRINCIPAL' && !session.branchId) return UNASSIGNED_BRANCH_ID;
   return session.branchId;
+}
+
+// Returns true when the caller may act on a row belonging to targetBranchId.
+// Used by update/delete actions that are gated by requireRole('ADMIN') (which
+// auto-includes PRINCIPAL) but whose target row id comes from the client — the
+// branch re-check closes the cross-branch gap where a principal could pass
+// another branch's id and mutate a record their read-path would never show.
+// OWNER (and any unscoped session) may act on any branch.
+export function withinBranch(session: SessionPayload, targetBranchId: string | null | undefined): boolean {
+  const scope = scopeBranch(session);
+  if (!scope) return true;
+  return targetBranchId === scope;
 }

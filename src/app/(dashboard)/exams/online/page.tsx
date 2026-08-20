@@ -49,7 +49,7 @@ export default function OnlineExamsPage() {
 
   useEffect(() => { getSession().then(s => setRole(s?.role ?? null)); }, []);
 
-  const isStaff = role === "ADMIN" || role === "TEACHER";
+  const isStaff = role === "ADMIN" || role === "TEACHER" || role === "PRINCIPAL" || role === "OWNER";
   const isStudent = role === "STUDENT";
 
   const [loading, setLoading] = useState(true);
