@@ -1,4 +1,5 @@
 import { query, checkDbConnection } from './db';
+import { PERMISSION_KEYS, SYSTEM_ROLES } from './permissions-catalog';
 import {
   defaultSchoolInfo,
   defaultSections,
@@ -1277,25 +1278,12 @@ Please review and approve in the school management dashboard.')
     // Default role permissions
     const permRes = await query('SELECT COUNT(*) FROM role_permissions');
     if (parseInt(permRes.rows[0].count) === 0) {
-      const permissions = [
-        'students.view', 'students.create', 'students.edit', 'students.delete',
-        'teachers.view', 'teachers.create', 'teachers.edit', 'teachers.delete',
-        'admissions.view', 'admissions.approve', 'admissions.reject',
-        'classes.view', 'classes.create', 'classes.edit', 'classes.delete',
-        'assignments.view', 'assignments.create', 'assignments.grade', 'assignments.delete',
-        'attendance.view', 'attendance.mark', 'attendance.staff.manage',
-        'exams.view', 'exams.create', 'exams.edit', 'exams.delete', 'exams.online',
-        'results.view', 'results.enter', 'results.approve', 'results.publish',
-        'fees.view', 'fees.create', 'fees.edit', 'fees.delete',
-        'timetable.view', 'timetable.create', 'timetable.edit', 'timetable.delete', 'timetable.substitute',
-        'announcements.view', 'announcements.create', 'announcements.delete',
-        'library.view', 'library.create', 'library.edit', 'library.delete',
-        'messages.view',
-        'transport.view', 'transport.create', 'transport.edit',
-        'reports.view', 'reports.export',
-        'settings.view', 'settings.edit',
-        'users.view', 'users.create', 'users.edit', 'users.delete',
-      ];
+      // Fresh install: seed the FULL permission catalog (see
+      // src/lib/permissions-catalog.ts — the single source of truth) so every
+      // role starts with a row for every grantable key. Keys not in a role's
+      // explicit default list are seeded as disabled; admins enable them in
+      // Settings → Permissions.
+      const permissions = PERMISSION_KEYS;
       const roleDefaults: Record<string, string[]> = {
         ADMIN: permissions,
         TEACHER: ['students.view', 'attendance.view', 'attendance.mark', 'exams.view', 'exams.online', 'results.view', 'results.enter', 'timetable.view', 'announcements.view', 'fees.view', 'classes.view', 'assignments.view', 'assignments.create', 'assignments.grade', 'library.view', 'messages.view', 'transport.view'],
@@ -1376,6 +1364,34 @@ Please review and approve in the school management dashboard.')
             [role, perm, !!overrides[perm]]
           );
         }
+      }
+    }
+
+    // Generic catalog convergence — the real single source of truth. The
+    // count===0 seed above only runs on a brand-new DB, so every permission
+    // added to PERMISSION_KEYS after an install would otherwise never reach
+    // existing role_permissions rows (making the role editor show a partial
+    // catalog and any nav gate on a new key silently resolve to false). This
+    // runs on every boot and fills any (role, permission) pair missing from
+    // the catalog with a row — enabled for bypass roles (ADMIN/PRINCIPAL/
+    // OWNER), disabled for everyone else so it never changes existing access.
+    {
+      const bypassRoles = new Set(['ADMIN', 'PRINCIPAL', 'OWNER']);
+      const roleRes = await query(`SELECT DISTINCT role FROM role_permissions`);
+      const roles: string[] = [...new Set([...roleRes.rows.map((r: any) => r.role), ...SYSTEM_ROLES])].filter(Boolean);
+      const placeholders: string[] = [];
+      const params: unknown[] = [];
+      for (const role of roles) {
+        for (const perm of PERMISSION_KEYS) {
+          placeholders.push(`($${params.length + 1}, $${params.length + 2}, $${params.length + 3})`);
+          params.push(role, perm, bypassRoles.has(role));
+        }
+      }
+      if (params.length > 0) {
+        await query(
+          `INSERT INTO role_permissions (role, permission, enabled) VALUES ${placeholders.join(', ')} ON CONFLICT (role, permission) DO NOTHING`,
+          params
+        );
       }
     }
 

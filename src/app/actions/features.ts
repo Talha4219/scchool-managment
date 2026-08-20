@@ -1810,13 +1810,29 @@ export async function fetchCoursesDB(gradeLevel?: string): Promise<import('@/lib
   } catch { return []; }
 }
 
+// Generates a unique, human-friendly course code from the title (e.g. "Algebra I"
+// -> "ALG-001") when one isn't supplied — the UI no longer asks for it.
+async function generateCourseCode(title: string): Promise<string> {
+  const base = (title.replace(/[^a-zA-Z]/g, "").toUpperCase().slice(0, 3) || "CRS");
+  const res = await query(`SELECT COUNT(*)::int AS c FROM courses WHERE code ILIKE $1`, [`${base}-%`]);
+  let n = (res.rows[0]?.c ?? 0) + 1;
+  for (;;) {
+    const code = `${base}-${String(n).padStart(3, "0")}`;
+    const dup = await query(`SELECT 1 FROM courses WHERE code=$1`, [code]);
+    if (dup.rows.length === 0) return code;
+    n++;
+  }
+}
+
 export async function createCourseDB(data: Omit<import('@/lib/types').Course, 'id'>): Promise<{ error?: string; id?: string }> {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated.' };
   try {
+    const branchId = scopeBranch(session);
+    const code = (data.code || "").trim() || await generateCourseCode(data.title || "");
     const id = `crs_${Date.now()}`;
     await query(`INSERT INTO courses (id, title, code, description, grade_level, teacher_name, credits, learning_outcomes, prerequisites, is_active, branch_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [id, data.title, data.code, data.description, data.gradeLevel, data.teacherName, data.credits, data.learningOutcomes, data.prerequisites, data.isActive, scopeBranch(session)]);
+      [id, data.title, code, data.description, data.gradeLevel, data.teacherName, data.credits, data.learningOutcomes, data.prerequisites, data.isActive, branchId]);
     return { id };
   } catch (err: any) { return { error: err?.message || 'Failed to create course.' }; }
 }

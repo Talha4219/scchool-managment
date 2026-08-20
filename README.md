@@ -62,7 +62,7 @@ See [`.env.example`](.env.example) for the full list, including database, JWT, S
 ```
 src/
   app/
-    (public)/       # Login, signup
+    (public)/       # Login, admissions apply, contact, etc.
     (dashboard)/    # Feature modules: academics, fees, hr, transport, etc.
     actions/        # Server actions (data mutations/queries)
     api/            # API routes (webhooks, cron)

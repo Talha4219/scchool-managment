@@ -284,8 +284,8 @@ export default function LMSPage() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.title || !form.code || !form.gradeLevel) {
-      toast({ title: "Title, Code, and Grade Level are required.", variant: "destructive" });
+    if (!form.title || !form.gradeLevel) {
+      toast({ title: "Title and Grade Level are required.", variant: "destructive" });
       return;
     }
     const res = await createCourseDB(form);
@@ -471,9 +471,8 @@ export default function LMSPage() {
             <DialogContent className="max-w-2xl">
               <DialogHeader><DialogTitle>Create New Course</DialogTitle></DialogHeader>
               <form onSubmit={handleCreate} className="space-y-4 py-2 max-h-[70vh] overflow-y-auto pr-1">
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3">
                   <div className="space-y-1"><Label>Title *</Label><Input value={form.title} onChange={e => setForm(f => ({...f, title: e.target.value}))} placeholder="e.g. Algebra I" /></div>
-                  <div className="space-y-1"><Label>Code *</Label><Input value={form.code} onChange={e => setForm(f => ({...f, code: e.target.value}))} placeholder="e.g. MATH-101" /></div>
                 </div>
                 <div className="space-y-1"><Label>Description</Label><Textarea value={form.description} onChange={e => setForm(f => ({...f, description: e.target.value}))} rows={2} placeholder="Course description..." /></div>
                 <div className="grid grid-cols-3 gap-3">
@@ -651,7 +650,7 @@ export default function LMSPage() {
             <div className="space-y-4 py-2 max-h-[70vh] overflow-y-auto pr-1">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1"><Label>Title</Label><Input value={editingCourse.title} onChange={e => setEditingCourse({...editingCourse, title: e.target.value})} /></div>
-                <div className="space-y-1"><Label>Code</Label><Input value={editingCourse.code} onChange={e => setEditingCourse({...editingCourse, code: e.target.value})} /></div>
+                <div className="space-y-1"><Label>Code</Label><Input value={editingCourse.code} disabled className="bg-secondary/50 text-muted-foreground" /></div>
               </div>
               <div className="space-y-1"><Label>Description</Label><Textarea value={editingCourse.description} onChange={e => setEditingCourse({...editingCourse, description: e.target.value})} rows={2} /></div>
               <div className="grid grid-cols-3 gap-3">

@@ -53,6 +53,7 @@ const PERMISSION_GROUPS: Record<string, { color: string; perms: string[] }> = {
   Events: { color: "amber", perms: ['events.view', 'events.create', 'events.edit'] },
   Messages: { color: "cyan", perms: ['messages.view'] },
   Communications: { color: "cyan", perms: ['communications.view', 'communications.create'] },
+  WhatsApp: { color: "green", perms: ['whatsapp.view'] },
   LMS: { color: "purple", perms: ['lms.view', 'lms.create', 'lms.edit'] },
   Parents: { color: "pink", perms: ['parents.view', 'parents.create', 'parents.edit'] },
   Transport: { color: "orange", perms: ['transport.view', 'transport.create', 'transport.edit'] },

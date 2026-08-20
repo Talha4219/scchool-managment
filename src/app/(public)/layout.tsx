@@ -58,7 +58,7 @@ function SiteNav() {
               <Link href="/login" className="hidden sm:block">
                 <button className="font-semibold px-4 py-2 rounded-xl text-sm border-2 border-[#1e3a6e] text-[#1e3a6e] hover:bg-[#1e3a6e] hover:text-white transition-all">Sign In</button>
               </Link>
-              <Link href="/signup" className="hidden sm:block">
+              <Link href="/login" className="hidden sm:block">
                 <button className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-all">Start Free Trial</button>
               </Link>
               <button onClick={() => setOpen(!open)} className="xl:hidden p-2 rounded-lg text-gray-600 transition-colors" aria-label="Toggle menu">
@@ -80,7 +80,7 @@ function SiteNav() {
               ))}
               <div className="grid grid-cols-2 gap-2 mt-3">
                 <Link href="/login"><button className="w-full border-2 border-[#1e3a6e] text-[#1e3a6e] font-bold py-3 rounded-xl text-sm">Sign In</button></Link>
-                <Link href="/signup"><button className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl text-sm">Start Trial</button></Link>
+                <Link href="/login"><button className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl text-sm">Start Trial</button></Link>
               </div>
             </nav>
           </div>
@@ -137,7 +137,7 @@ function SiteFooter() {
             <ul className="space-y-2.5">
               {[
                 { label: "Sign In", href: "/login" },
-                { label: "Start Free Trial", href: "/signup" },
+                { label: "Start Free Trial", href: "/login" },
                 { label: "Try the Live Demo", href: "/dashboard" },
                 { label: "Talk to Sales", href: "/contact" },
               ].map((link) => (

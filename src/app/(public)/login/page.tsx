@@ -123,7 +123,7 @@ export default function LoginPage() {
           <div className="mt-8 pt-6 border-t border-gray-100 text-center">
             <p className="text-gray-500 text-sm">
               {t("login.noAccount")}{" "}
-              <Link href="/signup" className="text-blue-600 font-semibold hover:text-blue-800 transition-colors">
+              <Link href="/login" className="text-blue-600 font-semibold hover:text-blue-800 transition-colors">
                 {t("login.applyNow")} →
               </Link>
             </p>

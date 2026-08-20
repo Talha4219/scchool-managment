@@ -140,7 +140,7 @@ export default function HomePage() {
                   Sign In
                 </button>
               </Link>
-              <Link href="/signup" className="hidden sm:block">
+              <Link href="/login" className="hidden sm:block">
                 <button className="relative bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-violet-500/40 hover:-translate-y-0.5 active:translate-y-0">
                   Start Free Trial
                 </button>
@@ -173,7 +173,7 @@ export default function HomePage() {
                 <Link href="/login">
                   <button className="w-full border-2 border-[#1e1033]/15 text-[#1e1033] font-bold py-3 rounded-xl text-sm">Sign In</button>
                 </Link>
-                <Link href="/signup">
+                <Link href="/login">
                   <button className="w-full bg-gradient-to-r from-violet-600 to-indigo-600 text-white font-bold py-3 rounded-xl text-sm">Start Trial</button>
                 </Link>
               </div>
@@ -215,7 +215,7 @@ export default function HomePage() {
           </motion.p>
 
           <motion.div initial="hidden" animate="show" variants={fadeUp} transition={{ delay: 0.4 }} className="flex flex-wrap items-center justify-center gap-4 mb-16">
-            <Link href="/signup">
+            <Link href="/login">
               <motion.button whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }} className="flex items-center gap-2 bg-gradient-to-r from-violet-600 to-indigo-600 text-white font-bold px-8 py-3.5 rounded-xl text-base shadow-xl shadow-violet-600/30">
                 Start Free Trial <ArrowRight className="w-5 h-5" />
               </motion.button>
@@ -440,7 +440,7 @@ export default function HomePage() {
                     </li>
                   ))}
                 </ul>
-                <Link href={tier.cta === "Talk to Sales" ? "/contact" : "/signup"}>
+                <Link href={tier.cta === "Talk to Sales" ? "/contact" : "/login"}>
                   <button className={`w-full font-bold py-3.5 rounded-xl text-sm transition-all ${tier.highlighted
                       ? "bg-gradient-to-r from-violet-600 to-indigo-600 text-white hover:shadow-lg hover:shadow-violet-500/30"
                       : "border-2 border-[#1e1033]/15 text-[#1e1033] hover:border-violet-600 hover:text-violet-700"
@@ -555,7 +555,7 @@ export default function HomePage() {
                 Start your 14-day free trial today — no credit card, live in days, and our team migrates your data.
               </p>
               <div className="flex flex-wrap items-center justify-center gap-4">
-                <Link href="/signup">
+                <Link href="/login">
                   <motion.button whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }} className="flex items-center gap-2 bg-gradient-to-r from-violet-600 to-indigo-600 text-white font-bold px-8 py-3.5 rounded-xl text-base shadow-xl shadow-violet-600/30">
                     Start Free Trial <ArrowRight className="w-5 h-5" />
                   </motion.button>
@@ -611,7 +611,7 @@ export default function HomePage() {
               <ul className="space-y-2.5">
                 {[
                   { label: "Sign In", href: "/login" },
-                  { label: "Start Free Trial", href: "/signup" },
+                  { label: "Start Free Trial", href: "/login" },
                   { label: "Try the Live Demo", href: "/dashboard" },
                   { label: "Talk to Sales", href: "/contact" },
                 ].map((link) => (

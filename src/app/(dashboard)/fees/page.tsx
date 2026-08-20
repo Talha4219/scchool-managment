@@ -150,13 +150,23 @@ export default function FeesPage() {
 
   // ── Derived data ─────────────────────────────────────────────────────────
   const myStudent = students.find(s => s.email === sessionEmail && s.status === "Active");
+  // A parent is scoped to their own wards (students whose parent_email matches
+  // the logged-in session) — never the whole school ledger.
+  const wardStudentIds = useMemo(
+    () => activeRole === "PARENT" ? new Set(students.filter(s => s.parentEmail === sessionEmail).map(s => s.id)) : null,
+    [students, activeRole, sessionEmail]
+  );
+  const isScoped = activeRole === "STUDENT" || activeRole === "PARENT";
+
+  const scopedFees = useMemo(() => {
+    if (activeRole === "STUDENT") return feeRecords.filter(f => f.studentId === myStudent?.id);
+    if (activeRole === "PARENT") return feeRecords.filter(f => wardStudentIds?.has(f.studentId));
+    return feeRecords;
+  }, [feeRecords, activeRole, myStudent, wardStudentIds]);
 
   const displayVouchers = useMemo(() => {
-    const base = activeRole === "STUDENT"
-      ? feeRecords.filter(f => f.studentId === myStudent?.id)
-      : feeRecords;
-    return statusFilter === "All" ? base : base.filter(f => f.status === statusFilter);
-  }, [feeRecords, activeRole, myStudent, statusFilter]);
+    return statusFilter === "All" ? scopedFees : scopedFees.filter(f => f.status === statusFilter);
+  }, [scopedFees, statusFilter]);
 
   const defaulters = useMemo(() =>
     feeRecords.filter(f => f.status === "Unpaid" || f.status === "Overdue" || f.status === "Partial"),
@@ -682,14 +692,14 @@ export default function FeesPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-primary font-headline">
-            {activeRole === "STUDENT" ? "My Fees" : "Fee Management"}
+            {isScoped ? "My Fees" : "Fee Management"}
           </h1>
-          {activeRole !== "STUDENT" && (
+          {!isScoped && (
             <p className="text-muted-foreground mt-1">Monthly vouchers, structures, discounts, partial payments, and reports.</p>
           )}
         </div>
         <div className="flex gap-2 flex-wrap">
-          {activeRole !== "STUDENT" && (
+          {!isScoped && (
             <Button variant="outline" className="gap-2 border-primary text-primary hover:bg-primary/5">
               <Download className="h-4 w-4" /> Download Report
             </Button>
@@ -865,8 +875,8 @@ export default function FeesPage() {
         </div>
       </div>
 
-      {/* KPI Cards — school-wide totals, admin/teacher only */}
-      {activeRole !== "STUDENT" && (
+      {/* KPI Cards — school-wide totals, staff only */}
+      {!isScoped && (
       <div className="grid gap-6 md:grid-cols-4">
         <Card className="border-none shadow-sm bg-[#0B1B3D] text-white">
           <CardContent className="p-6">
@@ -917,9 +927,9 @@ export default function FeesPage() {
       </div>
       )}
 
-      {/* Student: Current Voucher Card */}
-      {activeRole === "STUDENT" && (() => {
-        const myFees = feeRecords.filter(f => f.studentId === myStudent?.id);
+      {/* Scoped (student/parent): Current Voucher Card */}
+      {isScoped && (() => {
+        const myFees = scopedFees;
         const current = myFees.find(f => f.status !== "Paid") || myFees[myFees.length - 1];
         if (!current) return null;
         const net = netDue(current);
@@ -987,7 +997,7 @@ export default function FeesPage() {
                     {s}
                   </Button>
                 ))}
-                {activeRole !== "STUDENT" && (
+                {!isScoped && (
                   <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => {
                     exportToCsv("fee-ledger", ["Voucher", "Student", "Class", "Fee Type", "Month", "Amount", "Discount", "Net Due", "Due Date", "Status"],
                       displayVouchers.map(v => [v.voucherId, v.studentName, v.className || "", v.feeType || "", v.month || "", v.amount, v.discount || 0, netDue(v), v.dueDate, v.status]));
@@ -1048,7 +1058,7 @@ export default function FeesPage() {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex items-center justify-end gap-1 flex-wrap">
-                              {v.status !== "Paid" && activeRole === "STUDENT" && (
+                              {v.status !== "Paid" && isScoped && (
                                 <Button onClick={() => { setCheckoutVoucher(v); setCheckoutStep("details"); }}
                                   size="sm" className="h-7 bg-accent hover:bg-accent/90 gap-1 font-bold text-white text-xs">
                                   <CreditCard className="h-3 w-3" /> Pay
@@ -1098,7 +1108,7 @@ export default function FeesPage() {
                                   <Pencil className="h-3 w-3" />
                                 </Button>
                               )}
-                              {v.status === "Paid" && activeRole !== "STUDENT" && (
+                              {v.status === "Paid" && !isScoped && (
                                 <span className="text-xs text-muted-foreground font-semibold flex items-center gap-1 py-1">
                                   <CheckCircle2 className="h-3.5 w-3.5 text-green-600" /> {v.paymentMethod || "Direct"}
                                 </span>
