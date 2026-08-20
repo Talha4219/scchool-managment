@@ -362,15 +362,23 @@ function SendTab() {
   const [variables, setVariables] = useState<Record<string, string>>({});
   const [scheduleAt, setScheduleAt] = useState("");
   const [sending, setSending] = useState(false);
+  const [templates, setTemplates] = useState<WhatsAppTemplateRecord[]>([]);
 
   const template = NOTIFICATION_TYPES.find(t => t.value === type);
+  const templateVars = templates.find(t => t.name === type)?.variables ?? [];
 
   const { activeYearId } = useActiveAcademicYearId();
   const { classes } = useClasses(activeYearId);
   const { sections } = useSections(classId || undefined);
   useEffect(() => { setSectionId(""); }, [classId]);
+  useEffect(() => { fetchWhatsAppTemplatesAction().then(setTemplates); }, []);
 
   const handleSend = async () => {
+    const missing = templateVars.filter(v => !(variables[v] || "").trim());
+    if (missing.length > 0) {
+      toast({ title: "Missing required fields", description: `Fill in: ${missing.join(", ")}`, variant: "destructive" });
+      return;
+    }
     setSending(true);
     const result = await sendBulkNotificationAction({
       type,
@@ -433,13 +441,24 @@ function SendTab() {
         )}
 
         <div>
-          <Label className="text-xs mb-1.5 block">Template Variables (preview)</Label>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {["title", "message", "date", "time", "amount", "dueDate", "examName", "eventName"].map(key => (
-              <Input key={key} placeholder={key} value={variables[key] || ""} onChange={e => setVariables(v => ({ ...v, [key]: e.target.value }))} className="text-xs" />
-            ))}
-          </div>
-          <p className="text-[10px] text-muted-foreground mt-1">Only the variables the selected template actually uses are read — extras are ignored.</p>
+          <Label className="text-xs mb-1.5 block">Template Variables</Label>
+          {templateVars.length === 0 ? (
+            <p className="text-xs text-muted-foreground rounded-lg border border-dashed p-3">
+              {templates.length === 0 ? "Loading template variables…" : "No variables — static message, nothing to fill in."}
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {templateVars.map(key => (
+                  <div key={key}>
+                    <Label className="text-[11px] mb-1 block capitalize text-muted-foreground">{key}<span className="text-destructive"> *</span></Label>
+                    <Input placeholder={key} value={variables[key] || ""} onChange={e => setVariables(v => ({ ...v, [key]: e.target.value }))} className="text-xs" />
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1">Required for this template — the message won't send until all are filled.</p>
+            </>
+          )}
         </div>
 
         <div>

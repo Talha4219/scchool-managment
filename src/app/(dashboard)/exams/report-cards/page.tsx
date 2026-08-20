@@ -277,7 +277,7 @@ export default function ReportCardsPage() {
               />
               <div className="mt-4 flex gap-2">
                 <Button size="sm" variant="outline" asChild>
-                  <a href={`/exams/report-cards/${selectedRC.id}/print?school=${encodeURIComponent(schoolInfo.name || "Classora")}`} target="_blank" rel="noopener noreferrer">
+                  <a href={`/print/report-cards/${selectedRC.id}?school=${encodeURIComponent(schoolInfo.name || "Classora")}`} target="_blank" rel="noopener noreferrer">
                     <Printer className="h-3.5 w-3.5 mr-1" /> Print / Save PDF
                   </a>
                 </Button>
