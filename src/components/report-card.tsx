@@ -39,6 +39,29 @@ interface ReportCardProps {
   generatedAt: string;
   schoolName?: string;
   remarks?: string;
+  terms?: {
+    termOrder: number;
+    termName: string;
+    percentage: number;
+    grade: string;
+    points: number;
+    isPass: boolean;
+    position: number;
+    totalStudents: number;
+    examCount: number;
+    subjects?: { subjectName: string; percentage: number; grade: string; isPass: boolean }[];
+  }[];
+  annual?: {
+    percentage: number;
+    grade: string;
+    points: number;
+    isPass: boolean;
+    position: number;
+    totalStudents: number;
+    subjectAverages: { subjectName: string; percentage: number; grade: string; isPass: boolean }[];
+    isPromoted: boolean;
+    promotionNote: string;
+  };
 }
 
 function rankSuffix(n: number | null | undefined): string {
@@ -68,6 +91,7 @@ export function ReportCard({
   studentName, admissionNumber, className, sectionName,
   academicYearName, examResults, totalPercentage, overallGrade,
   classPosition, classTotal, generatedAt, schoolName = "Classora", remarks,
+  terms, annual,
 }: ReportCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -131,6 +155,94 @@ export function ReportCard({
           <div><span>Date Issued: </span><strong>{generatedAt}</strong></div>
           <div><span>Overall Grade: </span><strong className={gradeColor(overallGrade)}>{overallGrade}</strong></div>
         </div>
+
+        {/* Term Summary */}
+        {terms && terms.length > 0 && (
+          <div className="rc-exam">
+            <div className="rc-exam-title">Term Summary</div>
+            <table className="rc-table">
+              <thead>
+                <tr>
+                  <th>Term</th>
+                  <th className="text-center">%</th>
+                  <th className="text-center">Grade</th>
+                  <th className="text-center">Points</th>
+                  <th className="text-center">Position</th>
+                  <th className="text-center">Result</th>
+                </tr>
+              </thead>
+              <tbody>
+                {terms.map((t, i) => (
+                  <tr key={i}>
+                    <td className="font-medium">{t.termName}</td>
+                    <td className="text-center">{t.percentage.toFixed(1)}%</td>
+                    <td className={`text-center font-bold ${gradeColor(t.grade)}`}>{t.grade}</td>
+                    <td className="text-center">{t.points.toFixed(1)}</td>
+                    <td className="text-center">{t.position ? `${rankSuffix(t.position)} of ${t.totalStudents}` : "—"}</td>
+                    <td className={`text-center font-semibold ${t.isPass ? "pass" : "fail"}`}>{t.isPass ? "Pass" : "Fail"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Annual Summary */}
+        {annual && (
+          <div className="rc-exam">
+            <div className="rc-exam-title">
+              Annual Result
+              {annual.position ? (
+                <span className="float-right text-slate-500 font-normal">Position: {rankSuffix(annual.position)} of {annual.totalStudents}</span>
+              ) : null}
+            </div>
+            {annual.subjectAverages.length > 0 && (
+              <table className="rc-table mb-3">
+                <thead>
+                  <tr>
+                    <th>Subject</th>
+                    <th className="text-center">Average %</th>
+                    <th className="text-center">Grade</th>
+                    <th className="text-center">Result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {annual.subjectAverages.map((s, i) => (
+                    <tr key={i}>
+                      <td className="font-medium">{s.subjectName}</td>
+                      <td className="text-center">{s.percentage.toFixed(1)}%</td>
+                      <td className={`text-center font-bold ${gradeColor(s.grade)}`}>{s.grade}</td>
+                      <td className={`text-center font-semibold ${s.isPass ? "pass" : "fail"}`}>{s.isPass ? "Pass" : "Fail"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div className="rc-summary">
+              <div className="rc-stat">
+                <div className="rc-stat-label">Annual Average</div>
+                <div className="rc-stat-value">{annual.percentage.toFixed(1)}%</div>
+              </div>
+              <div className="rc-stat">
+                <div className="rc-stat-label">Annual Grade</div>
+                <div className={`rc-stat-value ${gradeColor(annual.grade)}`}>{annual.grade}</div>
+              </div>
+              <div className="rc-stat">
+                <div className="rc-stat-label">Promotion</div>
+                <div className={`rc-stat-value ${annual.isPromoted ? "pass" : "fail"}`}>
+                  {annual.isPromoted ? "Promoted" : "Not Promoted"}
+                </div>
+              </div>
+              <div className="rc-stat">
+                <div className="rc-stat-label">Points</div>
+                <div className="rc-stat-value">{annual.points.toFixed(1)}</div>
+              </div>
+            </div>
+            {annual.promotionNote && (
+              <p className="mt-1 text-xs text-slate-500 italic">{annual.promotionNote}</p>
+            )}
+          </div>
+        )}
 
         {/* Exam Results */}
         {examResults.map((exam) => (

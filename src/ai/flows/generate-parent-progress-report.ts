@@ -9,6 +9,7 @@
 
 import { ai } from '@/ai/genkit';
 import { z } from 'genkit';
+import { getSession } from '@/app/actions/auth';
 
 const GenerateParentProgressReportInputSchema = z.object({
   studentName: z.string().describe("The student's full name."),
@@ -35,32 +36,39 @@ const GenerateParentProgressReportOutputSchema = z.object({
 export type GenerateParentProgressReportOutput = z.infer<typeof GenerateParentProgressReportOutputSchema>;
 
 export async function generateParentProgressReport(input: GenerateParentProgressReportInput): Promise<GenerateParentProgressReportOutput> {
-  if (!process.env.GEMINI_API_KEY) {
-    const mockMessage = `Dear Parent/Guardian of ${input.studentName},
+  // Sign the letter with the logged-in user's name (e.g. the class teacher or
+  // admin drafting it) instead of a hardcoded name. Falls back to the caller's
+  // teacherName if the session can't be resolved (e.g. running via genkit dev).
+  const session = await getSession().catch(() => null);
+  const teacherName = session?.name?.trim() || input.teacherName;
+  const effectiveInput: GenerateParentProgressReportInput = { ...input, teacherName };
 
-I am writing to provide you with an academic and behavioral update for ${input.studentName} in ${input.className}.
+  if (!process.env.GEMINI_API_KEY && !process.env.OPENROUTER_API_KEY) {
+    const mockMessage = `Dear Parent/Guardian of ${effectiveInput.studentName},
+
+I am writing to provide you with an academic and behavioral update for ${effectiveInput.studentName} in ${effectiveInput.className}.
 
 Academic Standing:
-${input.academicPerformance.map(p => `- ${p.subject}: Grade ${p.grade}`).join("\n")}
+${effectiveInput.academicPerformance.map(p => `- ${p.subject}: Grade ${p.grade}`).join("\n")}
 
 Attendance Log:
-- Total Logged Days: ${input.attendanceRecord.totalDays}
-- Absences: ${input.attendanceRecord.absentDays} day(s)
-- Tardy Marks: ${input.attendanceRecord.tardyDays} day(s)
-- Presence Rate: ${(((input.attendanceRecord.totalDays - input.attendanceRecord.absentDays) / input.attendanceRecord.totalDays) * 100).toFixed(1)}%
+- Total Logged Days: ${effectiveInput.attendanceRecord.totalDays}
+- Absences: ${effectiveInput.attendanceRecord.absentDays} day(s)
+- Tardy Marks: ${effectiveInput.attendanceRecord.tardyDays} day(s)
+- Presence Rate: ${(((effectiveInput.attendanceRecord.totalDays - effectiveInput.attendanceRecord.absentDays) / effectiveInput.attendanceRecord.totalDays) * 100).toFixed(1)}%
 
 Instructor's Direct Observations:
-"${input.teacherComments || "No additional commentary registered."}"
+"${effectiveInput.teacherComments || "No additional commentary registered."}"
 
-${input.studentName} has demonstrated solid engagement in our curriculum. We recommend reviewing the grade items listed above to prepare for the upcoming end-of-term evaluations. Should you have any questions, please reach out to schedule an instructor consultation.
+${effectiveInput.studentName} has demonstrated solid engagement in our curriculum. We recommend reviewing the grade items listed above to prepare for the upcoming end-of-term evaluations. Should you have any questions, please reach out to schedule an instructor consultation.
 
 Best regards,
-${input.teacherName}
+${effectiveInput.teacherName}
 Classora Academics Department`;
 
     return { reportMessage: mockMessage };
   }
-  return generateParentProgressReportFlow(input);
+  return generateParentProgressReportFlow(effectiveInput);
 }
 
 const prompt = ai.definePrompt({
@@ -90,7 +98,7 @@ Teacher's Additional Comments: {{{teacherComments}}}
 
 Draft a polite and informative message for the parent, summarizing the student's academic progress and attendance. If there are any areas of concern, phrase them constructively. Emphasize positive aspects where appropriate. Do not make up information that is not provided in the input.
 
-The message should be formatted as a letter or email body, starting with a polite greeting and ending with a professional closing. Only output the report message, nothing else.`,
+The message should be formatted as a letter or email body, starting with a polite greeting and ending with a professional closing. Sign the letter with the teacher's exact name, {{{teacherName}}}, after a closing like "Sincerely," — use the exact name given, do not invent a different signature. Only output the report message, nothing else.`,
 });
 
 const generateParentProgressReportFlow = ai.defineFlow(

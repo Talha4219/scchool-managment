@@ -8,7 +8,8 @@ import { useStudents } from "@/lib/students-context";
 import { Subject, FeeCategory, AcademicTerm, Section, GradeScaleItem } from "@/lib/types";
 import { fetchAllSectionsDB, createSectionDB, updateSectionDB, deleteSectionDB, updateSectionClassTeacherDB } from "@/app/actions/academic-core";
 import { fetchUsersDB } from "@/app/actions/features";
-import { fetchGradeScalesDB, updateGradeScaleDB } from "@/app/actions/academic-core";
+import { fetchGradeScalesDB, updateGradeScaleDB, fetchTermConfigsDB, saveTermConfigDB } from "@/app/actions/academic-core";
+import type { TermConfigItem } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { usePermission } from "@/hooks/use-permission";
@@ -624,7 +625,48 @@ function GradeScaleTab() {
   );
 }
 
-// ─── TAB 9 – Payment Gateways ───────────────────────────────────────────────
+// ─── TAB 9 – Term Configuration ─────────────────────────────────────────────
+
+function TermConfigTab() {
+  const [configs, setConfigs] = useState<TermConfigItem[]>([]);
+  const [editing, setEditing] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({ termName: '', termOrder: 0, weight: 1, isOptional: false, sortOrder: 0 });
+
+  useEffect(() => { fetchTermConfigsDB().then(setConfigs); }, []);
+
+  return (
+    <SoftCard icon={CalendarDays} title="Term Configuration"
+      sub="Maps each exam type to a term. Only non-optional terms are counted in the annual average, weighted by term weight.">
+      <div className={tableWrapCls}>
+        <table className="w-full text-sm">
+          <thead className={theadCls}>
+            <tr><th className="px-4 py-3 text-left">Exam Type</th><th className="px-4 py-3 text-left">Term Name</th><th className="px-4 py-3 text-left">Term Order</th><th className="px-4 py-3 text-left">Weight</th><th className="px-4 py-3 text-left">Counts in Annual?</th><th className="px-4 py-3 text-right">Actions</th></tr>
+          </thead>
+          <tbody className={tbodyDivideCls}>
+            {configs.map(c => (
+              <tr key={c.id} className="hover:bg-secondary/30 transition-colors">
+                <td className="py-2.5 px-3"><span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-primary/10 text-primary">{c.examType}</span></td>
+                <td className="py-2.5 px-3">{editing === c.id ? <Input value={editForm.termName} onChange={e => setEditForm({ ...editForm, termName: e.target.value })} className="w-32 py-1 text-xs" /> : <span className="text-foreground">{c.termName}</span>}</td>
+                <td className="py-2.5 px-3">{editing === c.id ? <Input type="number" value={editForm.termOrder} onChange={e => setEditForm({ ...editForm, termOrder: parseInt(e.target.value) || 0 })} className="w-20 py-1 text-xs" /> : <span className="text-foreground">{c.termOrder}</span>}</td>
+                <td className="py-2.5 px-3">{editing === c.id ? <Input type="number" step="0.05" value={editForm.weight} onChange={e => setEditForm({ ...editForm, weight: parseFloat(e.target.value) || 0 })} className="w-20 py-1 text-xs" /> : <span className="text-foreground">{c.weight.toFixed(2)}</span>}</td>
+                <td className="py-2.5 px-3">{editing === c.id ? <button onClick={() => setEditForm({ ...editForm, isOptional: !editForm.isOptional })} className={`px-2 py-1 rounded text-xs font-medium ${editForm.isOptional ? 'bg-destructive/15 text-destructive' : 'bg-success/15 text-success'}`}>{editForm.isOptional ? 'No' : 'Yes'}</button> : <span className={`text-xs font-medium ${c.isOptional ? 'text-destructive' : 'text-success'}`}>{c.isOptional ? 'No' : 'Yes'}</span>}</td>
+                <td className="py-2.5 px-3 text-right">{editing === c.id ? <span className="flex gap-2 justify-end text-xs font-medium"><button className="text-success" onClick={async () => { const res = await saveTermConfigDB(c.id, editForm); if (!res.error) { setConfigs(prev => prev.map(x => x.id === c.id ? { ...x, ...editForm } : x)); setEditing(null); } }}>Save</button><button className="text-muted-foreground" onClick={() => setEditing(null)}>Cancel</button></span> : <button className="text-xs font-medium text-primary" onClick={() => { setEditing(c.id); setEditForm({ termName: c.termName, termOrder: c.termOrder, weight: c.weight, isOptional: c.isOptional, sortOrder: c.sortOrder }); }}>Edit</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <ul className="mt-4 space-y-1 text-xs text-muted-foreground">
+        <li>• Exams with <strong>Term Order 0</strong> or <strong>Counts in Annual = No</strong> are tracked but excluded from the year's grade.</li>
+        <li>• The annual average is a <strong>weighted average</strong> of each term's percentage by its weight (e.g. Term 1 weight 1, Term 2 weight 2 means Term 2 counts twice as much).</li>
+        <li>• Promotion requires passing the annual grade <em>and</em> passing every subject in every counted term.</li>
+        <li>• After changing this, re-run <strong>Compute Term Results</strong> on the Report Cards page and regenerate cards.</li>
+      </ul>
+    </SoftCard>
+  );
+}
+
+// ─── TAB 10 – Payment Gateways ───────────────────────────────────────────────
 
 function PaymentGatewaysTab() {
   const [availability, setAvailability] = useState<{ jazzcash: boolean; easypaisa: boolean }>({ jazzcash: false, easypaisa: false });
@@ -1225,6 +1267,7 @@ const NAV_ITEMS = [
   { key: "errors", icon: AlertOctagon, label: "Error Log" },
   { key: "access", icon: UserCog, label: "Users & Permissions" },
   { key: "grades", icon: Percent, label: "Grade Scale" },
+  { key: "terms", icon: CalendarDays, label: "Term Configuration" },
 ];
 
 const TAB_COMPONENTS: Record<string, React.FC> = {
@@ -1239,6 +1282,7 @@ const TAB_COMPONENTS: Record<string, React.FC> = {
   errors: ErrorLogTab,
   access: AccessPointerTab,
   grades: GradeScaleTab,
+  terms: TermConfigTab,
 };
 
 export default function SettingsPage() {

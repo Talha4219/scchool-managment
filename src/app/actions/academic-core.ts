@@ -1378,6 +1378,255 @@ export async function publishExamResultsDB(examId: string) {
 }
 
 // ── Report Cards ───────────────────────────────────────────────────────────────
+export async function fetchTermConfigsDB() {
+  const auth = await requireSession();
+  if ('error' in auth) return [];
+  try {
+    const res = await query("SELECT * FROM term_configs ORDER BY sort_order ASC");
+    return res.rows.map((r: any) => ({
+      id: r.id, examType: r.exam_type, termName: r.term_name,
+      termOrder: r.term_order, weight: parseFloat(r.weight),
+      isOptional: r.is_optional, sortOrder: r.sort_order,
+    }));
+  } catch { return []; }
+}
+
+export async function saveTermConfigDB(id: number, data: { termName: string; termOrder: number; weight: number; isOptional: boolean; sortOrder: number }): Promise<{ error?: string }> {
+  const auth = await requireRole('ADMIN');
+  if ('error' in auth) return { error: auth.error };
+  try {
+    await query(
+      "UPDATE term_configs SET term_name = $1, term_order = $2, weight = $3, is_optional = $4, sort_order = $5 WHERE id = $6",
+      [data.termName, data.termOrder, data.weight, data.isOptional, data.sortOrder, id]
+    );
+    return {};
+  } catch { return { error: "Failed to save term config" }; }
+}
+
+// Recomputes every student's per-term aggregates for a year from the published
+// exam results, ranks them within their class, and persists to term_results so
+// report cards and the student portal read pre-computed numbers instead of
+// rescanning marks rows on every visit.
+export async function computeTermResultsDB(academicYearId: string): Promise<{ computed: number }> {
+  const auth = await requireRole('ADMIN', 'TEACHER');
+  if ('error' in auth) return { computed: 0 };
+  const isOnline = await checkDbConnection();
+  if (!isOnline) return { computed: 0 };
+  try {
+    // Term configs: exam_type -> term bucket. term_order 0 / optional = a test
+    // that is tracked but excluded from the annual weighted average.
+    const configsRes = await query("SELECT * FROM term_configs ORDER BY sort_order ASC");
+    const typeToTerm = new Map<string, { termName: string; termOrder: number; weight: number }>();
+    const optionalTypes = new Set<string>();
+    for (const c of configsRes.rows) {
+      if (c.term_order > 0 && !c.is_optional) {
+        typeToTerm.set(c.exam_type, { termName: c.term_name, termOrder: c.term_order, weight: parseFloat(c.weight) });
+      } else {
+        optionalTypes.add(c.exam_type);
+      }
+    }
+
+    const gradeScale = (await query("SELECT * FROM grade_scales ORDER BY sort_order ASC")).rows.map((r: any) => ({
+      min: parseFloat(r.min_percentage), max: parseFloat(r.max_percentage),
+      grade: r.grade, points: parseFloat(r.points), isPass: r.is_pass,
+    }));
+    const gradeFor = (pct: number) => {
+      for (const g of gradeScale) if (pct >= g.min && pct <= g.max) return { grade: g.grade, points: g.points, isPass: g.isPass };
+      return { grade: 'F', points: 0, isPass: false };
+    };
+
+    const examsRes = await query(
+      `SELECT DISTINCT te.id, te.exam_type, te.class_id, te.section_id
+       FROM term_exams te
+       JOIN results r ON r.exam_id = te.id AND r.status IN ('Approved', 'Published')
+       WHERE te.academic_year_id = $1`,
+      [academicYearId]
+    );
+    const examIds = examsRes.rows.map((e: any) => e.id);
+    await query("DELETE FROM term_results WHERE academic_year_id = $1", [academicYearId]);
+    if (examIds.length === 0) return { computed: 0 };
+
+    // Per-exam rollups: total marks available, per-student obtained.
+    const resultsRes = await query(
+      `SELECT r.exam_id, r.student_id, r.total_marks, r.obtained_marks, r.class_id, r.section_id
+       FROM results r WHERE r.exam_id = ANY($1::text[]) AND r.status IN ('Approved', 'Published')`,
+      [examIds]
+    );
+    const byExam = new Map<string, any[]>();
+    for (const r of resultsRes.rows) {
+      if (!byExam.has(r.exam_id)) byExam.set(r.exam_id, []);
+      byExam.get(r.exam_id)!.push(r);
+    }
+
+    // Per-subject marks for every exam in the year.
+    const marksRes = await query(
+      `SELECT me.student_id, me.marks_obtained, es.exam_id, es.total_marks, sub.name as subject_name
+       FROM marks_entries me
+       JOIN exam_subjects es ON me.exam_subject_id = es.id
+       JOIN subjects sub ON sub.id = es.subject_id
+       WHERE es.exam_id = ANY($1::text[])`,
+      [examIds]
+    );
+
+    // studentId -> termOrder -> aggregate
+    const termsByStudent = new Map<string, Map<number, any>>();
+    const optionalByStudent = new Map<string, Map<string, any>>();
+
+    const ensureTerm = (sid: string, termOrder: number, termName: string) => {
+      if (!termsByStudent.has(sid)) termsByStudent.set(sid, new Map());
+      const m = termsByStudent.get(sid)!;
+      if (!m.has(termOrder)) m.set(termOrder, { termOrder, termName, totalMarks: 0, obtainedMarks: 0, subjects: new Map(), examIds: new Set() });
+      return m.get(termOrder)!;
+    };
+
+    for (const e of examsRes.rows) {
+      const examId = e.id;
+      const cfg = typeToTerm.get(e.exam_type);
+      const isOptional = optionalTypes.has(e.exam_type);
+      const results = byExam.get(examId) || [];
+      const examTotal = results.length > 0 ? results[0].total_marks : 0;
+      for (const r of results) {
+        const sid = r.student_id;
+        const bucket = cfg
+          ? ensureTerm(sid, cfg.termOrder, cfg.termName)
+          : (() => {
+              if (!optionalByStudent.has(sid)) optionalByStudent.set(sid, new Map());
+              const om = optionalByStudent.get(sid)!;
+              if (!om.has(e.exam_type)) om.set(e.exam_type, { termOrder: 0, termName: e.exam_type, totalMarks: 0, obtainedMarks: 0, subjects: new Map(), examIds: new Set() });
+              return om.get(e.exam_type)!;
+            })();
+        bucket.totalMarks += r.total_marks;
+        bucket.obtainedMarks += r.obtained_marks;
+        bucket.examIds.add(examId);
+      }
+    }
+
+    // Fold subject marks into the term buckets — only from exams where the
+    // student actually has an approved/published result, so un-submitted or
+    // rejected subject marks never leak into the term grade.
+    const approvedPairs = new Set<string>();
+    for (const r of resultsRes.rows) approvedPairs.add(`${r.exam_id}|${r.student_id}`);
+    for (const row of marksRes.rows) {
+      const sid = row.student_id;
+      if (!approvedPairs.has(`${row.exam_id}|${sid}`)) continue;
+      const exam = examsRes.rows.find((e: any) => e.id === row.exam_id);
+      if (!exam) continue;
+      const cfg = typeToTerm.get(exam.exam_type);
+      const bucket = cfg
+        ? termsByStudent.get(sid)?.get(cfg.termOrder)
+        : optionalByStudent.get(sid)?.get(exam.exam_type);
+      if (!bucket) continue;
+      if (!bucket.subjects.has(row.subject_name)) {
+        bucket.subjects.set(row.subject_name, { subjectName: row.subject_name, obtained: 0, total: 0 });
+      }
+      const s = bucket.subjects.get(row.subject_name)!;
+      s.obtained += row.marks_obtained;
+      s.total += row.total_marks;
+    }
+
+    const finalize = (bucket: any) => {
+      const percentage = bucket.totalMarks > 0 ? Math.round((bucket.obtainedMarks / bucket.totalMarks) * 10000) / 100 : 0;
+      const g = gradeFor(percentage);
+      const subjects = Array.from(bucket.subjects.values()).map((s: any) => {
+        const p = s.total > 0 ? Math.round((s.obtained / s.total) * 10000) / 100 : 0;
+        const gs = gradeFor(p);
+        return { subjectName: s.subjectName, obtained: s.obtained, total: s.total, percentage: p, grade: gs.grade, points: gs.points, isPass: gs.isPass, rank: 0, totalStudents: 0 };
+      });
+      return { ...bucket, percentage, grade: g.grade, points: g.points, isPass: g.isPass, subjects, examCount: bucket.examIds.size };
+    };
+
+    const finalized: any[] = [];
+    const rankGroups = new Map<string, any[]>(); // class_id -> students for that term
+    const rankKey = (classId: string | null, termOrder: number) => `${classId || 'none'}|${termOrder}`;
+
+    for (const [sid, m] of termsByStudent) {
+      for (const bucket of m.values()) {
+        const f = finalize(bucket);
+        finalized.push({ sid, classId: resultsRes.rows.find((r: any) => r.student_id === sid)?.class_id || null, termOrder: bucket.termOrder, data: f });
+      }
+    }
+    for (const [sid, om] of optionalByStudent) {
+      for (const bucket of om.values()) {
+        const f = finalize(bucket);
+        finalized.push({ sid, classId: null, termOrder: 0, data: f });
+      }
+    }
+
+    // Rank within class per term: percentage desc, then points desc, then obtained desc.
+    const byClassTerm = new Map<string, any[]>();
+    for (const item of finalized) {
+      const key = rankKey(item.classId, item.termOrder);
+      if (!byClassTerm.has(key)) byClassTerm.set(key, []);
+      byClassTerm.get(key)!.push(item);
+    }
+    for (const group of byClassTerm.values()) {
+      group.sort((a, b) => {
+        if (b.data.percentage !== a.data.percentage) return b.data.percentage - a.data.percentage;
+        if (b.data.points !== a.data.points) return b.data.points - a.data.points;
+        return b.data.obtainedMarks - a.data.obtainedMarks;
+      });
+      const total = group.length;
+      group.forEach((item, i) => {
+        item.data.position = i + 1;
+        item.data.totalStudents = total;
+        const subjRank = new Map<string, any[]>();
+        for (const s of item.data.subjects) {
+          if (!subjRank.has(s.subjectName)) subjRank.set(s.subjectName, []);
+          subjRank.get(s.subjectName)!.push(s);
+        }
+        for (const ss of subjRank.values()) {
+          ss.sort((a: any, b: any) => b.percentage - a.percentage);
+          const st = ss.length;
+          ss.forEach((s: any, j: number) => { s.rank = j + 1; s.totalStudents = st; });
+        }
+      });
+    }
+
+    const { nanoid } = await import("nanoid");
+    for (const item of finalized) {
+      const d = item.data;
+      await query(
+        `INSERT INTO term_results (id, academic_year_id, student_id, class_id, section_id, term_order, term_name, total_marks, obtained_marks, percentage, grade, points, is_pass, position, total_students, subjects, exam_count)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+        [`tr-${nanoid(8)}`, academicYearId, item.sid, item.classId, null, d.termOrder, d.termName, d.totalMarks, d.obtainedMarks, d.percentage, d.grade, d.points, d.isPass, d.position, d.totalStudents, JSON.stringify(d.subjects), d.examCount]
+      );
+    }
+
+    return { computed: finalized.length };
+  } catch (e) { logServerError("academic-core", "computeTermResultsDB error:", e); return { computed: 0 }; }
+}
+
+export async function fetchTermResultsDB(academicYearId: string, classId?: string, termOrder?: number) {
+  const auth = await requireSession();
+  if ('error' in auth) return [];
+  try {
+    const conditions = ["tr.academic_year_id = $1"];
+    const params: any[] = [academicYearId];
+    let idx = 2;
+    if (classId) { conditions.push(`tr.class_id = $${idx++}`); params.push(classId); }
+    if (termOrder !== undefined) { conditions.push(`tr.term_order = $${idx++}`); params.push(termOrder); }
+    const res = await query(
+      `SELECT tr.*, s.name as student_name, s.admission_number, c.name as class_name, sec.name as section_name
+       FROM term_results tr
+       JOIN students s ON s.id = tr.student_id
+       LEFT JOIN classes c ON c.id = tr.class_id
+       LEFT JOIN sections sec ON sec.id = tr.section_id
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY tr.term_order ASC, tr.position ASC`,
+      params
+    );
+    return res.rows.map((r: any) => ({
+      id: r.id, studentId: r.student_id, studentName: r.student_name, admissionNumber: r.admission_number,
+      className: r.class_name, sectionName: r.section_name,
+      termOrder: r.term_order, termName: r.term_name,
+      totalMarks: r.total_marks, obtainedMarks: r.obtained_marks,
+      percentage: parseFloat(r.percentage), grade: r.grade, points: parseFloat(r.points),
+      isPass: r.is_pass, position: r.position, totalStudents: r.total_students,
+      subjects: r.subjects, examCount: r.exam_count, computedAt: r.computed_at,
+    }));
+  } catch { return []; }
+}
+
 export async function fetchReportCardsDB(academicYearId?: string, studentId?: string) {
   const auth = await requireSession();
   if ('error' in auth) return [];
@@ -1407,8 +1656,178 @@ export async function fetchReportCardsDB(academicYearId?: string, studentId?: st
       overallGrade: r.overall_grade, classPosition: r.class_position,
       classTotal: r.class_total, remarks: r.remarks,
       needsRegeneration: !!r.needs_regeneration,
+      termResults: r.term_results || [], annual: r.annual || null,
+      isPromoted: !!r.is_promoted, promotionNote: r.promotion_note || "",
     }));
   } catch { return []; }
+}
+
+// Shared report-card builder used by generate + regenerate so both write the
+// exact same payload: the per-exam subject breakdown (existing view) plus the
+// new term summary and the weighted annual summary with promotion decision.
+async function buildReportCardData(studentId: string, academicYearId: string) {
+  // Auto-compute term results the first time a card is generated for a year so
+  // the feature works out of the box; admins can also re-run it via the UI.
+  const termCount = await query("SELECT COUNT(*) as n FROM term_results WHERE academic_year_id = $1", [academicYearId]);
+  if (parseInt(termCount.rows[0].n, 10) === 0) {
+    await computeTermResultsDB(academicYearId);
+  }
+
+  const studentRes = await query(
+    `SELECT s.name, s.admission_number, s.class, s.section,
+            e.class_id, e.section_id,
+            c.name as enrolled_class_name, sec.name as enrolled_section_name
+     FROM students s
+     LEFT JOIN enrollments e ON e.student_id = s.id AND e.academic_year_id = $2
+     LEFT JOIN classes c ON e.class_id = c.id
+     LEFT JOIN sections sec ON e.section_id = sec.id
+     WHERE s.id = $1`,
+    [studentId, academicYearId]
+  );
+  const student = studentRes.rows[0] || {};
+  const classId = student.class_id || null;
+  const sectionId = student.section_id || null;
+  const className = student.enrolled_class_name || student.class || "";
+  const sectionName = student.enrolled_section_name || student.section || "";
+
+  // Per-exam breakdown — kept for the detailed subject table on the card.
+  // An exam counts when it has approved/published results, regardless of its
+  // exam-level status field (which publishExamResultsDB also sets, but legacy
+  // rows may only have result-level publishing).
+  const exams = await query(
+    `SELECT DISTINCT te.id, te.name, te.exam_type
+     FROM term_exams te
+     JOIN results r ON r.exam_id = te.id AND r.status IN ('Approved', 'Published')
+     WHERE te.academic_year_id = $1`,
+    [academicYearId]
+  );
+  const examResults: any[] = [];
+  for (const exam of exams.rows) {
+    const result = await query(
+      "SELECT total_marks, obtained_marks, percentage, section_position, section_total, grade FROM results WHERE exam_id = $1 AND student_id = $2",
+      [exam.id, studentId]
+    );
+    if (result.rows.length === 0) continue;
+    const r = result.rows[0];
+    const subjectsData = await query(
+      `SELECT sub.name as subject_name, me.marks_obtained, es.total_marks, es.passing_marks
+       FROM marks_entries me
+       JOIN exam_subjects es ON me.exam_subject_id = es.id
+       JOIN subjects sub ON es.subject_id = sub.id
+       WHERE es.exam_id = $1 AND me.student_id = $2`,
+      [exam.id, studentId]
+    );
+    const subjects = [];
+    for (const s of subjectsData.rows) {
+      const pct = s.total_marks > 0 ? (s.marks_obtained / s.total_marks) * 100 : 0;
+      const gradeInfo = await computeGradeFromDB(pct);
+      subjects.push({
+        subjectName: s.subject_name, marksObtained: s.marks_obtained, totalMarks: s.total_marks,
+        passingMarks: s.passing_marks, percentage: Math.round(pct * 100) / 100,
+        grade: gradeInfo.grade, points: gradeInfo.points, isPass: gradeInfo.isPass,
+      });
+    }
+    examResults.push({
+      examId: exam.id, examName: exam.name, subjects,
+      totalObtained: r.obtained_marks, totalMarks: r.total_marks,
+      percentage: parseFloat(r.percentage), grade: r.grade,
+      sectionPosition: r.section_position, sectionTotal: r.section_total,
+    });
+  }
+
+  // Term + annual summaries from pre-computed term_results.
+  const gradeScale = (await query("SELECT * FROM grade_scales ORDER BY sort_order ASC")).rows.map((r: any) => ({
+    min: parseFloat(r.min_percentage), max: parseFloat(r.max_percentage), grade: r.grade, points: parseFloat(r.points), isPass: r.is_pass,
+  }));
+  const gradeFor = (pct: number) => {
+    for (const g of gradeScale) if (pct >= g.min && pct <= g.max) return { grade: g.grade, points: g.points, isPass: g.isPass };
+    return { grade: 'F', points: 0, isPass: false };
+  };
+
+  const termRes = await query(
+    "SELECT * FROM term_results WHERE academic_year_id = $1 AND student_id = $2 AND term_order > 0 ORDER BY term_order ASC",
+    [academicYearId, studentId]
+  );
+  const terms = termRes.rows.map((r: any) => ({
+    termOrder: r.term_order, termName: r.term_name, totalMarks: r.total_marks, obtainedMarks: r.obtained_marks,
+    percentage: parseFloat(r.percentage), grade: r.grade, points: parseFloat(r.points), isPass: r.is_pass,
+    position: r.position, totalStudents: r.total_students, subjects: r.subjects, examCount: r.exam_count,
+  }));
+
+  // Term weights for the annual weighted average (one config per term order).
+  const configsRes = await query(
+    "SELECT DISTINCT ON (term_order) term_order, weight FROM term_configs WHERE term_order > 0 AND is_optional = false ORDER BY term_order, sort_order"
+  );
+  const weightByTerm = new Map<number, number>();
+  for (const c of configsRes.rows) weightByTerm.set(c.term_order, parseFloat(c.weight));
+
+  const weightedTerms = terms.filter(t => weightByTerm.has(t.termOrder));
+  const totalWeight = weightedTerms.reduce((s, t) => s + (weightByTerm.get(t.termOrder) || 0), 0);
+  const annualPct = totalWeight > 0
+    ? Math.round(weightedTerms.reduce((s, t) => s + t.percentage * (weightByTerm.get(t.termOrder) || 0), 0) / totalWeight * 100) / 100
+    : 0;
+  const annualGrade = gradeFor(annualPct);
+
+  // Subject averages across terms, weighted by term weight.
+  const subjMap = new Map<string, { weight: number; weightedPct: number }>();
+  for (const t of weightedTerms) {
+    const w = weightByTerm.get(t.termOrder) || 0;
+    for (const s of (t.subjects || [])) {
+      const e = subjMap.get(s.subjectName) || { weight: 0, weightedPct: 0 };
+      e.weight += w;
+      e.weightedPct += s.percentage * w;
+      subjMap.set(s.subjectName, e);
+    }
+  }
+  const subjectAverages = Array.from(subjMap.entries()).map(([name, e]) => {
+    const pct = e.weight > 0 ? Math.round(e.weightedPct / e.weight * 100) / 100 : 0;
+    const g = gradeFor(pct);
+    return { subjectName: name, percentage: pct, grade: g.grade, isPass: g.isPass };
+  });
+
+  // Class ranking for the annual summary — rank by weighted annual percentage.
+  const classTermRows = classId
+    ? await query(
+        "SELECT tr.student_id, tr.term_order, tr.percentage FROM term_results tr WHERE tr.academic_year_id = $1 AND tr.class_id = $2 AND tr.term_order > 0",
+        [academicYearId, classId]
+      )
+    : await query(
+        "SELECT tr.student_id, tr.term_order, tr.percentage FROM term_results tr WHERE tr.academic_year_id = $1 AND tr.term_order > 0",
+        [academicYearId]
+      );
+  const studentWeighted = new Map<string, { w: number; wp: number }>();
+  for (const row of classTermRows.rows) {
+    const w = weightByTerm.get(row.term_order) || 0;
+    const e = studentWeighted.get(row.student_id) || { w: 0, wp: 0 };
+    e.w += w; e.wp += row.percentage * w;
+    studentWeighted.set(row.student_id, e);
+  }
+  const ranked = Array.from(studentWeighted.entries()).map(([sid, e]) => ({
+    sid, avg: e.w > 0 ? e.wp / e.w : 0,
+  })).sort((a, b) => b.avg - a.avg);
+  const classPosition = ranked.findIndex(r => r.sid === studentId) + 1 || null;
+  const classTotal = ranked.length || null;
+
+  // Promotion: passed the annual grade AND passed every subject in every counted
+  // term (the classic "pass all subjects to move up" school rule).
+  const failedSubjects = terms.flatMap(t => (t.subjects || []).filter((s: any) => !s.isPass).map((s: any) => `${s.subjectName} (${t.termName})`));
+  const isPromoted = annualGrade.isPass && failedSubjects.length === 0;
+  const promotionNote = isPromoted
+    ? "Promoted to the next grade."
+    : (failedSubjects.length > 0
+        ? `Not promoted — failed in: ${failedSubjects.join(", ")}.`
+        : "Not promoted — annual average below passing grade.");
+
+  return {
+    student, classId, sectionId, className, sectionName,
+    examResults, terms,
+    annual: {
+      percentage: annualPct, grade: annualGrade.grade, points: annualGrade.points, isPass: annualGrade.isPass,
+      position: classPosition, totalStudents: classTotal,
+      subjectAverages, isPromoted, promotionNote,
+    },
+    totalPercentage: annualPct, overallGrade: annualGrade.grade, classPosition, classTotal, isPromoted, promotionNote,
+  };
 }
 
 export async function generateReportCardDB(studentId: string, academicYearId: string) {
@@ -1417,122 +1836,22 @@ export async function generateReportCardDB(studentId: string, academicYearId: st
   const isOnline = await checkDbConnection();
   if (!isOnline) return null;
   try {
+    const data = await buildReportCardData(studentId, academicYearId);
     const { nanoid } = await import("nanoid");
-
-    // Get student info + class/section from enrollments
-    const studentRes = await query(
-      `SELECT s.name, s.admission_number, s.class, s.section,
-              e.class_id, e.section_id,
-              c.name as enrolled_class_name, sec.name as enrolled_section_name
-       FROM students s
-       LEFT JOIN enrollments e ON e.student_id = s.id AND e.academic_year_id = $2
-       LEFT JOIN classes c ON e.class_id = c.id
-       LEFT JOIN sections sec ON e.section_id = sec.id
-       WHERE s.id = $1`,
-      [studentId, academicYearId]
-    );
-    const student = studentRes.rows[0] || {};
-
-    const classId = student.class_id || null;
-    const sectionId = student.section_id || null;
-    const className = student.enrolled_class_name || student.class || "";
-    const sectionName = student.enrolled_section_name || student.section || "";
-
-    const exams = await query(
-      `SELECT te.id, te.name, te.status FROM term_exams te
-       WHERE te.academic_year_id = $1 AND te.status = 'Published'`,
-      [academicYearId]
-    );
-    const examResults: any[] = [];
-    let grandTotalMarks = 0;
-    let grandObtained = 0;
-    for (const exam of exams.rows) {
-      const result = await query(
-        "SELECT total_marks, obtained_marks, percentage, section_position, section_total, grade FROM results WHERE exam_id = $1 AND student_id = $2",
-        [exam.id, studentId]
-      );
-      if (result.rows.length === 0) continue;
-      const r = result.rows[0];
-      const subjectsData = await query(
-        `SELECT sub.name as subject_name, me.marks_obtained, es.total_marks, es.passing_marks, me.grade
-         FROM marks_entries me
-         JOIN exam_subjects es ON me.exam_subject_id = es.id
-         JOIN subjects sub ON es.subject_id = sub.id
-         WHERE es.exam_id = $1 AND me.student_id = $2`,
-        [exam.id, studentId]
-      );
-
-      const subjects = [];
-      for (const s of subjectsData.rows) {
-        const pct = s.total_marks > 0 ? (s.marks_obtained / s.total_marks) * 100 : 0;
-        const gradeInfo = await computeGradeFromDB(pct);
-        subjects.push({
-          subjectName: s.subject_name,
-          marksObtained: s.marks_obtained,
-          totalMarks: s.total_marks,
-          passingMarks: s.passing_marks,
-          percentage: Math.round(pct * 100) / 100,
-          grade: gradeInfo.grade,
-          points: gradeInfo.points,
-          isPass: gradeInfo.isPass,
-        });
-      }
-
-      examResults.push({
-        examId: exam.id, examName: exam.name,
-        subjects,
-        totalObtained: r.obtained_marks,
-        totalMarks: r.total_marks,
-        percentage: parseFloat(r.percentage),
-        grade: r.grade,
-        sectionPosition: r.section_position,
-        sectionTotal: r.section_total,
-      });
-      grandTotalMarks += r.total_marks;
-      grandObtained += r.obtained_marks;
-    }
-    const totalPercentage = grandTotalMarks > 0 ? Math.round((grandObtained / grandTotalMarks) * 10000) / 100 : 0;
-    const gradeInfo = await computeGradeFromDB(totalPercentage);
-    const overallGrade = gradeInfo.grade;
     const id = `rc-${nanoid(8)}`;
-
-    // Compute class position — filter by student's enrolled class
-    const allResultsForYear = classId
-      ? await query(
-          `SELECT r.student_id, r.percentage FROM results r
-           JOIN term_exams te ON r.exam_id = te.id
-           JOIN enrollments e ON r.student_id = e.student_id AND e.class_id = $2
-           WHERE te.academic_year_id = $1 AND te.status = 'Published'`,
-          [academicYearId, classId]
-        )
-      : await query(
-          `SELECT r.student_id, r.percentage FROM results r
-           JOIN term_exams te ON r.exam_id = te.id
-           WHERE te.academic_year_id = $1 AND te.status = 'Published'`,
-          [academicYearId]
-        );
-    const studentAvgs: Record<string, number[]> = {};
-    for (const row of allResultsForYear.rows) {
-      if (!studentAvgs[row.student_id]) studentAvgs[row.student_id] = [];
-      studentAvgs[row.student_id].push(parseFloat(row.percentage));
-    }
-    const avgs = Object.entries(studentAvgs).map(([sid, pcts]) => ({
-      studentId: sid,
-      avg: pcts.reduce((a, b) => a + b, 0) / pcts.length,
-    })).sort((a, b) => b.avg - a.avg);
-    const classPosition = avgs.findIndex(a => a.studentId === studentId) + 1 || null;
-    const classTotal = avgs.length || null;
-
+    const generatedAt = new Date().toISOString().split("T")[0];
     await query(
-      `INSERT INTO report_cards (id, student_id, academic_year_id, exam_results, generated_at, total_percentage, overall_grade, class_position, class_total, class_name, section_name)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [id, studentId, academicYearId, JSON.stringify(examResults), new Date().toISOString().split("T")[0], totalPercentage, overallGrade, classPosition, classTotal, className || null, sectionName || null]
+      `INSERT INTO report_cards (id, student_id, academic_year_id, exam_results, term_results, annual, generated_at, total_percentage, overall_grade, class_position, class_total, class_name, section_name, is_promoted, promotion_note, needs_regeneration)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,false)`,
+      [id, studentId, academicYearId, JSON.stringify(data.examResults), JSON.stringify(data.terms), JSON.stringify(data.annual), generatedAt, data.totalPercentage, data.overallGrade, data.classPosition, data.classTotal, data.className || null, data.sectionName || null, data.isPromoted, data.promotionNote]
     );
     return {
-      id, studentId, studentName: student.name || "", admissionNumber: student.admission_number || "",
-      className, sectionName, academicYearId,
-      examResults, generatedAt: new Date().toISOString().split("T")[0],
-      totalPercentage, overallGrade, classPosition, classTotal,
+      id, studentId, studentName: data.student.name || "", admissionNumber: data.student.admission_number || "",
+      className: data.className, sectionName: data.sectionName, academicYearId,
+      examResults: data.examResults, terms: data.terms, annual: data.annual,
+      generatedAt, totalPercentage: data.totalPercentage, overallGrade: data.overallGrade,
+      classPosition: data.classPosition, classTotal: data.classTotal,
+      isPromoted: data.isPromoted, promotionNote: data.promotionNote,
     };
   } catch (e) { logServerError("academic-core", "generateReportCardDB error:", e); return null; }
 }
@@ -1567,119 +1886,23 @@ export async function regenerateReportCardDB(id: string) {
     const existing = await query("SELECT student_id, academic_year_id FROM report_cards WHERE id = $1", [id]);
     if (existing.rows.length === 0) return null;
     const { student_id, academic_year_id } = existing.rows[0];
-    const { nanoid } = await import("nanoid");
-
-    const studentRes = await query(
-      `SELECT s.name, s.admission_number, s.class, s.section,
-              e.class_id, e.section_id,
-              c.name as enrolled_class_name, sec.name as enrolled_section_name
-       FROM students s
-       LEFT JOIN enrollments e ON e.student_id = s.id AND e.academic_year_id = $2
-       LEFT JOIN classes c ON e.class_id = c.id
-       LEFT JOIN sections sec ON e.section_id = sec.id
-       WHERE s.id = $1`,
-      [student_id, academic_year_id]
-    );
-    const student = studentRes.rows[0] || {};
-
-    const classId = student.class_id || null;
-    const className = student.enrolled_class_name || student.class || "";
-    const sectionName = student.enrolled_section_name || student.section || "";
-
-    const exams = await query(
-      `SELECT te.id, te.name, te.status FROM term_exams te
-       WHERE te.academic_year_id = $1 AND te.status = 'Published'`,
-      [academic_year_id]
-    );
-    const examResults: any[] = [];
-    let grandTotalMarks = 0;
-    let grandObtained = 0;
-    for (const exam of exams.rows) {
-      const result = await query(
-        "SELECT total_marks, obtained_marks, percentage, section_position, section_total, grade FROM results WHERE exam_id = $1 AND student_id = $2",
-        [exam.id, student_id]
-      );
-      if (result.rows.length === 0) continue;
-      const r = result.rows[0];
-      const subjectsData = await query(
-        `SELECT sub.name as subject_name, me.marks_obtained, es.total_marks, es.passing_marks, me.grade
-         FROM marks_entries me
-         JOIN exam_subjects es ON me.exam_subject_id = es.id
-         JOIN subjects sub ON es.subject_id = sub.id
-         WHERE es.exam_id = $1 AND me.student_id = $2`,
-        [exam.id, student_id]
-      );
-
-      const subjects = [];
-      for (const s of subjectsData.rows) {
-        const pct = s.total_marks > 0 ? (s.marks_obtained / s.total_marks) * 100 : 0;
-        const gradeInfo = await computeGradeFromDB(pct);
-        subjects.push({
-          subjectName: s.subject_name,
-          marksObtained: s.marks_obtained,
-          totalMarks: s.total_marks,
-          passingMarks: s.passing_marks,
-          percentage: Math.round(pct * 100) / 100,
-          grade: gradeInfo.grade,
-          points: gradeInfo.points,
-          isPass: gradeInfo.isPass,
-        });
-      }
-
-      examResults.push({
-        examId: exam.id, examName: exam.name,
-        subjects,
-        totalObtained: r.obtained_marks,
-        totalMarks: r.total_marks,
-        percentage: parseFloat(r.percentage),
-        grade: r.grade,
-        sectionPosition: r.section_position,
-        sectionTotal: r.section_total,
-      });
-      grandTotalMarks += r.total_marks;
-      grandObtained += r.obtained_marks;
-    }
-    const totalPercentage = grandTotalMarks > 0 ? Math.round((grandObtained / grandTotalMarks) * 10000) / 100 : 0;
-    const gradeInfo = await computeGradeFromDB(totalPercentage);
-    const overallGrade = gradeInfo.grade;
-
-    const allResultsForYear = classId
-      ? await query(
-          `SELECT r.student_id, r.percentage FROM results r
-           JOIN term_exams te ON r.exam_id = te.id
-           JOIN enrollments e ON r.student_id = e.student_id AND e.class_id = $2
-           WHERE te.academic_year_id = $1 AND te.status = 'Published'`,
-          [academic_year_id, classId]
-        )
-      : await query(
-          `SELECT r.student_id, r.percentage FROM results r
-           JOIN term_exams te ON r.exam_id = te.id
-           WHERE te.academic_year_id = $1 AND te.status = 'Published'`,
-          [academic_year_id]
-        );
-    const studentAvgs: Record<string, number[]> = {};
-    for (const row of allResultsForYear.rows) {
-      if (!studentAvgs[row.student_id]) studentAvgs[row.student_id] = [];
-      studentAvgs[row.student_id].push(parseFloat(row.percentage));
-    }
-    const avgs = Object.entries(studentAvgs).map(([sid, pcts]) => ({
-      studentId: sid,
-      avg: pcts.reduce((a, b) => a + b, 0) / pcts.length,
-    })).sort((a, b) => b.avg - a.avg);
-    const classPosition = avgs.findIndex(a => a.studentId === student_id) + 1 || null;
-    const classTotal = avgs.length || null;
-
+    const data = await buildReportCardData(student_id, academic_year_id);
+    const generatedAt = new Date().toISOString().split("T")[0];
     await query(
       `UPDATE report_cards
-       SET exam_results = $1, generated_at = $2, total_percentage = $3, overall_grade = $4, class_position = $5, class_total = $6, class_name = $7, section_name = $8, needs_regeneration = false
-       WHERE id = $9`,
-      [JSON.stringify(examResults), new Date().toISOString().split("T")[0], totalPercentage, overallGrade, classPosition, classTotal, className || null, sectionName || null, id]
+       SET exam_results = $1, term_results = $2, annual = $3, generated_at = $4, total_percentage = $5,
+           overall_grade = $6, class_position = $7, class_total = $8, class_name = $9, section_name = $10,
+           is_promoted = $11, promotion_note = $12, needs_regeneration = false
+       WHERE id = $13`,
+      [JSON.stringify(data.examResults), JSON.stringify(data.terms), JSON.stringify(data.annual), generatedAt, data.totalPercentage, data.overallGrade, data.classPosition, data.classTotal, data.className || null, data.sectionName || null, data.isPromoted, data.promotionNote, id]
     );
     return {
-      id, studentId: student_id, studentName: student.name || "", admissionNumber: student.admission_number || "",
-      className, sectionName, academicYearId: academic_year_id,
-      examResults, generatedAt: new Date().toISOString().split("T")[0],
-      totalPercentage, overallGrade, classPosition, classTotal,
+      id, studentId: student_id, studentName: data.student.name || "", admissionNumber: data.student.admission_number || "",
+      className: data.className, sectionName: data.sectionName, academicYearId: academic_year_id,
+      examResults: data.examResults, terms: data.terms, annual: data.annual,
+      generatedAt, totalPercentage: data.totalPercentage, overallGrade: data.overallGrade,
+      classPosition: data.classPosition, classTotal: data.classTotal,
+      isPromoted: data.isPromoted, promotionNote: data.promotionNote,
     };
   } catch { return null; }
 }

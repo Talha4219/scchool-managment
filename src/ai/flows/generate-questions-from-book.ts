@@ -10,6 +10,24 @@
 
 import { ai } from '@/ai/genkit';
 import { z } from 'genkit';
+import { PDFParse } from 'pdf-parse';
+
+// Extract plain text from a base64 PDF data URL. Used instead of sending the
+// raw PDF as a media part so any OpenRouter model (incl. text-only ones like
+// gpt-4o-mini) can read the book — Gemini was the only provider that natively
+// understood PDFs. Returns '' if nothing usable was extracted.
+async function extractBookText(dataUrl: string): Promise<string> {
+  const comma = dataUrl.indexOf(',');
+  const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+  const buffer = Buffer.from(base64, 'base64');
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const result = await parser.getText();
+    return result.text ?? '';
+  } finally {
+    await parser.destroy();
+  }
+}
 
 const GenerateQuestionsFromBookInputSchema = z.object({
   bookPdfDataUrl: z.string().describe("The textbook as a base64 data URL (data:application/pdf;base64,...)."),
@@ -36,7 +54,7 @@ const GenerateQuestionsFromBookOutputSchema = z.object({
 export type GenerateQuestionsFromBookOutput = z.infer<typeof GenerateQuestionsFromBookOutputSchema>;
 
 export async function generateQuestionsFromBook(input: GenerateQuestionsFromBookInput): Promise<GenerateQuestionsFromBookOutput> {
-  if (!process.env.GEMINI_API_KEY) {
+  if (!process.env.GEMINI_API_KEY && !process.env.OPENROUTER_API_KEY) {
     // Deterministic mock so the review/approve/add-to-exam UI is fully
     // testable without a live API key — mirrors generate-parent-progress-report's fallback.
     const questions: z.infer<typeof GeneratedQuestionSchema>[] = [];
@@ -72,19 +90,35 @@ const generateQuestionsFromBookFlow = ai.defineFlow(
     outputSchema: GenerateQuestionsFromBookOutputSchema,
   },
   async (input) => {
-    const prompt = [
-      { media: { url: input.bookPdfDataUrl } },
-      {
-        text: `You are an exam-question author for a school. Using ONLY the content of the attached textbook PDF (subject: ${input.subjectName}${input.topicHint ? `, focused on: ${input.topicHint}` : ''}), generate exactly ${input.mcqCount} multiple-choice questions and ${input.shortAnswerCount} short-answer questions at ${input.difficulty} difficulty.
+    // Prefer text extraction — works with every model on every provider.
+    // Fall back to sending the PDF as a media part only when the PDF has no
+    // extractable text (e.g. scanned/OCR pages) so vision-capable models can
+    // still attempt it.
+    let pdfText = '';
+    let useMedia = false;
+    try {
+      pdfText = (await extractBookText(input.bookPdfDataUrl)).trim();
+      if (pdfText.length < 50) useMedia = true;
+    } catch {
+      useMedia = true;
+    }
+
+    const rules = `You are an exam-question author for a school. Using ONLY the content of the attached textbook (subject: ${input.subjectName}${input.topicHint ? `, focused on: ${input.topicHint}` : ''}), generate exactly ${input.mcqCount} multiple-choice questions and ${input.shortAnswerCount} short-answer questions at ${input.difficulty} difficulty.
 
 Rules:
 - Every question must be answerable strictly from the book's content — do not invent facts not in the text.
 - MCQ options must have exactly 4 choices, only one correct.
 - correctAnswer for an MCQ must be copied verbatim from its options.
 - Keep questionText concise and unambiguous.
-- Vary which part of the book each question draws from — do not cluster all questions on one page/topic unless topicHint narrows it.`,
-      },
-    ];
+- Vary which part of the book each question draws from — do not cluster all questions on one page/topic unless topicHint narrows it.`;
+
+    const prompt = useMedia
+      ? [{ media: { url: input.bookPdfDataUrl } }, { text: rules }]
+      : [
+          {
+            text: `${rules}\n\nThe textbook content is provided below as plain text.\n\n=== BOOK CONTENT START ===\n${pdfText.length > 120000 ? pdfText.slice(0, 120000) + '\n[...truncated]' : pdfText}\n=== BOOK CONTENT END ===`,
+          },
+        ];
 
     // Gemini's shared capacity returns a transient 503/UNAVAILABLE under
     // load fairly often — that's specifically meant to be retried, so back

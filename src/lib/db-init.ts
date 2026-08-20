@@ -496,6 +496,52 @@ export const initializeDatabase = async () => {
       -- was generated, so the UI can show "stale — regenerate" instead of
       -- silently serving an outdated card.
       ALTER TABLE report_cards ADD COLUMN IF NOT EXISTS needs_regeneration BOOLEAN DEFAULT false;
+      -- Term-aware consolidated results: each exam_type maps to a term (or is
+      -- optional/uncounted), and per-student term aggregates are persisted here
+      -- so report cards and the portal can read pre-computed numbers instead of
+      -- re-scanning every marks row each time.
+      ALTER TABLE report_cards ADD COLUMN IF NOT EXISTS term_results JSONB DEFAULT '[]';
+      ALTER TABLE report_cards ADD COLUMN IF NOT EXISTS annual JSONB;
+      ALTER TABLE report_cards ADD COLUMN IF NOT EXISTS is_promoted BOOLEAN DEFAULT false;
+      ALTER TABLE report_cards ADD COLUMN IF NOT EXISTS promotion_note TEXT;
+
+      -- Term config: which exam_type belongs to which term, its weight for the
+      -- annual aggregate, and whether it counts at all. term_order 0 + is_optional
+      -- = "a test, not part of the term/year grade".
+      CREATE TABLE IF NOT EXISTS term_configs (
+        id SERIAL PRIMARY KEY,
+        exam_type VARCHAR(50) NOT NULL UNIQUE,
+        term_name VARCHAR(100) NOT NULL,
+        term_order INT NOT NULL DEFAULT 0,
+        weight NUMERIC(5,2) NOT NULL DEFAULT 1.00,
+        is_optional BOOLEAN DEFAULT false,
+        sort_order INT DEFAULT 0
+      );
+
+      -- Pre-computed per-student term results. One row per student per term per
+      -- academic year, ranked within their class for that term.
+      CREATE TABLE IF NOT EXISTS term_results (
+        id VARCHAR(50) PRIMARY KEY,
+        academic_year_id VARCHAR(50) NOT NULL,
+        student_id VARCHAR(50) NOT NULL,
+        class_id VARCHAR(50),
+        section_id VARCHAR(50),
+        term_order INT NOT NULL,
+        term_name VARCHAR(100) NOT NULL,
+        total_marks INT DEFAULT 0,
+        obtained_marks INT DEFAULT 0,
+        percentage NUMERIC(5,2) DEFAULT 0,
+        grade VARCHAR(10),
+        points NUMERIC(3,1) DEFAULT 0,
+        is_pass BOOLEAN DEFAULT true,
+        position INT,
+        total_students INT,
+        subjects JSONB DEFAULT '[]',
+        exam_count INT DEFAULT 0,
+        computed_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_term_results_year_student ON term_results(academic_year_id, student_id);
+      CREATE INDEX IF NOT EXISTS idx_term_results_year_class ON term_results(academic_year_id, class_id, term_order);
 
       -- Attendance Module
       CREATE TABLE IF NOT EXISTS attendance_sessions (id VARCHAR(50) PRIMARY KEY, academic_year_id VARCHAR(50), class_id VARCHAR(50), section_id VARCHAR(50), date VARCHAR(20), taken_by VARCHAR(255), status VARCHAR(20) DEFAULT 'Completed');
@@ -1353,6 +1399,25 @@ Please review and approve in the school management dashboard.')
       }
     }
 
+    // Default term configs: MidTerm = Term 1, Final = Term 2, both weighted
+    // equally for the annual average. Monthly tests and Quizzes are optional
+    // (tracked but excluded from the year's grade until an admin opts them in).
+    const tcRes = await query('SELECT COUNT(*) FROM term_configs');
+    if (parseInt(tcRes.rows[0].count) === 0) {
+      const defaults = [
+        { type: 'MidTerm', name: 'Term 1', order: 1, weight: 1.00, optional: false, sort: 1 },
+        { type: 'Final', name: 'Term 2', order: 2, weight: 1.00, optional: false, sort: 2 },
+        { type: 'Monthly', name: 'Monthly', order: 0, weight: 0.00, optional: true, sort: 3 },
+        { type: 'Quiz', name: 'Quiz', order: 0, weight: 0.00, optional: true, sort: 4 },
+      ];
+      for (const c of defaults) {
+        await query(
+          `INSERT INTO term_configs (exam_type, term_name, term_order, weight, is_optional, sort_order) VALUES ($1, $2, $3, $4, $5, $6)`,
+          [c.type, c.name, c.order, c.weight, c.optional, c.sort]
+        );
+      }
+    }
+
     const fullGrades: { id: string; name: string; gradeLevel: string }[] = [];
     for (const g of fullGrades) {
       await query(`INSERT INTO classes (id, name, grade_level, academic_year_id) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING`,
@@ -1729,6 +1794,21 @@ Please review and approve in the school management dashboard.')
     await query("UPDATE announcements SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
     await query("UPDATE online_exams SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
     } catch (e) { console.error('Phase 6 branch backfill failed:', e); }
+
+    // ── Performance indexes ────────────────────────────────────────────
+    // Cover the hot WHERE/JOIN filters the server actions run on every
+    // page load (fetchDBState branch scoping, messaging reads, teacher
+    // teaching-summary joins). CREATE INDEX IF NOT EXISTS is idempotent.
+    try {
+      await query("CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance (student_id)");
+      await query("CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance (date)");
+      await query("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id)");
+      await query("CREATE INDEX IF NOT EXISTS idx_sections_class ON sections (class_id)");
+      await query("CREATE INDEX IF NOT EXISTS idx_sections_class_teacher ON sections (class_teacher_id)");
+      await query("CREATE INDEX IF NOT EXISTS idx_admission_apps_branch ON admission_applications (branch_id)");
+      await query("CREATE INDEX IF NOT EXISTS idx_tcs_teacher ON teacher_class_subjects (teacher_id)");
+      await query("CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications (recipient_role)");
+    } catch (e) { console.error('Failed to create performance indexes:', e); }
 
     console.log('Database initialization completed successfully.');
   } catch (err) {

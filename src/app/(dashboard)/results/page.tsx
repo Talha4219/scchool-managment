@@ -281,7 +281,10 @@ function ParentResultsView() {
               totalPercentage={rcTarget.rc.totalPercentage || 0}
               overallGrade={rcTarget.rc.overallGrade || "F"}
               classPosition={rcTarget.rc.classPosition}
+              classTotal={rcTarget.rc.classTotal}
               generatedAt={rcTarget.rc.generatedAt || new Date().toISOString().split("T")[0]}
+              terms={rcTarget.rc.termResults || []}
+              annual={rcTarget.rc.annual || null}
             />
           )}
         </DialogContent>
@@ -481,7 +484,10 @@ function StudentResultsView() {
               totalPercentage={rcTarget.totalPercentage || 0}
               overallGrade={rcTarget.overallGrade || "F"}
               classPosition={rcTarget.classPosition}
+              classTotal={rcTarget.classTotal}
               generatedAt={rcTarget.generatedAt || new Date().toISOString().split("T")[0]}
+              terms={rcTarget.termResults || []}
+              annual={rcTarget.annual || null}
             />
           )}
         </DialogContent>

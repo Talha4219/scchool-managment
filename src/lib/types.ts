@@ -1232,6 +1232,55 @@ export interface GradeScaleItem {
   sortOrder: number;
 }
 
+export interface TermConfigItem {
+  id: number;
+  examType: string;
+  termName: string;
+  termOrder: number;
+  weight: number;
+  isOptional: boolean;
+  sortOrder: number;
+}
+
+export interface TermSubjectResult {
+  subjectName: string;
+  obtained: number;
+  total: number;
+  percentage: number;
+  grade: string;
+  points: number;
+  isPass: boolean;
+  rank: number;
+  totalStudents: number;
+}
+
+export interface TermResultItem {
+  termOrder: number;
+  termName: string;
+  totalMarks: number;
+  obtainedMarks: number;
+  percentage: number;
+  grade: string;
+  points: number;
+  isPass: boolean;
+  position: number;
+  totalStudents: number;
+  subjects: TermSubjectResult[];
+  examCount: number;
+}
+
+export interface AnnualResultItem {
+  percentage: number;
+  grade: string;
+  points: number;
+  isPass: boolean;
+  position: number;
+  totalStudents: number;
+  subjectAverages: { subjectName: string; percentage: number; grade: string; isPass: boolean }[];
+  isPromoted: boolean;
+  promotionNote: string;
+}
+
 export interface ResultItem {
   id: string;
   examId: string;

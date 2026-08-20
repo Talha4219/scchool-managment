@@ -205,25 +205,25 @@ export async function fetchDBState() {
       schoolRes, studentsRes, classesRes, sectionsRes, subjectsRes,
       feeCatRes, feeStrRes, termsRes, feeRecRes, attRes, examRes, notifRes, appsRes,
     ] = await Promise.all([
-      query('SELECT * FROM school_info LIMIT 1'),
-      branchId ? query('SELECT * FROM students WHERE branch_id=$1', [branchId]) : query('SELECT * FROM students'),
-      branchId ? query('SELECT * FROM classes WHERE branch_id=$1', [branchId]) : query('SELECT * FROM classes'),
-      query('SELECT * FROM sections'),
-      query('SELECT * FROM subjects'),
-      query('SELECT * FROM fee_categories'),
-      query('SELECT * FROM fee_structures').catch(() => ({ rows: [] })),
-      query('SELECT * FROM academic_terms'),
+      query('SELECT name, registration_number, address, contact_email, academic_year, phone, website, principal, logo_url, founding_year, currency, timezone FROM school_info LIMIT 1'),
+      branchId ? query('SELECT id, name, admission_number, class, section, parent_name, status, parent_email, email, profile_photo FROM students WHERE branch_id=$1', [branchId]) : query('SELECT id, name, admission_number, class, section, parent_name, status, parent_email, email, profile_photo FROM students'),
+      branchId ? query('SELECT id, name, grade_level, academic_year_id, branch_id, is_graduating FROM classes WHERE branch_id=$1', [branchId]) : query('SELECT id, name, grade_level, academic_year_id, branch_id, is_graduating FROM classes'),
+      query('SELECT id, name, class_id, capacity, teacher_name, section_group FROM sections'),
+      query('SELECT id, name, code, grade_level, teacher_name, is_elective FROM subjects'),
+      query('SELECT id, name, description, default_amount, frequency, is_active FROM fee_categories'),
+      query('SELECT id, name, assigned_class, line_items, total_amount, is_active FROM fee_structures').catch(() => ({ rows: [] })),
+      query('SELECT id, name, start_date, end_date, is_active FROM academic_terms'),
       branchId
-        ? query('SELECT * FROM fee_records WHERE student_id IN (SELECT id FROM students WHERE branch_id=$1)', [branchId])
-        : query('SELECT * FROM fee_records'),
+        ? query('SELECT id, student_id, student_name, amount, due_date, status, voucher_id, payment_method, payment_date, discount, discount_reason, amount_paid, month, fee_type, issue_date, class_name, line_items FROM fee_records WHERE student_id IN (SELECT id FROM students WHERE branch_id=$1)', [branchId])
+        : query('SELECT id, student_id, student_name, amount, due_date, status, voucher_id, payment_method, payment_date, discount, discount_reason, amount_paid, month, fee_type, issue_date, class_name, line_items FROM fee_records'),
       branchId
-        ? query('SELECT * FROM attendance WHERE student_id IN (SELECT id FROM students WHERE branch_id=$1)', [branchId])
-        : query('SELECT * FROM attendance'),
-      query('SELECT * FROM exams'),
-      query('SELECT * FROM notifications'),
+        ? query('SELECT id, student_id, student_name, class, section, date, status FROM attendance WHERE student_id IN (SELECT id FROM students WHERE branch_id=$1)', [branchId])
+        : query('SELECT id, student_id, student_name, class, section, date, status FROM attendance'),
+      query('SELECT id, exam_name, subject, class_name, date, common_strengths, common_weaknesses, student_results FROM exams'),
+      query('SELECT id, title, message, date, recipient_role, recipient_email, read FROM notifications'),
       branchId
-        ? query('SELECT * FROM admission_applications WHERE branch_id=$1 ORDER BY submitted_at DESC', [branchId]).catch(() => ({ rows: [] }))
-        : query('SELECT * FROM admission_applications ORDER BY submitted_at DESC').catch(() => ({ rows: [] })),
+        ? query('SELECT id, application_id, submitted_at, status, first_name, last_name, date_of_birth, gender, nationality, blood_group, applying_for_class, previous_school, previous_grade, parent_name, parent_relation, parent_phone, parent_email, parent_cnic, address, city, admin_notes, profile_photo FROM admission_applications WHERE branch_id=$1 ORDER BY submitted_at DESC', [branchId]).catch(() => ({ rows: [] }))
+        : query('SELECT id, application_id, submitted_at, status, first_name, last_name, date_of_birth, gender, nationality, blood_group, applying_for_class, previous_school, previous_grade, parent_name, parent_relation, parent_phone, parent_email, parent_cnic, address, city, admin_notes, profile_photo FROM admission_applications ORDER BY submitted_at DESC').catch(() => ({ rows: [] })),
     ]);
 
     return {

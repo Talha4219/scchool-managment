@@ -9,15 +9,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { FileText, ArrowLeft, Download, RefreshCw, Loader2, Pencil } from "lucide-react";
+import { FileText, ArrowLeft, Download, RefreshCw, Loader2, Pencil, Printer } from "lucide-react";
 import { motion } from "framer-motion";
+import { useAppState } from "@/lib/state-context";
 import { ReportCard } from "@/components/report-card";
 import {
   fetchAcademicYearsDB, fetchClassesDB,
   fetchStudentsForDropdownDB,
   generateReportCardDB, generateBatchReportCardsDB,
   regenerateReportCardDB, updateReportCardRemarksDB,
-  fetchReportCardsDB,
+  fetchReportCardsDB, computeTermResultsDB, fetchTermConfigsDB,
 } from "@/app/actions/academic-core";
 import { usePermission } from "@/hooks/use-permission";
 import { Unauthorized } from "@/components/unauthorized";
@@ -26,6 +27,7 @@ import { PageSkeleton } from "@/components/ui/page-skeleton";
 export default function ReportCardsPage() {
   const { can, loaded } = usePermission();
   const { toast } = useToast();
+  const { schoolInfo } = useAppState();
   const [activeYearId, setActiveYearId] = useState("");
   const [classes, setClasses] = useState<{ id: string; name: string }[]>([]);
   const [selectedClassId, setSelectedClassId] = useState("");
@@ -37,6 +39,8 @@ export default function ReportCardsPage() {
   const [regenerating, setRegenerating] = useState<string | null>(null);
   const [editingRemarks, setEditingRemarks] = useState("");
   const [savingRemarks, setSavingRemarks] = useState(false);
+  const [computingTerms, setComputingTerms] = useState(false);
+  const [termReady, setTermReady] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -110,6 +114,20 @@ export default function ReportCardsPage() {
     } finally { setSavingRemarks(false); }
   };
 
+  const handleComputeTerms = async () => {
+    if (!activeYearId) return;
+    setComputingTerms(true);
+    try {
+      const res = await computeTermResultsDB(activeYearId);
+      setTermReady(true);
+      toast({ title: `Computed ${res.computed} term result${res.computed !== 1 ? "s" : ""}` });
+    } finally { setComputingTerms(false); }
+  };
+
+  useEffect(() => {
+    fetchTermConfigsDB().then(cfgs => setTermReady(cfgs.some(c => c.termOrder > 0 && !c.isOptional)));
+  }, []);
+
   const filteredStudents = allStudents;
 
   if (!loaded) return <PageSkeleton />;
@@ -158,6 +176,10 @@ export default function ReportCardsPage() {
               {generating ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
               Generate All{selectedClassId ? " (Class)" : ""}
             </Button>
+            <Button variant="outline" onClick={handleComputeTerms} disabled={computingTerms} className="ml-auto">
+              {computingTerms ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1" />}
+              {termReady ? "Recompute Term Results" : "Compute Term Results"}
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -178,6 +200,11 @@ export default function ReportCardsPage() {
                     <Badge className={rc.overallGrade === "F" ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}>
                       {rc.overallGrade}
                     </Badge>
+                    {rc.isPromoted !== undefined && (
+                      <Badge className={rc.isPromoted ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}>
+                        {rc.isPromoted ? "Promoted" : "Not Promoted"}
+                      </Badge>
+                    )}
                     <Button
                       size="sm" variant="ghost"
                       className="h-7 w-7 p-0"
@@ -193,6 +220,9 @@ export default function ReportCardsPage() {
                   <p>Class: {rc.className || "—"} {rc.sectionName ? `/ ${rc.sectionName}` : ""}</p>
                   <p>Percentage: {rc.totalPercentage}%</p>
                   {rc.classPosition && <p>Position: {rc.classPosition} of {rc.classTotal}</p>}
+                  {Array.isArray(rc.termResults) && rc.termResults.length > 0 && (
+                    <p>Terms: {rc.termResults.map((t: any) => t.termName).join(", ")}</p>
+                  )}
                   <p>Generated: {rc.generatedAt}</p>
                   {rc.remarks && <p className="italic text-slate-500 truncate">Remarks: {rc.remarks}</p>}
                 </div>
@@ -241,7 +271,17 @@ export default function ReportCardsPage() {
                 classTotal={selectedRC.classTotal}
                 generatedAt={selectedRC.generatedAt || new Date().toISOString().split("T")[0]}
                 remarks={editingRemarks}
+                terms={selectedRC.termResults || []}
+                annual={selectedRC.annual || null}
+                schoolName={schoolInfo.name || "Classora"}
               />
+              <div className="mt-4 flex gap-2">
+                <Button size="sm" variant="outline" asChild>
+                  <a href={`/exams/report-cards/${selectedRC.id}/print?school=${encodeURIComponent(schoolInfo.name || "Classora")}`} target="_blank" rel="noopener noreferrer">
+                    <Printer className="h-3.5 w-3.5 mr-1" /> Print / Save PDF
+                  </a>
+                </Button>
+              </div>
               {/* Remarks Editor */}
               <div className="mt-4 space-y-2">
                 <label className="text-sm font-medium text-slate-700 flex items-center gap-1">
