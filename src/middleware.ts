@@ -31,6 +31,19 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/parent", request.url));
   }
 
+  // Parents only ever see their own children via the /parent portal. Block
+  // every school-wide admin module outright so a parent can't reach the
+  // all-student lists (Students, Attendance, Fees, Assignments, Messages,
+  // Transport, etc.) by typing a URL — the sidebar already hides them, but
+  // direct navigation must be rejected too. /announcements stays open (its
+  // view is already parent-scoped) and /results has a dedicated scoped
+  // ParentResultsView.
+  const parentRestrictedRoutes = ["/students", "/attendance", "/fees", "/assignments", "/messages", "/transport", "/exams", "/timetable", "/library", "/lms", "/communications", "/whatsapp", "/reports", "/classes", "/hostel", "/events", "/permissions", "/audit-log"];
+  const isParentRestricted = parentRestrictedRoutes.some(r => pathname.startsWith(r));
+  if (session?.role === "PARENT" && isParentRestricted) {
+    return NextResponse.redirect(new URL("/parent", request.url));
+  }
+
   // Admin-only routes — redirect STUDENT and TEACHER away. PRINCIPAL = "Admin,
   // branch-scoped" (same page access, data scoped separately at the query
   // layer), so it's treated as admin-equivalent here too. OWNER manages

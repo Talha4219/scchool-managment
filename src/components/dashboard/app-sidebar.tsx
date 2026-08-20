@@ -41,10 +41,23 @@ export type NavItem = {
   // since no permission profile makes sense for a role that predates
   // branches for most schools.
   ownerOnly?: boolean;
+  // PARENT-only nav items: links into the scoped parent portal (/parent*).
+  // Parents never see the school-wide admin pages below, regardless of any
+  // permission they might hold, so these items are gated purely on role.
+  parentOnly?: boolean;
+  // Hides a top-level item from specific roles entirely (e.g. the generic
+  // "Dashboard" link is pointless for parents since middleware redirects
+  // them to /parent — they get the dedicated "Parent Dashboard" item).
+  hideForRoles?: string[];
 };
 
 export const navItems: NavItem[] = [
-  { icon: LayoutDashboard, label: "Dashboard", href: "/dashboard" },
+  { icon: LayoutDashboard, label: "Dashboard", href: "/dashboard", hideForRoles: ["PARENT"] },
+  { icon: CalendarCheck, label: "Parent Dashboard", href: "/parent", parentOnly: true },
+  { icon: CalendarCheck, label: "Child Attendance", href: "/parent/attendance", parentOnly: true },
+  { icon: BarChart3, label: "Child Results", href: "/parent/results", parentOnly: true },
+  { icon: CreditCard, label: "Child Fees", href: "/parent/fees", parentOnly: true },
+  { icon: Megaphone, label: "Announcements", href: "/announcements", parentOnly: true },
   { icon: Building2, label: "Branches", href: "/owner", ownerOnly: true },
   { icon: Users, label: "Students", href: "/students", permission: "students.view" },
   { icon: UserPlus, label: "Admissions", href: "/admissions", permission: "admissions.view" },
@@ -202,7 +215,10 @@ export function AppSidebar() {
   }, [permissions, sessionRole, customRoleId]);
 
   const visibleNavItems = navItems.filter(item =>
-    item.ownerOnly ? sessionRole === "OWNER" : hasPermission(item.permission)
+    item.parentOnly ? sessionRole === "PARENT" :
+    item.ownerOnly ? sessionRole === "OWNER" :
+    item.hideForRoles?.includes(sessionRole || "") ? false :
+    hasPermission(item.permission)
   );
 
   const isFav = useCallback((href: string) => favorites.includes(href), [favorites]);
@@ -306,12 +322,14 @@ export function AppSidebar() {
                   ⌘K
                 </kbd>
               </button>
-              <button
-                onClick={() => setQuickCreateOpen(true)}
-                className="flex h-9 w-full items-center justify-center gap-2 rounded-xl gradient-active text-white text-xs font-semibold shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 transition-all"
-              >
-                <Plus className="h-3.5 w-3.5" /> {tn("Quick Create")}
-              </button>
+              {sessionRole !== "PARENT" && (
+                <button
+                  onClick={() => setQuickCreateOpen(true)}
+                  className="flex h-9 w-full items-center justify-center gap-2 rounded-xl gradient-active text-white text-xs font-semibold shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 transition-all"
+                >
+                  <Plus className="h-3.5 w-3.5" /> {tn("Quick Create")}
+                </button>
+              )}
             </div>
           )}
         </div>

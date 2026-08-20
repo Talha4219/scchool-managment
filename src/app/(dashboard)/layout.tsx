@@ -440,6 +440,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
               {/* Quick Actions */}
               {(() => {
+                if (sessionRole === "PARENT") return null;
                 const trigger = (
                   <button className="flex h-10 w-10 items-center justify-center rounded-full bg-secondary/60 text-muted-foreground shadow-sm hover:bg-secondary hover:text-foreground transition-colors">
                     <Zap className="h-4 w-4" />

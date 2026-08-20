@@ -830,7 +830,24 @@ export default function DashboardPage() {
   }
 
   // ══════════════════════════════ PARENT ═════════════════════════════════════
-  if (sessionRole === "PARENT" && wardStudents.length > 0) {
+  if (sessionRole === "PARENT") {
+    // Defensive: a parent with no matched wards must not fall through to the
+    // school-wide admin dashboard (which shows ALL students). Show an empty
+    // state instead. Middleware normally redirects /dashboard → /parent for
+    // this role anyway; this guards the code path directly.
+    if (wardStudents.length === 0) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[60vh] text-center space-y-4">
+          <div className="p-4 bg-purple-50 rounded-full">
+            <GraduationCap className="h-10 w-10 text-purple-600" />
+          </div>
+          <h2 className="text-xl font-bold text-primary">{t("parent.noChildren")}</h2>
+          <p className="text-muted-foreground text-sm max-w-sm">
+            {t("parent.noChildrenHint")}
+          </p>
+        </div>
+      );
+    }
     return (
       <div className="space-y-6">
         <div className="flex items-start justify-between flex-wrap gap-3">

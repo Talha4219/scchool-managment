@@ -1288,7 +1288,7 @@ Please review and approve in the school management dashboard.')
         ADMIN: permissions,
         TEACHER: ['students.view', 'attendance.view', 'attendance.mark', 'exams.view', 'exams.online', 'results.view', 'results.enter', 'timetable.view', 'announcements.view', 'fees.view', 'classes.view', 'assignments.view', 'assignments.create', 'assignments.grade', 'library.view', 'messages.view', 'transport.view'],
         STUDENT: ['students.view', 'exams.view', 'exams.online', 'results.view', 'fees.view', 'timetable.view', 'announcements.view', 'attendance.view', 'assignments.view', 'library.view', 'messages.view', 'transport.view'],
-        PARENT: ['students.view', 'results.view', 'fees.view', 'announcements.view', 'attendance.view', 'assignments.view', 'messages.view', 'transport.view'],
+        PARENT: ['announcements.view', 'results.view'],
         // Generic non-teaching staff (front desk, accounts, admin support). Starts
         // minimal — real access for a given employee comes from a custom role
         // layered on top, configured per hire in the Permissions grid.
@@ -1354,7 +1354,9 @@ Please review and approve in the school management dashboard.')
         ADMIN: newModulePerms,
         TEACHER: { 'assignments.view': true, 'assignments.create': true, 'assignments.grade': true, 'library.view': true, 'messages.view': true, 'transport.view': true },
         STUDENT: { 'assignments.view': true, 'library.view': true, 'messages.view': true, 'transport.view': true },
-        PARENT: { 'assignments.view': true, 'messages.view': true, 'transport.view': true },
+        // Parents only ever see their own children through the /parent portal —
+        // they get no school-wide access to these modules.
+        PARENT: {},
         EMPLOYEE: { 'messages.view': true },
       };
       for (const [role, overrides] of Object.entries(roleOverrides)) {
@@ -1364,6 +1366,25 @@ Please review and approve in the school management dashboard.')
             [role, perm, !!overrides[perm]]
           );
         }
+      }
+    }
+
+    // Parent lockdown backfill — the count===0 seed only runs on a brand-new
+    // DB, and the INSERT ... ON CONFLICT DO NOTHING backfills above never
+    // touch rows that already exist, so an already-seeded install still has
+    // PARENT granted the school-wide Students/Attendance/Fees/etc. permissions
+    // from the original defaults. Revoke those explicitly so existing parents
+    // can't reach the admin pages (all-student lists) through the sidebar.
+    {
+      const revokedParentPerms = [
+        'students.view', 'attendance.view', 'fees.view',
+        'assignments.view', 'messages.view', 'transport.view',
+      ];
+      for (const perm of revokedParentPerms) {
+        await query(
+          `UPDATE role_permissions SET enabled = false WHERE role = 'PARENT' AND permission = $1`,
+          [perm]
+        );
       }
     }
 
