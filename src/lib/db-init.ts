@@ -14,7 +14,22 @@ import {
   defaultNotifications
 } from './default-data';
 
+// Three call sites (actions/auth.ts, actions/db.ts, actions/academic-core.ts)
+// each used to guard this with their own bare module-level `let` flag. Every
+// one of those modules gets re-evaluated on a Turbopack/webpack hot-reload in
+// dev (any file it transitively imports changing is enough), which reset the
+// flag to false and made this run again — full schema migration pass plus an
+// enrollment backfill loop that does 2 sequential DB queries per unmatched
+// student. Repeating that on every save hammered the connection pool (seen as
+// intermittent 503s app-wide) and could take tens of seconds, during which
+// the whole app looked hung. A single flag here, stashed on globalThis so it
+// survives module re-evaluation, makes this actually run once per process
+// regardless of which/how many call sites invoke it.
+const globalForDbInit = globalThis as unknown as { __dbInitDone?: boolean };
+
 export const initializeDatabase = async () => {
+  if (globalForDbInit.__dbInitDone) return;
+
   const isOnline = await checkDbConnection();
   if (!isOnline) {
     console.log('Database is offline, skipping initialization.');
@@ -1751,23 +1766,35 @@ Please review and approve in the school management dashboard.')
     `);
     if (orphanStudents.rows.length > 0) {
       console.log(`Backfilling ${orphanStudents.rows.length} orphan student(s)...`);
-      const yearResult = await query("SELECT id FROM academic_years WHERE is_active = true LIMIT 1");
+      // Was 2-4 sequential queries PER student (classes, sections x2, roll
+      // number) — with hundreds of orphan rows that never actually match
+      // (legacy free-text class names like "Grade 3" not present in the
+      // classes table), this turned into 500+ round trips doing nothing but
+      // producing a "Skipping" log line, taking minutes on every cold start.
+      // Pulling classes/sections/roll-numbers in bulk up front turns the
+      // whole backfill into ~3 queries plus one INSERT per row that actually
+      // matches.
+      const [yearResult, classesResult, sectionsResult, rollResult] = await Promise.all([
+        query("SELECT id FROM academic_years WHERE is_active = true LIMIT 1"),
+        query("SELECT id, name FROM classes"),
+        query("SELECT id, class_id, name FROM sections"),
+        query("SELECT class_id, COALESCE(MAX(roll_number),0) as max_roll FROM enrollments GROUP BY class_id"),
+      ]);
       const activeYearId = yearResult.rows[0]?.id || 'ay-2026-27';
+      const classByName = new Map<string, string>(classesResult.rows.map((c: any) => [c.name, c.id]));
+      const sectionByClassAndName = new Map<string, string>(
+        sectionsResult.rows.map((sec: any) => [`${sec.class_id}::${sec.name}`, sec.id])
+      );
+      const nextRollByClass = new Map<string, number>(
+        rollResult.rows.map((r: any) => [r.class_id, parseInt(r.max_roll, 10) + 1])
+      );
 
       for (const s of orphanStudents.rows) {
-        const classRes = await query("SELECT id FROM classes WHERE name = $1", [s.class]);
-        const classId = classRes.rows[0]?.id;
+        const classId = classByName.get(s.class);
         if (!classId) { console.log(`  Skipping ${s.name} – class "${s.class}" not in classes table`); continue; }
 
-        let sectionId = null;
-        if (s.section) {
-          const secRes = await query("SELECT id FROM sections WHERE class_id = $1 AND name = $2", [classId, s.section]);
-          sectionId = secRes.rows[0]?.id;
-        }
-        if (!sectionId) {
-          const secRes = await query("SELECT id FROM sections WHERE class_id = $1 AND name = 'A'", [classId]);
-          sectionId = secRes.rows[0]?.id;
-        }
+        const sectionId = (s.section && sectionByClassAndName.get(`${classId}::${s.section}`))
+          || sectionByClassAndName.get(`${classId}::A`);
         // section_id is NOT NULL on enrollments — a class with no matching
         // section (e.g. seeded without one) must be skipped, not attempted,
         // or this single bad row throws and silently aborts every remaining
@@ -1775,8 +1802,8 @@ Please review and approve in the school management dashboard.')
         // that happen to run after this block).
         if (!sectionId) { console.log(`  Skipping ${s.name} – no section found for class "${s.class}"`); continue; }
 
-        const rollRes = await query("SELECT COALESCE(MAX(roll_number),0)+1 as next FROM enrollments WHERE class_id=$1", [classId]);
-        const rollNumber = parseInt(rollRes.rows[0]?.next || '1', 10);
+        const rollNumber = nextRollByClass.get(classId) || 1;
+        nextRollByClass.set(classId, rollNumber + 1);
 
         await query(
           "INSERT INTO enrollments (id, student_id, class_id, section_id, academic_year_id, roll_number, status) VALUES ($1,$2,$3,$4,$5,$6,'Active')",
@@ -1863,6 +1890,7 @@ Please review and approve in the school management dashboard.')
     } catch (e) { console.error('Failed to create performance indexes:', e); }
 
     console.log('Database initialization completed successfully.');
+    globalForDbInit.__dbInitDone = true;
   } catch (err) {
     console.error('Failed to initialize database:', err);
   }

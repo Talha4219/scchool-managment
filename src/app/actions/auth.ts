@@ -11,16 +11,23 @@ import { encrypt, decrypt, type SessionPayload } from "@/lib/auth";
 import { logServerError } from "@/lib/error-log";
 import { isEmailConfigured, sendEmail } from "@/lib/email";
 
-let _authDbInitialized = false;
+// Stashed on globalThis (not a bare module-level let) so it survives
+// Turbopack/webpack hot-reloads in dev — this module gets re-evaluated on
+// nearly every HMR update (e.g. editing any file it transitively imports),
+// and a plain `let` would reset to false each time, re-running
+// initializeDatabase()'s full migration + backfill pass (hundreds of
+// sequential DB round trips) on every save instead of once per process.
+const globalForDbInit = globalThis as unknown as { __authDbInitialized?: boolean };
+
 async function ensureDbInit() {
-  if (_authDbInitialized) return;
+  if (globalForDbInit.__authDbInitialized) return;
   // Only mark done on success — flipping this before initializeDatabase()
   // resolves meant a single transient failure (e.g. a DDL ordering bug)
   // permanently skipped init for the rest of the process's life, so every
   // request after the first kept failing with "column does not exist"
   // instead of the schema ever getting a chance to finish creating itself.
   await initializeDatabase();
-  _authDbInitialized = true;
+  globalForDbInit.__authDbInitialized = true;
 }
 
 const SESSION_COOKIE = "sc_session";

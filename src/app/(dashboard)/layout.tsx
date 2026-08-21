@@ -55,6 +55,29 @@ function timeAgo(iso: string) {
 const SidebarCollapseCtx = createContext<{ collapsed: boolean; toggle: () => void }>({ collapsed: false, toggle: () => {} });
 export const useSidebarCollapse = () => useContext(SidebarCollapseCtx);
 
+// Only these routes actually read from useAppState() (state-context.tsx),
+// whose isDbLoaded gate below waits on fetchDBState() pulling the school's
+// *entire* dataset (students, fee_records, attendance, notifications, etc. —
+// thousands of rows) in one shot. Every other dashboard route was being held
+// behind that same fetch for data it never touches. Keep this in sync with
+// which pages call useAppState — a route missing here will render before its
+// data-context arrays populate and briefly show empty state instead of a
+// loading skeleton; a route listed here unnecessarily just waits a bit longer
+// than it needs to, the safe direction to be wrong in.
+const GLOBAL_STATE_EXACT_ROUTES = new Set([
+  "/fees", "/settings", "/dashboard", "/lms", "/exams/report-cards", "/results",
+  "/students", "/events", "/reports", "/library", "/procurement", "/inventory",
+  "/admissions", "/alumni", "/exams/marks", "/timetable", "/exams/manage",
+  "/transport", "/scholarships", "/hostel", "/discipline", "/accounting",
+  "/announcements", "/hr", "/exams/books", "/payroll",
+]);
+// /teachers/[id] also reads useAppState — /students/[id] does not, so
+// /students stays an exact match above rather than a prefix here.
+const GLOBAL_STATE_PREFIX_ROUTES = ["/teachers"];
+function routeNeedsGlobalState(pathname: string): boolean {
+  return GLOBAL_STATE_EXACT_ROUTES.has(pathname) || GLOBAL_STATE_PREFIX_ROUTES.some(p => pathname.startsWith(p));
+}
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <NotificationsProvider>
@@ -520,8 +543,8 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
           {/* Main Content */}
           <main ref={mainRef} onScroll={handleMainScroll} className="flex-1 p-6 overflow-y-auto page-enter">
-            {isDbLoaded && <Breadcrumbs />}
-            {!isDbLoaded ? (
+            <Breadcrumbs />
+            {!isDbLoaded && routeNeedsGlobalState(pathname) ? (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <Skeleton className="h-7 w-40" />

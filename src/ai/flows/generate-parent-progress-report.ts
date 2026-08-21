@@ -5,10 +5,16 @@
  * - generateParentProgressReport - A function that handles the generation of parent progress reports.
  * - GenerateParentProgressReportInput - The input type for the generateParentProgressReport function.
  * - GenerateParentProgressReportOutput - The return type for the generateParentProgressReport function.
+ *
+ * The actual genkit prompt/flow definitions live in the sibling .impl.ts file,
+ * imported here only via a dynamic import() inside the function body — every
+ * 'use server' file gets eagerly scanned into Next's server-action manifest,
+ * which loads for every route (including error pages), so a top-level import
+ * of genkit here would pull its opentelemetry instrumentation into that
+ * always-loaded path. See next.config.ts's serverExternalPackages comment.
  */
 
-import { ai } from '@/ai/genkit';
-import { z } from 'genkit';
+import { z } from 'zod';
 import { getSession } from '@/app/actions/auth';
 
 const GenerateParentProgressReportInputSchema = z.object({
@@ -68,47 +74,6 @@ Classora Academics Department`;
 
     return { reportMessage: mockMessage };
   }
-  return generateParentProgressReportFlow(effectiveInput);
+  const { runGenerateParentProgressReportFlow } = await import('./generate-parent-progress-report.impl');
+  return runGenerateParentProgressReportFlow(effectiveInput);
 }
-
-const prompt = ai.definePrompt({
-  name: 'generateParentProgressReportPrompt',
-  input: { schema: GenerateParentProgressReportInputSchema },
-  output: { schema: GenerateParentProgressReportOutputSchema },
-  prompt: `You are an AI assistant tasked with generating a personalized and professional student progress report for a parent.
-Craft a concise, encouraging, and informative message based on the provided student data.
-
-Student Name: {{{studentName}}}
-Class: {{{className}}}
-Teacher: {{{teacherName}}}
-
-Academic Performance:
-{{#each academicPerformance}}
-- {{this.subject}}: {{this.grade}}
-{{/each}}
-
-Attendance:
-Total Days: {{{attendanceRecord.totalDays}}}
-Absent Days: {{{attendanceRecord.absentDays}}}
-Tardy Days: {{{attendanceRecord.tardyDays}}}
-
-{{#if teacherComments}}
-Teacher's Additional Comments: {{{teacherComments}}}
-{{/if}}
-
-Draft a polite and informative message for the parent, summarizing the student's academic progress and attendance. If there are any areas of concern, phrase them constructively. Emphasize positive aspects where appropriate. Do not make up information that is not provided in the input.
-
-The message should be formatted as a letter or email body, starting with a polite greeting and ending with a professional closing. Sign the letter with the teacher's exact name, {{{teacherName}}}, after a closing like "Sincerely," — use the exact name given, do not invent a different signature. Only output the report message, nothing else.`,
-});
-
-const generateParentProgressReportFlow = ai.defineFlow(
-  {
-    name: 'generateParentProgressReportFlow',
-    inputSchema: GenerateParentProgressReportInputSchema,
-    outputSchema: GenerateParentProgressReportOutputSchema,
-  },
-  async (input) => {
-    const { output } = await prompt(input);
-    return output!;
-  }
-);

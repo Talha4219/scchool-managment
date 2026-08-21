@@ -1,10 +1,22 @@
 import { Pool } from 'pg';
 
-const pool = new Pool({
+// In dev, Turbopack/webpack hot-reloads this module on every file save,
+// which would re-run `new Pool(...)` each time and leak the previous pool's
+// connections (never closed) until the DB's connection limit is exhausted —
+// surfacing as random, intermittent query failures across the whole app.
+// Stashing the pool on `globalThis` survives the module re-evaluation so
+// dev keeps reusing the same pool; production just gets one pool as before.
+const globalForPool = globalThis as unknown as { __pgPool?: Pool };
+
+const pool = globalForPool.__pgPool ?? new Pool({
   connectionString: process.env.DATABASE_URL,
   connectionTimeoutMillis: 15000,
   idleTimeoutMillis: 10000,
 });
+
+if (process.env.NODE_ENV !== 'production') {
+  globalForPool.__pgPool = pool;
+}
 
 let connectionCache: { ok: boolean; expiresAt: number } | null = null;
 

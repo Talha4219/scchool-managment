@@ -6,10 +6,17 @@
  * - analyzeExamResultsAndSuggestRecommendations - A function that handles the exam result analysis and recommendation generation process.
  * - AnalyzeExamResultsAndSuggestRecommendationsInput - The input type for the analyzeExamResultsAndSuggestRecommendations function.
  * - AnalyzeExamResultsAndSuggestRecommendationsOutput - The return type for the analyzeExamResultsAndSuggestRecommendations function.
+ *
+ * The actual genkit prompt/flow definitions live in the sibling .impl.ts
+ * file, imported here only via a dynamic import() inside the function body
+ * — every 'use server' file gets eagerly scanned into Next's server-action
+ * manifest, which loads for every route (including error pages), so a
+ * top-level import of genkit here would pull its opentelemetry
+ * instrumentation into that always-loaded path. See next.config.ts's
+ * serverExternalPackages comment.
  */
 
-import { ai } from '@/ai/genkit';
-import { z } from 'genkit';
+import { z } from 'zod';
 
 const AnalyzeExamResultsAndSuggestRecommendationsInputSchema = z.object({
   className: z.string().describe('The name of the class.'),
@@ -82,66 +89,6 @@ export async function analyzeExamResultsAndSuggestRecommendations(
       studentRecommendations
     };
   }
-  return analyzeExamResultsAndSuggestRecommendationsFlow(input);
+  const { runAnalyzeExamResultsAndSuggestRecommendationsFlow } = await import('./analyze-exam-results-and-suggest-recommendations.impl');
+  return runAnalyzeExamResultsAndSuggestRecommendationsFlow(input);
 }
-
-const analyzeExamResultsAndSuggestRecommendationsPrompt = ai.definePrompt({
-  name: 'analyzeExamResultsAndSuggestRecommendationsPrompt',
-  input: { schema: AnalyzeExamResultsAndSuggestRecommendationsInputSchema },
-  output: { schema: AnalyzeExamResultsAndSuggestRecommendationsOutputSchema },
-  prompt: `You are an AI assistant specialized in educational analytics. Your task is to analyze exam results for a class, identify common strengths and weaknesses, and provide personalized study recommendations for each student.
-
-Class Name: {{{className}}}
-Exam Name: {{{examName}}}
-Exam Details: {{{examDetails}}}
-
-{{#if generalStrengths}}
-Teacher's observed general strengths: {{{generalStrengths}}}
-{{/if}}
-
-{{#if generalWeaknesses}}
-Teacher's observed general weaknesses: {{{generalWeaknesses}}}
-{{/if}}
-
-Student Results:
-{{#each studentResults}}
----
-Student Name: {{{studentName}}}
-Score: {{{score}}}
-Detailed Breakdown: {{{detailedBreakdown}}}
----
-{{/each}}
-
-Based on the above information, provide:
-1.  A concise summary of common strengths observed across the class.
-2.  A concise summary of common weaknesses observed across the class.
-3.  Personalized study recommendations for each student, focusing on their specific weaknesses and areas for improvement based on their score and detailed breakdown. Recommendations should be actionable and specific.
-
-Ensure the output is in a JSON format matching the following structure:
-{json
-  "classSummary": {
-    "commonStrengths": "...",
-    "commonWeaknesses": "..."
-  },
-  "studentRecommendations": [
-    {
-      "studentName": "...",
-      "recommendations": "..."
-    }
-    // ... for each student
-  ]
-}
-`,
-});
-
-const analyzeExamResultsAndSuggestRecommendationsFlow = ai.defineFlow(
-  {
-    name: 'analyzeExamResultsAndSuggestRecommendationsFlow',
-    inputSchema: AnalyzeExamResultsAndSuggestRecommendationsInputSchema,
-    outputSchema: AnalyzeExamResultsAndSuggestRecommendationsOutputSchema,
-  },
-  async (input) => {
-    const { output } = await analyzeExamResultsAndSuggestRecommendationsPrompt(input);
-    return output!;
-  }
-);

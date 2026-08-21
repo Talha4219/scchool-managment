@@ -6,28 +6,17 @@
  *
  * - generateQuestionsFromBook - reads the PDF and drafts questions for review.
  * - GenerateQuestionsFromBookInput / Output - types for the above.
+ *
+ * The actual genkit flow (and pdf-parse text extraction) lives in the
+ * sibling .impl.ts file, imported here only via a dynamic import() inside
+ * the function body — every 'use server' file gets eagerly scanned into
+ * Next's server-action manifest, which loads for every route (including
+ * error pages), so a top-level import of genkit/pdf-parse here would pull
+ * that weight into that always-loaded path. See next.config.ts's
+ * serverExternalPackages comment.
  */
 
-import { ai } from '@/ai/genkit';
-import { z } from 'genkit';
-import { PDFParse } from 'pdf-parse';
-
-// Extract plain text from a base64 PDF data URL. Used instead of sending the
-// raw PDF as a media part so any OpenRouter model (incl. text-only ones like
-// gpt-4o-mini) can read the book — Gemini was the only provider that natively
-// understood PDFs. Returns '' if nothing usable was extracted.
-async function extractBookText(dataUrl: string): Promise<string> {
-  const comma = dataUrl.indexOf(',');
-  const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-  const buffer = Buffer.from(base64, 'base64');
-  const parser = new PDFParse({ data: buffer });
-  try {
-    const result = await parser.getText();
-    return result.text ?? '';
-  } finally {
-    await parser.destroy();
-  }
-}
+import { z } from 'zod';
 
 const GenerateQuestionsFromBookInputSchema = z.object({
   bookPdfDataUrl: z.string().describe("The textbook as a base64 data URL (data:application/pdf;base64,...)."),
@@ -80,62 +69,6 @@ export async function generateQuestionsFromBook(input: GenerateQuestionsFromBook
     }
     return { questions };
   }
-  return generateQuestionsFromBookFlow(input);
+  const { runGenerateQuestionsFromBookFlow } = await import('./generate-questions-from-book.impl');
+  return runGenerateQuestionsFromBookFlow(input);
 }
-
-const generateQuestionsFromBookFlow = ai.defineFlow(
-  {
-    name: 'generateQuestionsFromBookFlow',
-    inputSchema: GenerateQuestionsFromBookInputSchema,
-    outputSchema: GenerateQuestionsFromBookOutputSchema,
-  },
-  async (input) => {
-    // Prefer text extraction — works with every model on every provider.
-    // Fall back to sending the PDF as a media part only when the PDF has no
-    // extractable text (e.g. scanned/OCR pages) so vision-capable models can
-    // still attempt it.
-    let pdfText = '';
-    let useMedia = false;
-    try {
-      pdfText = (await extractBookText(input.bookPdfDataUrl)).trim();
-      if (pdfText.length < 50) useMedia = true;
-    } catch {
-      useMedia = true;
-    }
-
-    const rules = `You are an exam-question author for a school. Using ONLY the content of the attached textbook (subject: ${input.subjectName}${input.topicHint ? `, focused on: ${input.topicHint}` : ''}), generate exactly ${input.mcqCount} multiple-choice questions and ${input.shortAnswerCount} short-answer questions at ${input.difficulty} difficulty.
-
-Rules:
-- Every question must be answerable strictly from the book's content — do not invent facts not in the text.
-- MCQ options must have exactly 4 choices, only one correct.
-- correctAnswer for an MCQ must be copied verbatim from its options.
-- Keep questionText concise and unambiguous.
-- Vary which part of the book each question draws from — do not cluster all questions on one page/topic unless topicHint narrows it.`;
-
-    const prompt = useMedia
-      ? [{ media: { url: input.bookPdfDataUrl } }, { text: rules }]
-      : [
-          {
-            text: `${rules}\n\nThe textbook content is provided below as plain text.\n\n=== BOOK CONTENT START ===\n${pdfText.length > 120000 ? pdfText.slice(0, 120000) + '\n[...truncated]' : pdfText}\n=== BOOK CONTENT END ===`,
-          },
-        ];
-
-    // Gemini's shared capacity returns a transient 503/UNAVAILABLE under
-    // load fairly often — that's specifically meant to be retried, so back
-    // off and retry a few times before surfacing a failure to the user.
-    const MAX_ATTEMPTS = 3;
-    let lastErr: unknown;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      try {
-        const { output } = await ai.generate({ prompt, output: { schema: GenerateQuestionsFromBookOutputSchema } });
-        return output!;
-      } catch (err: any) {
-        lastErr = err;
-        const isRetryable = err?.status === 'UNAVAILABLE' || err?.code === 503;
-        if (!isRetryable || attempt === MAX_ATTEMPTS) throw err;
-        await new Promise(r => setTimeout(r, attempt * 1500));
-      }
-    }
-    throw lastErr;
-  }
-);
