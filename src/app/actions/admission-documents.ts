@@ -8,7 +8,14 @@
 import { query, checkDbConnection } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
 import { nanoid } from "nanoid";
-import { requireRole } from "@/lib/auth-scope";
+import { requireRole, withinBranch } from "@/lib/auth-scope";
+import type { SessionPayload } from "@/lib/auth";
+
+async function applicationWithinCallerBranch(session: SessionPayload, applicationId: string): Promise<boolean> {
+  const app = await query('SELECT branch_id FROM admission_applications WHERE id=$1', [applicationId]);
+  if (app.rows.length === 0) return false;
+  return withinBranch(session, app.rows[0].branch_id);
+}
 
 export interface AdmissionDocumentRecord {
   id: string; applicationId: string; documentType: string;
@@ -25,6 +32,7 @@ function mapRow(r: any): AdmissionDocumentRecord {
 export async function fetchAdmissionDocumentsDB(applicationId: string): Promise<AdmissionDocumentRecord[]> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return [];
+  if (!(await applicationWithinCallerBranch(auth.session, applicationId))) return [];
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
@@ -38,6 +46,7 @@ export async function uploadAdmissionDocumentDB(
 ): Promise<{ success: boolean; message?: string }> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { success: false, message: auth.error };
+  if (!(await applicationWithinCallerBranch(auth.session, applicationId))) return { success: false, message: 'Application not found.' };
   try {
     const existing = await query(`SELECT id FROM admission_documents WHERE application_id=$1 AND document_type=$2`, [applicationId, documentType]);
     if (existing.rows.length > 0) {
@@ -62,6 +71,9 @@ export async function uploadAdmissionDocumentDB(
 export async function deleteAdmissionDocumentDB(id: string): Promise<{ success: boolean; message?: string }> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { success: false, message: auth.error };
+  const owner = await query('SELECT application_id FROM admission_documents WHERE id=$1', [id]);
+  if (owner.rows.length === 0) return { success: true };
+  if (!(await applicationWithinCallerBranch(auth.session, owner.rows[0].application_id))) return { success: false, message: 'Not found.' };
   try {
     await query(`DELETE FROM admission_documents WHERE id=$1`, [id]);
     await logAudit({

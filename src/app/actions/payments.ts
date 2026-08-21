@@ -4,18 +4,18 @@ import { query, checkDbConnection } from "@/lib/db";
 import { getSession } from "./auth";
 import { writeFeePaymentLedgerEntryDB } from "./db";
 import {
-  isJazzCashConfigured, isEasyPaisaConfigured,
-  buildJazzCashRequest, buildEasyPaisaRequest,
+  isJazzCashConfigured, isEasyPaisaConfigured, isOneLinkConfigured,
+  buildJazzCashRequest, buildEasyPaisaRequest, buildOneLinkRequest,
 } from "@/lib/payment-gateways";
 import { logServerError } from "@/lib/error-log";
 import { isWhatsAppConfigured } from "@/lib/whatsapp/config";
 import { isEmailConfigured } from "@/lib/email";
 import { notificationService } from "@/lib/notification-service";
 
-export type Gateway = "jazzcash" | "easypaisa";
+export type Gateway = "jazzcash" | "easypaisa" | "onelink";
 
-export async function fetchGatewayAvailabilityAction(): Promise<{ jazzcash: boolean; easypaisa: boolean }> {
-  return { jazzcash: isJazzCashConfigured(), easypaisa: isEasyPaisaConfigured() };
+export async function fetchGatewayAvailabilityAction(): Promise<{ jazzcash: boolean; easypaisa: boolean; onelink: boolean }> {
+  return { jazzcash: isJazzCashConfigured(), easypaisa: isEasyPaisaConfigured(), onelink: isOneLinkConfigured() };
 }
 
 interface InitiateResult {
@@ -39,6 +39,9 @@ export async function initiateFeePaymentAction(feeRecordId: string, gateway: Gat
   }
   if (gateway === "easypaisa" && !isEasyPaisaConfigured()) {
     return { error: "Online payment via EasyPaisa isn't configured for this school yet. Please pay at the school office, or ask an admin to add EasyPaisa credentials in Settings." };
+  }
+  if (gateway === "onelink" && !isOneLinkConfigured()) {
+    return { error: "Online payment via OneLink isn't configured for this school yet. Please pay at the school office, or ask an admin to add OneLink credentials in Settings." };
   }
 
   try {
@@ -92,12 +95,21 @@ export async function initiateFeePaymentAction(feeRecordId: string, gateway: Gat
         returnUrl: `${origin}/api/payments/jazzcash/callback`,
       });
       return { actionUrl, fields };
-    } else {
+    } else if (gateway === "easypaisa") {
       const { actionUrl, fields } = buildEasyPaisaRequest({
         orderRefNum: txnRef,
         amountPKR: netDue,
         postBackUrl: `${origin}/api/payments/easypaisa/callback`,
         email: fee.email || undefined,
+      });
+      return { actionUrl, fields };
+    } else {
+      const { actionUrl, fields } = buildOneLinkRequest({
+        txnRefNo: txnRef,
+        amountPKR: netDue,
+        billReference: fee.voucher_id || feeRecordId,
+        description: `School fee voucher ${fee.voucher_id || feeRecordId}`,
+        returnUrl: `${origin}/api/payments/onelink/callback`,
       });
       return { actionUrl, fields };
     }
@@ -151,7 +163,8 @@ export async function completeOnlinePaymentAction(
     );
     const fee = feeInfo.rows[0];
     if (fee) {
-      const msg = `Payment of Rs. ${parseFloat(row.amount).toLocaleString()} for voucher ${fee.voucher_id} was received via ${gateway === "jazzcash" ? "JazzCash" : "EasyPaisa"}.`;
+      const gatewayName = gateway === "jazzcash" ? "JazzCash" : gateway === "easypaisa" ? "EasyPaisa" : "OneLink";
+      const msg = `Payment of Rs. ${parseFloat(row.amount).toLocaleString()} for voucher ${fee.voucher_id} was received via ${gatewayName}.`;
       const notifId = (r: string) => `notif_${Date.now()}_${r}`;
       if (fee.email) {
         await query(

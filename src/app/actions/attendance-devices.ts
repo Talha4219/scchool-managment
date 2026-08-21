@@ -3,7 +3,7 @@
 import { randomBytes, createHash } from "crypto";
 import { query, checkDbConnection } from "@/lib/db";
 import { checkInByCardUid, checkInByStaffCardUid, checkInByRollNumber, resolveStudentByCardUid, type CheckInResult } from "@/lib/attendance-checkin";
-import { requireRole, scopeBranch } from "@/lib/auth-scope";
+import { requireRole, scopeBranch, withinBranch } from "@/lib/auth-scope";
 
 // ── Device API keys (Settings → Attendance Devices, ADMIN only) ────────────
 
@@ -15,7 +15,11 @@ export async function fetchDeviceKeysAction(): Promise<DeviceKeyRecord[]> {
   const auth = await requireRole("ADMIN");
   if ("error" in auth) return [];
   try {
-    const res = await query(`SELECT id, device_name, is_active, created_at, last_used_at FROM attendance_device_keys ORDER BY created_at DESC`);
+    const branchId = scopeBranch(auth.session);
+    const params: string[] = [];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = ` WHERE branch_id=$${params.length}`; }
+    const res = await query(`SELECT id, device_name, is_active, created_at, last_used_at FROM attendance_device_keys${branchFilter} ORDER BY created_at DESC`, params);
     return res.rows.map(r => ({
       id: r.id, deviceName: r.device_name, isActive: r.is_active,
       createdAt: r.created_at, lastUsedAt: r.last_used_at,
@@ -33,8 +37,8 @@ export async function generateDeviceKeyAction(deviceName: string): Promise<{ err
     const apiKey = randomBytes(24).toString("hex");
     const id = `dk_${Date.now()}`;
     await query(
-      `INSERT INTO attendance_device_keys (id, device_name, api_key_hash) VALUES ($1,$2,$3)`,
-      [id, deviceName.trim(), createHash("sha256").update(apiKey).digest("hex")]
+      `INSERT INTO attendance_device_keys (id, device_name, api_key_hash, branch_id) VALUES ($1,$2,$3,$4)`,
+      [id, deviceName.trim(), createHash("sha256").update(apiKey).digest("hex"), scopeBranch(auth.session)]
     );
     return { apiKey };
   } catch { return { error: "Failed to generate device key." }; }
@@ -43,6 +47,9 @@ export async function generateDeviceKeyAction(deviceName: string): Promise<{ err
 export async function revokeDeviceKeyAction(id: string): Promise<{ error?: string }> {
   const auth = await requireRole("ADMIN");
   if ("error" in auth) return { error: auth.error };
+  const owner = await query('SELECT branch_id FROM attendance_device_keys WHERE id=$1', [id]);
+  if (owner.rows.length === 0) return {};
+  if (!withinBranch(auth.session, owner.rows[0].branch_id)) return { error: 'Not found.' };
   try {
     await query(`UPDATE attendance_device_keys SET is_active=false WHERE id=$1`, [id]);
     return {};
@@ -59,9 +66,14 @@ export async function fetchStudentCardsAction(): Promise<StudentCardRecord[]> {
   const auth = await requireRole("ADMIN", "TEACHER");
   if ("error" in auth) return [];
   try {
+    const branchId = scopeBranch(auth.session);
+    const params: string[] = [];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = ` WHERE s.branch_id=$${params.length}`; }
     const res = await query(
       `SELECT sic.id, sic.student_id, s.name as student_name, sic.card_uid, sic.label, sic.issued_at
-       FROM student_id_cards sic JOIN students s ON s.id = sic.student_id ORDER BY sic.issued_at DESC`
+       FROM student_id_cards sic JOIN students s ON s.id = sic.student_id${branchFilter} ORDER BY sic.issued_at DESC`,
+      params
     );
     return res.rows.map(r => ({
       id: r.id, studentId: r.student_id, studentName: r.student_name,
@@ -73,6 +85,8 @@ export async function fetchStudentCardsAction(): Promise<StudentCardRecord[]> {
 export async function assignStudentCardAction(studentId: string, cardUid: string, label?: string): Promise<{ error?: string }> {
   const auth = await requireRole("ADMIN", "TEACHER");
   if ("error" in auth) return { error: auth.error };
+  const stu = await query('SELECT branch_id FROM students WHERE id=$1', [studentId]);
+  if (stu.rows.length === 0 || !withinBranch(auth.session, stu.rows[0].branch_id)) return { error: 'Student not found.' };
   const trimmed = cardUid.trim();
   if (!trimmed) return { error: "Card ID is required." };
   try {
@@ -96,6 +110,12 @@ export async function assignStudentCardAction(studentId: string, cardUid: string
 export async function removeStudentCardAction(id: string): Promise<{ error?: string }> {
   const auth = await requireRole("ADMIN", "TEACHER");
   if ("error" in auth) return { error: auth.error };
+  const owner = await query(
+    `SELECT s.branch_id FROM student_id_cards sic JOIN students s ON s.id = sic.student_id WHERE sic.id=$1`,
+    [id]
+  );
+  if (owner.rows.length === 0) return {};
+  if (!withinBranch(auth.session, owner.rows[0].branch_id)) return { error: 'Not found.' };
   try {
     await query(`DELETE FROM student_id_cards WHERE id=$1`, [id]);
     return {};

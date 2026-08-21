@@ -240,7 +240,7 @@ export default function TeacherProfilePage() {
   const assignmentsByClass = useMemo(() => {
     const map = new Map<string, { className: string; items: TeacherClassSubject[] }>();
     for (const a of assignments) {
-      if (!map.has(a.classId)) map.set(a.classId, { className: a.className, items: [] });
+      if (!map.has(a.classId)) map.set(a.classId, { className: a.className || a.classId, items: [] });
       map.get(a.classId)!.items.push(a);
     }
     return Array.from(map.values()).sort((a, b) => a.className.localeCompare(b.className));

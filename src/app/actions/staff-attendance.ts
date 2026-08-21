@@ -8,7 +8,16 @@
 
 import { query, checkDbConnection } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
-import { requireRole, requireSession, scopeBranch } from "@/lib/auth-scope";
+import { requireRole, requireSession, scopeBranch, withinBranch } from "@/lib/auth-scope";
+import type { SessionPayload } from "@/lib/auth";
+
+async function usersWithinCallerBranch(session: SessionPayload, userIds: number[]): Promise<boolean> {
+  const branchId = scopeBranch(session);
+  if (!branchId) return true;
+  const uniqueIds = [...new Set(userIds)];
+  const res = await query('SELECT COUNT(*)::int as c FROM users WHERE id = ANY($1::int[]) AND branch_id=$2', [uniqueIds, branchId]);
+  return res.rows[0]?.c === uniqueIds.length;
+}
 
 export interface StaffAttendanceRecord {
   id: string; userId: number; userName?: string; date: string;
@@ -51,6 +60,7 @@ export async function fetchStaffAttendanceDB(date?: string, userId?: number): Pr
 export async function markStaffAttendanceDB(records: { userId: number; date: string; status: string; remarks?: string }[]): Promise<{ error?: string }> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { error: auth.error };
+  if (!(await usersWithinCallerBranch(auth.session, records.map(r => r.userId)))) return { error: 'One or more staff members not found.' };
   try {
     const { nanoid } = await import("nanoid");
     const { generateSubstitutionsForTeacherDateDB, clearAutoSubstitutionsForTeacherDateDB } = await import("./substitutions");
@@ -137,6 +147,7 @@ export async function markStaffAttendanceDB(records: { userId: number; date: str
 export async function checkOutStaffDB(userId: number, date: string, checkoutTime?: string): Promise<{ error?: string; halfDay?: boolean }> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { error: auth.error };
+  if (!(await usersWithinCallerBranch(auth.session, [userId]))) return { error: 'Staff member not found.' };
   try {
     const existing = await query("SELECT id, status FROM staff_attendance WHERE user_id=$1 AND date=$2", [userId, date]);
     const checkoutHM = checkoutTime || new Date().toTimeString().slice(0, 5);
@@ -177,7 +188,9 @@ export async function checkOutStaffDB(userId: number, date: string, checkoutTime
 export async function fetchStaffAttendanceSummaryDB(userId: number, startDate: string, endDate: string): Promise<Record<string, number> & { total: number; percentage: number }> {
   const auth = await requireSession();
   if ('error' in auth) return { total: 0, percentage: 0 };
-  const scopedUserId = (auth.session.role === 'ADMIN' || auth.session.role === 'PRINCIPAL' || auth.session.role === 'OWNER') ? userId : auth.session.userId;
+  const isAdminView = auth.session.role === 'ADMIN' || auth.session.role === 'PRINCIPAL' || auth.session.role === 'OWNER';
+  if (isAdminView && !(await usersWithinCallerBranch(auth.session, [userId]))) return { total: 0, percentage: 0 };
+  const scopedUserId = isAdminView ? userId : auth.session.userId;
   try {
     const res = await query(
       "SELECT status, COUNT(*)::int as count FROM staff_attendance WHERE user_id=$1 AND date >= $2 AND date <= $3 GROUP BY status",
@@ -194,7 +207,9 @@ export async function fetchStaffAttendanceSummaryDB(userId: number, startDate: s
 export async function fetchStaffAttendanceHistoryDB(userId: number, startDate: string, endDate: string): Promise<StaffAttendanceRecord[]> {
   const auth = await requireSession();
   if ('error' in auth) return [];
-  const scopedUserId = (auth.session.role === 'ADMIN' || auth.session.role === 'PRINCIPAL' || auth.session.role === 'OWNER') ? userId : auth.session.userId;
+  const isAdminView = auth.session.role === 'ADMIN' || auth.session.role === 'PRINCIPAL' || auth.session.role === 'OWNER';
+  if (isAdminView && !(await usersWithinCallerBranch(auth.session, [userId]))) return [];
+  const scopedUserId = isAdminView ? userId : auth.session.userId;
   try {
     const res = await query(
       `SELECT sa.*, u.name as user_name FROM staff_attendance sa JOIN users u ON u.id = sa.user_id
@@ -224,6 +239,7 @@ export async function fetchStaffCardsAction(): Promise<StaffCardRecord[]> {
 export async function enrollStaffCardDB(userId: number, cardUid: string, label?: string): Promise<{ error?: string }> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { error: auth.error };
+  if (!(await usersWithinCallerBranch(auth.session, [userId]))) return { error: 'Staff member not found.' };
   const trimmed = cardUid.trim();
   if (!trimmed) return { error: 'Card ID is required.' };
   try {
@@ -244,6 +260,9 @@ export async function enrollStaffCardDB(userId: number, cardUid: string, label?:
 export async function removeStaffCardDB(id: string): Promise<{ error?: string }> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { error: auth.error };
+  const owner = await query('SELECT user_id FROM staff_id_cards WHERE id=$1', [id]);
+  if (owner.rows.length === 0) return {};
+  if (!(await usersWithinCallerBranch(auth.session, [owner.rows[0].user_id]))) return { error: 'Not found.' };
   try { await query("DELETE FROM staff_id_cards WHERE id=$1", [id]); return {}; }
   catch { return { error: 'Failed to remove card.' }; }
 }

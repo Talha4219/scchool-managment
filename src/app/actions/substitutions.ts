@@ -9,7 +9,7 @@
 
 import { query } from "@/lib/db";
 import { notify } from "./features";
-import { requireRole, requireSession, scopeBranch } from "@/lib/auth-scope";
+import { requireRole, requireSession, scopeBranch, withinBranch } from "@/lib/auth-scope";
 import { notificationService } from "@/lib/notification-service";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -250,11 +250,15 @@ export async function fetchEligibleSubstitutesDB(substitutionId: string): Promis
   if ('error' in auth) return [];
   try {
     const subRes = await query(
-      `SELECT ts.date, te.* FROM timetable_substitutions ts JOIN timetable_entries te ON te.id = ts.timetable_entry_id WHERE ts.id=$1`,
+      `SELECT ts.date, te.*, ot.branch_id AS teacher_branch_id
+       FROM timetable_substitutions ts JOIN timetable_entries te ON te.id = ts.timetable_entry_id
+       JOIN users ot ON ot.id = te.teacher_id
+       WHERE ts.id=$1`,
       [substitutionId]
     );
     if (subRes.rows.length === 0) return [];
     const entry = subRes.rows[0];
+    if (!withinBranch(auth.session, entry.teacher_branch_id)) return [];
     const dayOfWeek = entry.day_of_week;
     const date = entry.date;
 
@@ -295,14 +299,17 @@ export async function approveSubstitutionDB(id: string): Promise<{ error?: strin
   if ('error' in auth) return { error: auth.error };
   try {
     const res = await query(
-      `SELECT ts.status, ts.date, ts.substitute_teacher_id, te.class_name, te.subject_name, te.start_time, te.end_time, u.email
+      `SELECT ts.status, ts.date, ts.substitute_teacher_id, te.class_name, te.subject_name, te.start_time, te.end_time, u.email,
+              ot.branch_id AS original_teacher_branch_id
        FROM timetable_substitutions ts JOIN timetable_entries te ON te.id = ts.timetable_entry_id
+       JOIN users ot ON ot.id = ts.original_teacher_id
        LEFT JOIN users u ON u.id = ts.substitute_teacher_id
        WHERE ts.id=$1`,
       [id]
     );
     if (res.rows.length === 0) return { error: 'Substitution not found.' };
     const row = res.rows[0];
+    if (!withinBranch(auth.session, row.original_teacher_branch_id)) return { error: 'Substitution not found.' };
     if (row.status !== 'auto') return { error: 'Only pending (auto-assigned) substitutions can be approved.' };
     await query(
       `UPDATE timetable_substitutions SET status='confirmed', approved_by=$1, approved_at=NOW() WHERE id=$2`,
@@ -341,6 +348,17 @@ export async function overrideSubstitutionDB(id: string, newTeacherId: number): 
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { error: auth.error };
   try {
+    const ownership = await query(
+      `SELECT ot.branch_id AS original_teacher_branch_id, nt.branch_id AS new_teacher_branch_id
+       FROM timetable_substitutions ts
+       JOIN users ot ON ot.id = ts.original_teacher_id
+       LEFT JOIN users nt ON nt.id = $2
+       WHERE ts.id=$1`,
+      [id, newTeacherId]
+    );
+    if (ownership.rows.length === 0) return { error: 'Substitution not found.' };
+    if (!withinBranch(auth.session, ownership.rows[0].original_teacher_branch_id)) return { error: 'Substitution not found.' };
+    if (!ownership.rows[0].new_teacher_branch_id || !withinBranch(auth.session, ownership.rows[0].new_teacher_branch_id)) return { error: 'Teacher not found.' };
     const before = await query(`SELECT substitute_teacher_id FROM timetable_substitutions WHERE id=$1`, [id]);
     await query(
       `UPDATE timetable_substitutions SET substitute_teacher_id=$1, status='manual_override', created_by=$2 WHERE id=$3`,

@@ -1154,7 +1154,16 @@ export interface TeacherQualification {
   yearCompleted: number | null; specialization: string | null; certificateFilePath: string | null;
 }
 
+async function teacherWithinCallerBranch(session: SessionPayload, teacherId: number): Promise<boolean> {
+  const t = await query('SELECT branch_id FROM users WHERE id=$1', [teacherId]);
+  if (t.rows.length === 0) return false;
+  return withinBranch(session, t.rows[0].branch_id);
+}
+
 export async function fetchTeacherQualificationsDB(teacherId: number): Promise<TeacherQualification[]> {
+  const session = await getSession();
+  if (!session) return [];
+  if (session.role !== 'TEACHER' && !(await teacherWithinCallerBranch(session, teacherId))) return [];
   try {
     const res = await query('SELECT id, teacher_id, degree_title, institution, year_completed, specialization, certificate_file_path FROM teacher_qualifications WHERE teacher_id=$1 ORDER BY year_completed DESC NULLS LAST', [teacherId]);
     return res.rows.map(r => ({
@@ -1165,6 +1174,9 @@ export async function fetchTeacherQualificationsDB(teacherId: number): Promise<T
 }
 
 export async function addTeacherQualificationDB(data: Omit<TeacherQualification, 'id'>): Promise<{ error?: string; id?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return { error: auth.error };
+  if (!(await teacherWithinCallerBranch(auth.session, data.teacherId))) return { error: 'Teacher not found.' };
   try {
     const id = `tq_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     await query(
@@ -1177,6 +1189,11 @@ export async function addTeacherQualificationDB(data: Omit<TeacherQualification,
 }
 
 export async function deleteTeacherQualificationDB(id: string): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return { error: auth.error };
+  const owner = await query('SELECT teacher_id FROM teacher_qualifications WHERE id=$1', [id]);
+  if (owner.rows.length === 0) return {};
+  if (!(await teacherWithinCallerBranch(auth.session, owner.rows[0].teacher_id))) return { error: 'Not found.' };
   try { await query('DELETE FROM teacher_qualifications WHERE id=$1', [id]); return {}; }
   catch { return { error: 'Failed to delete qualification.' }; }
 }
@@ -1188,13 +1205,20 @@ export interface TeacherSubjectCompetency {
 }
 
 export async function fetchTeacherCompetenciesDB(teacherId?: number): Promise<TeacherSubjectCompetency[]> {
+  const session = await getSession();
+  if (!session) return [];
+  if (teacherId !== undefined && session.role !== 'TEACHER' && !(await teacherWithinCallerBranch(session, teacherId))) return [];
   try {
     let sql = `SELECT tsc.*, sub.name as subject_name, c.name as class_name
                FROM teacher_subject_competencies tsc
                JOIN subjects sub ON tsc.subject_id = sub.id
                JOIN classes c ON tsc.class_id = c.id`;
     const params: any[] = [];
-    if (teacherId !== undefined) { sql += ' WHERE tsc.teacher_id=$1'; params.push(teacherId); }
+    const conditions: string[] = [];
+    if (teacherId !== undefined) { conditions.push(`tsc.teacher_id=$${params.length + 1}`); params.push(teacherId); }
+    const branchId = scopeBranch(session);
+    if (branchId) { conditions.push(`c.branch_id=$${params.length + 1}`); params.push(branchId); }
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
     const res = await query(sql, params);
     return res.rows.map(r => ({
       id: r.id, teacherId: r.teacher_id, subjectId: r.subject_id, subjectName: r.subject_name,
@@ -1204,6 +1228,11 @@ export async function fetchTeacherCompetenciesDB(teacherId?: number): Promise<Te
 }
 
 export async function addTeacherCompetencyDB(teacherId: number, subjectId: string, classId: string): Promise<{ error?: string; id?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return { error: auth.error };
+  if (!(await teacherWithinCallerBranch(auth.session, teacherId))) return { error: 'Teacher not found.' };
+  const cls = await query('SELECT branch_id FROM classes WHERE id=$1', [classId]);
+  if (cls.rows.length === 0 || !withinBranch(auth.session, cls.rows[0].branch_id)) return { error: 'Class not found.' };
   try {
     const id = `tsc_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     await query(
@@ -1216,6 +1245,14 @@ export async function addTeacherCompetencyDB(teacherId: number, subjectId: strin
 }
 
 export async function deleteTeacherCompetencyDB(id: string): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return { error: auth.error };
+  const owner = await query(
+    `SELECT c.branch_id FROM teacher_subject_competencies tsc JOIN classes c ON c.id = tsc.class_id WHERE tsc.id=$1`,
+    [id]
+  );
+  if (owner.rows.length === 0) return {};
+  if (!withinBranch(auth.session, owner.rows[0].branch_id)) return { error: 'Not found.' };
   try { await query('DELETE FROM teacher_subject_competencies WHERE id=$1', [id]); return {}; }
   catch { return { error: 'Failed to delete competency.' }; }
 }
@@ -1269,6 +1306,10 @@ export async function deleteParentDB(id: string): Promise<{ error?: string }> {
 // ── Exam Publish ─────────────────────────────────────────────────────────────
 
 export async function publishExamDB(id: string, published: boolean): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return { error: auth.error };
+  const target = await query('SELECT branch_id FROM exams WHERE id=$1', [id]);
+  if (target.rows.length === 0 || !withinBranch(auth.session, target.rows[0].branch_id)) return { error: 'Exam not found.' };
   try {
     await query('UPDATE exams SET published=$1 WHERE id=$2', [published, id]);
     return {};
@@ -1536,13 +1577,17 @@ export async function submitClassCompilationDB(
 // ── Teacher Subject Assignments ───────────────────────────────────────────────
 
 export async function fetchTeacherSubjectAssignmentsDB(teacherId?: number): Promise<TeacherSubjectAssignment[]> {
+  const session = await getSession();
+  if (!session) return [];
+  if (teacherId !== undefined && session.role !== 'TEACHER' && !(await teacherWithinCallerBranch(session, teacherId))) return [];
   try {
-    let sql = 'SELECT id, teacher_id, teacher_name, subject_name, class_name FROM teacher_subject_assignments';
+    let sql = 'SELECT tsa.id, tsa.teacher_id, tsa.teacher_name, tsa.subject_name, tsa.class_name FROM teacher_subject_assignments tsa JOIN users u ON u.id = tsa.teacher_id';
     const params: any[] = [];
-    if (teacherId !== undefined) {
-      sql += ' WHERE teacher_id=$1';
-      params.push(teacherId);
-    }
+    const conditions: string[] = [];
+    if (teacherId !== undefined) { conditions.push(`tsa.teacher_id=$${params.length + 1}`); params.push(teacherId); }
+    const branchId = scopeBranch(session);
+    if (branchId) { conditions.push(`u.branch_id=$${params.length + 1}`); params.push(branchId); }
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
     sql += ' ORDER BY class_name, subject_name';
     const res = await query(sql, params);
     return res.rows.map(r => ({
@@ -1558,6 +1603,9 @@ export async function fetchTeacherSubjectAssignmentsDB(teacherId?: number): Prom
 export async function createTeacherSubjectAssignmentDB(
   data: Omit<TeacherSubjectAssignment, 'id'>
 ): Promise<{ error?: string; id?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return { error: auth.error };
+  if (!(await teacherWithinCallerBranch(auth.session, data.teacherId))) return { error: 'Teacher not found.' };
   try {
     const existing = await query(
       'SELECT id FROM teacher_subject_assignments WHERE teacher_id=$1 AND subject_name=$2 AND class_name=$3',
@@ -1575,6 +1623,11 @@ export async function createTeacherSubjectAssignmentDB(
 }
 
 export async function deleteTeacherSubjectAssignmentDB(id: string): Promise<{ error?: string }> {
+  const auth = await requireAdmin();
+  if ('error' in auth) return { error: auth.error };
+  const owner = await query('SELECT teacher_id FROM teacher_subject_assignments WHERE id=$1', [id]);
+  if (owner.rows.length === 0) return {};
+  if (!(await teacherWithinCallerBranch(auth.session, owner.rows[0].teacher_id))) return { error: 'Not found.' };
   try {
     await query('DELETE FROM teacher_subject_assignments WHERE id=$1', [id]);
     return {};
@@ -3110,7 +3163,7 @@ export async function getParentPortalData(): Promise<ParentPortalData | null> {
     if (!session || session.role !== 'PARENT') return null;
 
     const childRes = await query(
-      "SELECT id, name, admission_number, class, section, status, email, student_portal_password FROM students WHERE parent_email=$1",
+      "SELECT id, name, admission_number, class, section, status, email, student_portal_password, branch_id FROM students WHERE parent_email=$1",
       [session.email]
     );
     const children: ParentPortalChild[] = childRes.rows.map(r => ({
@@ -3134,9 +3187,13 @@ export async function getParentPortalData(): Promise<ParentPortalData | null> {
       ids
     );
 
-    const examRes = await query(
-      "SELECT id, exam_name, subject, class_name, date, student_results FROM exams WHERE published=true ORDER BY date DESC LIMIT 20"
-    );
+    const childBranchIds = [...new Set(childRes.rows.map((r: any) => r.branch_id).filter(Boolean))];
+    const examRes = childBranchIds.length > 0
+      ? await query(
+          `SELECT id, exam_name, subject, class_name, date, student_results FROM exams WHERE published=true AND branch_id = ANY($1::varchar[]) ORDER BY date DESC LIMIT 20`,
+          [childBranchIds]
+        )
+      : { rows: [] as any[] };
 
     const annRes = await query(
       "SELECT id, title, content, date, priority FROM announcements WHERE target_role IS NULL OR target_role='STUDENT' OR target_role='PARENT' ORDER BY date DESC LIMIT 15"

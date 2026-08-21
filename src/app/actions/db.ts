@@ -208,8 +208,12 @@ export async function fetchDBState() {
       query('SELECT name, registration_number, address, contact_email, academic_year, phone, website, principal, logo_url, founding_year, currency, timezone FROM school_info LIMIT 1'),
       branchId ? query('SELECT id, name, admission_number, class, section, parent_name, status, parent_email, email, profile_photo FROM students WHERE branch_id=$1', [branchId]) : query('SELECT id, name, admission_number, class, section, parent_name, status, parent_email, email, profile_photo FROM students'),
       branchId ? query('SELECT id, name, grade_level, academic_year_id, branch_id, is_graduating FROM classes WHERE branch_id=$1', [branchId]) : query('SELECT id, name, grade_level, academic_year_id, branch_id, is_graduating FROM classes'),
-      query('SELECT id, name, class_id, capacity, teacher_name, section_group FROM sections'),
-      query('SELECT id, name, code, grade_level, teacher_name, is_elective FROM subjects'),
+      branchId
+        ? query('SELECT sec.id, sec.name, sec.class_id, sec.capacity, sec.teacher_name, sec.section_group FROM sections sec JOIN classes c ON c.id = sec.class_id WHERE c.branch_id=$1', [branchId])
+        : query('SELECT id, name, class_id, capacity, teacher_name, section_group FROM sections'),
+      branchId
+        ? query('SELECT id, name, code, grade_level, teacher_name, is_elective FROM subjects WHERE branch_id=$1', [branchId])
+        : query('SELECT id, name, code, grade_level, teacher_name, is_elective FROM subjects'),
       query('SELECT id, name, description, default_amount, frequency, is_active FROM fee_categories'),
       query('SELECT id, name, assigned_class, line_items, total_amount, is_active FROM fee_structures').catch(() => ({ rows: [] })),
       query('SELECT id, name, start_date, end_date, is_active FROM academic_terms'),
@@ -219,7 +223,9 @@ export async function fetchDBState() {
       branchId
         ? query('SELECT id, student_id, student_name, class, section, date, status FROM attendance WHERE student_id IN (SELECT id FROM students WHERE branch_id=$1)', [branchId])
         : query('SELECT id, student_id, student_name, class, section, date, status FROM attendance'),
-      query('SELECT id, exam_name, subject, class_name, date, common_strengths, common_weaknesses, student_results FROM exams'),
+      branchId
+        ? query('SELECT id, exam_name, subject, class_name, date, common_strengths, common_weaknesses, student_results FROM exams WHERE branch_id=$1', [branchId])
+        : query('SELECT id, exam_name, subject, class_name, date, common_strengths, common_weaknesses, student_results FROM exams'),
       query('SELECT id, title, message, date, recipient_role, recipient_email, read FROM notifications'),
       branchId
         ? query('SELECT id, application_id, submitted_at, status, first_name, last_name, date_of_birth, gender, nationality, blood_group, applying_for_class, previous_school, previous_grade, parent_name, parent_relation, parent_phone, parent_email, parent_cnic, address, city, admin_notes, profile_photo FROM admission_applications WHERE branch_id=$1 ORDER BY submitted_at DESC', [branchId]).catch(() => ({ rows: [] }))
@@ -358,7 +364,7 @@ export async function addClassDB(c: ClassSection) {
   if ('error' in auth) return null;
   const isOnline = await checkDbConnection();
   if (!isOnline) return null;
-  await query(`INSERT INTO classes (id, name, capacity, teacher_name) VALUES ($1, $2, $3, $4)`, [c.id, c.name, c.capacity, c.teacherName]);
+  await query(`INSERT INTO classes (id, name, capacity, teacher_name, branch_id) VALUES ($1, $2, $3, $4, $5)`, [c.id, c.name, c.capacity, c.teacherName, scopeBranch(auth.session)]);
   return c;
 }
 
@@ -367,6 +373,8 @@ export async function updateClassDB(c: ClassSection) {
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
+  const target = await query('SELECT branch_id FROM classes WHERE id=$1', [c.id]);
+  if (target.rows.length === 0 || !withinBranch(auth.session, target.rows[0].branch_id)) return;
   await query(`UPDATE classes SET name=$1, capacity=$2, teacher_name=$3 WHERE id=$4`, [c.name, c.capacity, c.teacherName, c.id]);
 }
 
@@ -375,6 +383,8 @@ export async function deleteClassDB(id: string) {
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
+  const target = await query('SELECT branch_id FROM classes WHERE id=$1', [id]);
+  if (target.rows.length === 0 || !withinBranch(auth.session, target.rows[0].branch_id)) return;
   await query(`DELETE FROM classes WHERE id=$1`, [id]);
 }
 
@@ -383,7 +393,7 @@ export async function addSubjectDB(s: Subject) {
   if ('error' in auth) return null;
   const isOnline = await checkDbConnection();
   if (!isOnline) return null;
-  await query(`INSERT INTO subjects (id, name, code, grade_level, teacher_name, is_elective) VALUES ($1, $2, $3, $4, $5, $6)`, [s.id, s.name, s.code, s.gradeLevel, s.teacherName || null, s.isElective]);
+  await query(`INSERT INTO subjects (id, name, code, grade_level, teacher_name, is_elective, branch_id) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [s.id, s.name, s.code, s.gradeLevel, s.teacherName || null, s.isElective, scopeBranch(auth.session)]);
   return s;
 }
 
@@ -392,6 +402,8 @@ export async function updateSubjectDB(s: Subject) {
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
+  const target = await query('SELECT branch_id FROM subjects WHERE id=$1', [s.id]);
+  if (target.rows.length === 0 || !withinBranch(auth.session, target.rows[0].branch_id)) return;
   await query(`UPDATE subjects SET name=$1, code=$2, grade_level=$3, teacher_name=$4, is_elective=$5 WHERE id=$6`, [s.name, s.code, s.gradeLevel, s.teacherName || null, s.isElective, s.id]);
 }
 
@@ -400,6 +412,8 @@ export async function deleteSubjectDB(id: string) {
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
+  const target = await query('SELECT branch_id FROM subjects WHERE id=$1', [id]);
+  if (target.rows.length === 0 || !withinBranch(auth.session, target.rows[0].branch_id)) return;
   await query(`DELETE FROM subjects WHERE id=$1`, [id]);
 }
 
@@ -737,8 +751,8 @@ export async function saveExamResultsDB(exam: ExamRecord) {
   if ('error' in auth) return null;
   const isOnline = await checkDbConnection();
   if (!isOnline) return null;
-  await query(`INSERT INTO exams (id, exam_name, subject, class_name, date, common_strengths, common_weaknesses, student_results) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [exam.id, exam.examName, exam.subject, exam.className, exam.date, exam.commonStrengths, exam.commonWeaknesses, JSON.stringify(exam.studentResults)]);
+  await query(`INSERT INTO exams (id, exam_name, subject, class_name, date, common_strengths, common_weaknesses, student_results, branch_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [exam.id, exam.examName, exam.subject, exam.className, exam.date, exam.commonStrengths, exam.commonWeaknesses, JSON.stringify(exam.studentResults), scopeBranch(auth.session)]);
   return exam.id;
 }
 
@@ -748,8 +762,9 @@ export async function updateExamAIResultsDB(examId: string, strengths: string, w
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
   // Get exam
-  const res = await query(`SELECT student_results FROM exams WHERE id=$1`, [examId]);
+  const res = await query(`SELECT student_results, branch_id FROM exams WHERE id=$1`, [examId]);
   if (res.rows.length === 0) return;
+  if (!withinBranch(auth.session, res.rows[0].branch_id)) return;
   const results = res.rows[0].student_results;
   
   // Update recommendations

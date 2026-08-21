@@ -109,30 +109,63 @@ async function main() {
     console.log("Classes seeded");
   }
 
+  // The Class/Section/AcademicYear models are a separate (newer) academic-core
+  // schema from ClassSection above — Section.classId is a real FK, so Class
+  // rows (and their AcademicYear parent) must exist before Section can.
+  const academicYear = await prisma.academicYear.upsert({
+    where: { id: "ay-2026-27" },
+    update: {},
+    create: { id: "ay-2026-27", name: "2026-2027", startDate: "2026-04-01", endDate: "2027-03-31", isActive: true },
+  });
+
+  const gradeLevels = [
+    { id: "cls-core-pg",   name: "Playgroup" },
+    { id: "cls-core-nur",  name: "Nursery" },
+    { id: "cls-core-prep", name: "Prep" },
+    { id: "cls-core-1",    name: "Grade 1" },
+    { id: "cls-core-2",    name: "Grade 2" },
+    { id: "cls-core-3",    name: "Grade 3" },
+    { id: "cls-core-4",    name: "Grade 4" },
+    { id: "cls-core-5",    name: "Grade 5" },
+    { id: "cls-core-6",    name: "Grade 6" },
+    { id: "cls-core-7",    name: "Grade 7" },
+    { id: "cls-core-8",    name: "Grade 8" },
+    { id: "cls-core-9",    name: "Grade 9" },
+    { id: "cls-core-10",   name: "Grade 10 (Matric)" },
+  ];
+  const classCoreCount = await prisma.class.count();
+  if (classCoreCount === 0) {
+    await prisma.class.createMany({
+      data: gradeLevels.map(g => ({ id: g.id, name: g.name, gradeLevel: g.name, academicYearId: academicYear.id })),
+    });
+    console.log("Classes (academic-core) seeded");
+  }
+  const classIdByGrade = Object.fromEntries(gradeLevels.map(g => [g.name, g.id]));
+
   const sectionCount = await prisma.section.count();
   if (sectionCount === 0) {
     await prisma.section.createMany({
       data: [
-        { id: "sec-a-pg",   name: "A", gradeLevel: "Playgroup",         capacity: 25, teacherName: "Ms. Fatima Ahmed" },
-        { id: "sec-b-pg",   name: "B", gradeLevel: "Playgroup",         capacity: 25, teacherName: "Ms. Sana Tariq" },
-        { id: "sec-a-nur",  name: "A", gradeLevel: "Nursery",           capacity: 30, teacherName: "Ms. Ayesha Khan" },
-        { id: "sec-a-prep", name: "A", gradeLevel: "Prep",              capacity: 30, teacherName: "Ms. Hira Batool" },
-        { id: "sec-a-1",    name: "A", gradeLevel: "Grade 1",           capacity: 35, teacherName: "Mr. Usman Ali" },
-        { id: "sec-b-1",    name: "B", gradeLevel: "Grade 1",           capacity: 35, teacherName: "Ms. Nadia Javed" },
-        { id: "sec-a-2",    name: "A", gradeLevel: "Grade 2",           capacity: 35, teacherName: "Mr. Bilal Hassan" },
-        { id: "sec-b-2",    name: "B", gradeLevel: "Grade 2",           capacity: 35, teacherName: "Ms. Samina Rashid" },
-        { id: "sec-a-3",    name: "A", gradeLevel: "Grade 3",           capacity: 35, teacherName: "Mr. Imran Sheikh" },
-        { id: "sec-b-3",    name: "B", gradeLevel: "Grade 3",           capacity: 35, teacherName: "Ms. Rubina Aslam" },
-        { id: "sec-a-4",    name: "A", gradeLevel: "Grade 4",           capacity: 35, teacherName: "Mr. Khalid Mahmood" },
-        { id: "sec-a-5",    name: "A", gradeLevel: "Grade 5",           capacity: 35, teacherName: "Ms. Shazia Iqbal" },
-        { id: "sec-a-6",    name: "A", gradeLevel: "Grade 6",           capacity: 40, teacherName: "Mr. Tariq Mehmood" },
-        { id: "sec-b-6",    name: "B", gradeLevel: "Grade 6",           capacity: 40, teacherName: "Ms. Farah Naz" },
-        { id: "sec-a-7",    name: "A", gradeLevel: "Grade 7",           capacity: 40, teacherName: "Mr. Javed Akhtar" },
-        { id: "sec-a-8",    name: "A", gradeLevel: "Grade 8",           capacity: 40, teacherName: "Mr. Sohail Ahmed" },
-        { id: "sec-b-8",    name: "B", gradeLevel: "Grade 8",           capacity: 40, teacherName: "Ms. Zainab Ali" },
-        { id: "sec-a-9",    name: "A", gradeLevel: "Grade 9",           capacity: 45, teacherName: "Mr. Naveed Anjum" },
-        { id: "sec-a-10",   name: "A", gradeLevel: "Grade 10 (Matric)", capacity: 45, teacherName: "Mr. Asif Raza" },
-        { id: "sec-b-10",   name: "B", gradeLevel: "Grade 10 (Matric)", capacity: 45, teacherName: "Ms. Tabassum Jabeen" },
+        { id: "sec-a-pg",   name: "A", classId: classIdByGrade["Playgroup"],         capacity: 25, teacherName: "Ms. Fatima Ahmed" },
+        { id: "sec-b-pg",   name: "B", classId: classIdByGrade["Playgroup"],         capacity: 25, teacherName: "Ms. Sana Tariq" },
+        { id: "sec-a-nur",  name: "A", classId: classIdByGrade["Nursery"],           capacity: 30, teacherName: "Ms. Ayesha Khan" },
+        { id: "sec-a-prep", name: "A", classId: classIdByGrade["Prep"],              capacity: 30, teacherName: "Ms. Hira Batool" },
+        { id: "sec-a-1",    name: "A", classId: classIdByGrade["Grade 1"],           capacity: 35, teacherName: "Mr. Usman Ali" },
+        { id: "sec-b-1",    name: "B", classId: classIdByGrade["Grade 1"],           capacity: 35, teacherName: "Ms. Nadia Javed" },
+        { id: "sec-a-2",    name: "A", classId: classIdByGrade["Grade 2"],           capacity: 35, teacherName: "Mr. Bilal Hassan" },
+        { id: "sec-b-2",    name: "B", classId: classIdByGrade["Grade 2"],           capacity: 35, teacherName: "Ms. Samina Rashid" },
+        { id: "sec-a-3",    name: "A", classId: classIdByGrade["Grade 3"],           capacity: 35, teacherName: "Mr. Imran Sheikh" },
+        { id: "sec-b-3",    name: "B", classId: classIdByGrade["Grade 3"],           capacity: 35, teacherName: "Ms. Rubina Aslam" },
+        { id: "sec-a-4",    name: "A", classId: classIdByGrade["Grade 4"],           capacity: 35, teacherName: "Mr. Khalid Mahmood" },
+        { id: "sec-a-5",    name: "A", classId: classIdByGrade["Grade 5"],           capacity: 35, teacherName: "Ms. Shazia Iqbal" },
+        { id: "sec-a-6",    name: "A", classId: classIdByGrade["Grade 6"],           capacity: 40, teacherName: "Mr. Tariq Mehmood" },
+        { id: "sec-b-6",    name: "B", classId: classIdByGrade["Grade 6"],           capacity: 40, teacherName: "Ms. Farah Naz" },
+        { id: "sec-a-7",    name: "A", classId: classIdByGrade["Grade 7"],           capacity: 40, teacherName: "Mr. Javed Akhtar" },
+        { id: "sec-a-8",    name: "A", classId: classIdByGrade["Grade 8"],           capacity: 40, teacherName: "Mr. Sohail Ahmed" },
+        { id: "sec-b-8",    name: "B", classId: classIdByGrade["Grade 8"],           capacity: 40, teacherName: "Ms. Zainab Ali" },
+        { id: "sec-a-9",    name: "A", classId: classIdByGrade["Grade 9"],           capacity: 45, teacherName: "Mr. Naveed Anjum" },
+        { id: "sec-a-10",   name: "A", classId: classIdByGrade["Grade 10 (Matric)"], capacity: 45, teacherName: "Mr. Asif Raza" },
+        { id: "sec-b-10",   name: "B", classId: classIdByGrade["Grade 10 (Matric)"], capacity: 45, teacherName: "Ms. Tabassum Jabeen" },
       ],
     });
     console.log("Sections seeded");
@@ -293,9 +326,6 @@ async function main() {
             voucherId: `VCH-2026-${String(1000 + fi)}`,
             paymentMethod: status === "Paid" ? "Cash" : undefined,
             paymentDate: status === "Paid" ? `2026-${monthNum}-${String(day).padStart(2, "0")}` : undefined,
-            month,
-            feeType: "Monthly Tuition",
-            lineItems: [{ description: "Monthly Tuition", amount: 7800 }] as any,
           },
         });
       }

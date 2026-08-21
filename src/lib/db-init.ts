@@ -1194,6 +1194,14 @@ Please review and approve in the school management dashboard.')
       ALTER TABLE announcements ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
       -- online_exams.class_name is free text (no class_id FK) — direct column.
       ALTER TABLE online_exams ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      -- Legacy global tables that predate multi-branch: subjects/exams were
+      -- keyed off free-text grade_level/class_name, and device keys had no
+      -- branch concept at all. Added directly (not indirectly via a class_id
+      -- join) so a Principal's Attendance Devices / Subjects / legacy Exams
+      -- views can be scoped the same way as every other table.
+      ALTER TABLE subjects ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
+      ALTER TABLE attendance_device_keys ADD COLUMN IF NOT EXISTS branch_id VARCHAR(50) REFERENCES branches(id);
 
       -- Placement tables
       CREATE TABLE IF NOT EXISTS job_postings (id VARCHAR(50) PRIMARY KEY, company_name VARCHAR(255), company_logo TEXT, title VARCHAR(255), description TEXT, requirements TEXT, location VARCHAR(255), salary_range VARCHAR(100), job_type VARCHAR(50), application_deadline VARCHAR(50), posted_at VARCHAR(50), status VARCHAR(50) DEFAULT 'Active', contact_email VARCHAR(255));
@@ -1831,6 +1839,13 @@ Please review and approve in the school management dashboard.')
     await query("UPDATE announcements SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
     await query("UPDATE online_exams SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
     } catch (e) { console.error('Phase 6 branch backfill failed:', e); }
+    // Legacy global tables (see column-add comment above) — same
+    // single-branch-installs-keep-working backfill as everything else.
+    try {
+      await query("UPDATE subjects SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+      await query("UPDATE exams SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+      await query("UPDATE attendance_device_keys SET branch_id=$1 WHERE branch_id IS NULL", [mainBranchId]);
+    } catch (e) { console.error('Legacy-table branch backfill failed:', e); }
 
     // ── Performance indexes ────────────────────────────────────────────
     // Cover the hot WHERE/JOIN filters the server actions run on every

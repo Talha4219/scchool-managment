@@ -112,7 +112,7 @@ export default function FeesPage() {
   // ── Checkout dialog ──────────────────────────────────────────────────────
   const [checkoutVoucher, setCheckoutVoucher] = useState<FeeRecord | null>(null);
   const [checkoutStep, setCheckoutStep] = useState<"details" | "processing" | "success">("details");
-  const [gatewayAvailability, setGatewayAvailability] = useState<{ jazzcash: boolean; easypaisa: boolean }>({ jazzcash: false, easypaisa: false });
+  const [gatewayAvailability, setGatewayAvailability] = useState<{ jazzcash: boolean; easypaisa: boolean; onelink: boolean }>({ jazzcash: false, easypaisa: false, onelink: false });
   const [payingWith, setPayingWith] = useState<Gateway | null>(null);
   const [payError, setPayError] = useState("");
   useEffect(() => { fetchGatewayAvailabilityAction().then(setGatewayAvailability); }, []);
@@ -1397,37 +1397,21 @@ export default function FeesPage() {
                     <Label className="text-xs text-muted-foreground">Choose how to pay</Label>
                     <button
                       type="button"
-                      disabled={!gatewayAvailability.jazzcash}
-                      onClick={() => handlePayWithGateway("jazzcash")}
+                      disabled={!gatewayAvailability.onelink}
+                      onClick={() => handlePayWithGateway("onelink")}
                       className="w-full flex items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:border-primary/40 hover:bg-primary/5"
                     >
-                      <div className="h-9 w-9 rounded-lg bg-red-50 flex items-center justify-center shrink-0">
-                        <CreditCard className="h-4 w-4 text-red-600" />
+                      <div className="h-9 w-9 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+                        <CreditCard className="h-4 w-4 text-blue-600" />
                       </div>
                       <div className="flex-1">
-                        <p className="text-sm font-semibold text-foreground">JazzCash</p>
+                        <p className="text-sm font-semibold text-foreground">OneLink</p>
                         <p className="text-[11px] text-muted-foreground">
-                          {gatewayAvailability.jazzcash ? "Mobile wallet or card, via JazzCash" : "Not set up by the school yet"}
+                          {gatewayAvailability.onelink ? "Pay from any bank, via 1LINK OneLink" : "Not set up by the school yet"}
                         </p>
                       </div>
                     </button>
-                    <button
-                      type="button"
-                      disabled={!gatewayAvailability.easypaisa}
-                      onClick={() => handlePayWithGateway("easypaisa")}
-                      className="w-full flex items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:border-primary/40 hover:bg-primary/5"
-                    >
-                      <div className="h-9 w-9 rounded-lg bg-green-50 flex items-center justify-center shrink-0">
-                        <CreditCard className="h-4 w-4 text-green-600" />
-                      </div>
-                      <div className="flex-1">
-                        <p className="text-sm font-semibold text-foreground">EasyPaisa</p>
-                        <p className="text-[11px] text-muted-foreground">
-                          {gatewayAvailability.easypaisa ? "Mobile wallet or card, via EasyPaisa" : "Not set up by the school yet"}
-                        </p>
-                      </div>
-                    </button>
-                    {!gatewayAvailability.jazzcash && !gatewayAvailability.easypaisa && (
+                    {!gatewayAvailability.onelink && (
                       <p className="text-[11px] text-muted-foreground pt-1">
                         Online payment isn't available yet — please pay at the school office in the meantime.
                       </p>
@@ -1443,7 +1427,7 @@ export default function FeesPage() {
                 <div className="py-12 flex flex-col items-center space-y-4 text-center">
                   <Loader2 className="h-10 w-10 text-primary animate-spin" />
                   <p className="text-sm font-semibold text-primary">
-                    Redirecting to {payingWith === "jazzcash" ? "JazzCash" : "EasyPaisa"}...
+                    Redirecting to OneLink...
                   </p>
                 </div>
               )}

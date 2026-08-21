@@ -419,8 +419,8 @@ export async function updateSectionClassTeacherDB(sectionId: string, teacherId: 
     const secRes = await query("SELECT c.branch_id AS branch_id FROM sections s JOIN classes c ON c.id = s.class_id WHERE s.id = $1", [sectionId]);
     if (secRes.rows.length === 0 || !withinBranch(auth.session, secRes.rows[0].branch_id)) return { error: 'Section not found.' };
     if (teacherId !== null) {
-      const userRes = await query('SELECT name, role FROM users WHERE id=$1', [teacherId]);
-      if (userRes.rows.length === 0) return { error: 'Teacher not found.' };
+      const userRes = await query('SELECT name, role, branch_id FROM users WHERE id=$1', [teacherId]);
+      if (userRes.rows.length === 0 || !withinBranch(auth.session, userRes.rows[0].branch_id)) return { error: 'Teacher not found.' };
       if (userRes.rows[0].role !== 'TEACHER') return { error: 'User must have the TEACHER role.' };
       teacherName = userRes.rows[0].name;
     }
@@ -945,6 +945,10 @@ export async function createTeacherAssignmentDB(data: { teacherId: number; class
   if ('error' in auth) return null;
   const isOnline = await checkDbConnection();
   if (!isOnline) return null;
+  const cls = await query('SELECT branch_id FROM classes WHERE id=$1', [data.classId]);
+  if (cls.rows.length === 0 || !withinBranch(auth.session, cls.rows[0].branch_id)) return { error: 'not_found' as const };
+  const teacher = await query('SELECT branch_id FROM users WHERE id=$1', [data.teacherId]);
+  if (teacher.rows.length === 0 || !withinBranch(auth.session, teacher.rows[0].branch_id)) return { error: 'not_found' as const };
   try {
     if (!data.override) {
       const competent = await query(
@@ -970,6 +974,12 @@ export async function deleteTeacherAssignmentDB(id: string) {
   if ('error' in auth) return;
   const isOnline = await checkDbConnection();
   if (!isOnline) return;
+  const owner = await query(
+    `SELECT c.branch_id FROM teacher_class_subjects tcs JOIN classes c ON c.id = tcs.class_id WHERE tcs.id=$1`,
+    [id]
+  );
+  if (owner.rows.length === 0) return;
+  if (!withinBranch(auth.session, owner.rows[0].branch_id)) return;
   try { await query("DELETE FROM teacher_class_subjects WHERE id = $1", [id]); } catch {}
 }
 

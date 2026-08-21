@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState, useEffect } from "react";
-import { motion, AnimatePresence, useScroll, useTransform } from "framer-motion";
+import { motion, AnimatePresence, useScroll, useTransform, type Variants } from "framer-motion";
 import { AnimatedCounter } from "@/components/ui/animated-counter";
 import {
   GraduationCap, Menu, X, ChevronRight, Phone, Mail,
@@ -69,7 +69,7 @@ const faqs = [
   { q: "Is there a free trial?", a: "14-day full-featured trial, every plan, no credit card required." },
 ];
 
-const fadeUp = {
+const fadeUp: Variants = {
   hidden: { opacity: 0, y: 28 },
   show: { opacity: 1, y: 0, transition: { duration: 0.55, ease: [0.22, 1, 0.36, 1] } },
 };

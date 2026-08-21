@@ -1397,7 +1397,7 @@ export interface AttendanceSession {
   sectionName?: string;
 }
 
-export interface AttendanceRecord {
+export interface SessionAttendanceRecord {
   id: string;
   sessionId: string;
   studentId: string;
@@ -1407,7 +1407,7 @@ export interface AttendanceRecord {
 }
 
 // ── Timetable Module ────────────────────────────────────────────────────────────
-export interface Room {
+export interface TimetableRoom {
   id: string;
   roomNo: string;
   capacity: number;

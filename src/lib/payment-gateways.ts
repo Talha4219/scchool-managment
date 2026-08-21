@@ -136,3 +136,72 @@ export function verifyEasyPaisaCallback(fields: Record<string, string>): boolean
   const expected = createHmac("sha256", hashKey).update(toHash).digest("base64");
   return received === expected;
 }
+
+// ── 1LINK OneLink ─────────────────────────────────────────────────────────
+//
+// PLACEHOLDER INTEGRATION — 1LINK does not publish a self-serve API spec;
+// the field names, hash algorithm, and hosted-page URL below are best-guess
+// scaffolding modeled on the JazzCash/EasyPaisa pattern above, NOT verified
+// against a real 1LINK merchant integration guide. Before going live:
+//   1. Get the actual "OneLink Merchant Integration Guide" (PDF) from your
+//      1LINK relationship manager once merchant onboarding is approved.
+//   2. Replace the field names in buildOneLinkRequest and the hashing logic
+//      in signOneLinkFields/verifyOneLinkCallback with what that doc specifies.
+//   3. Replace ONELINK_HCP_URL's default with the real sandbox/UAT endpoint.
+// Until then this module is inert unless someone deliberately sets the env
+// vars below, and isOneLinkConfigured() lets the UI show "not configured".
+
+export function isOneLinkConfigured(): boolean {
+  return !!(process.env.ONELINK_MERCHANT_ID && process.env.ONELINK_MERCHANT_PASSWORD && process.env.ONELINK_HASH_KEY);
+}
+
+function oneLinkDateTime(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+/** Builds the signed field set for 1LINK OneLink's hosted checkout page.
+ * Field names are placeholders — confirm against the real integration guide. */
+export function buildOneLinkRequest(params: {
+  txnRefNo: string; amountPKR: number; billReference: string; description: string; returnUrl: string;
+}): { actionUrl: string; fields: Record<string, string> } {
+  const merchantId = process.env.ONELINK_MERCHANT_ID!;
+  const password = process.env.ONELINK_MERCHANT_PASSWORD!;
+  const hashKey = process.env.ONELINK_HASH_KEY!;
+  const actionUrl = process.env.ONELINK_HCP_URL || "https://uat.1link.net.pk/onelink/checkout";
+
+  const now = new Date();
+  const fields: Record<string, string> = {
+    ol_MerchantId: merchantId,
+    ol_MerchantPassword: password,
+    ol_TxnRefNo: params.txnRefNo,
+    ol_Amount: params.amountPKR.toFixed(2),
+    ol_TxnCurrency: "PKR",
+    ol_TxnDateTime: oneLinkDateTime(now),
+    ol_BillReference: params.billReference,
+    ol_Description: params.description,
+    ol_ReturnURL: params.returnUrl,
+  };
+
+  fields.ol_SecureHash = signOneLinkFields(fields, hashKey);
+  return { actionUrl, fields };
+}
+
+/** Placeholder signing scheme: sort ol_ fields by key, join non-empty values
+ * with '&', prefix with the hash key, HMAC-SHA256 keyed by the same key,
+ * uppercase hex. Mirrors JazzCash's pattern — replace once the real doc is in hand. */
+export function signOneLinkFields(fields: Record<string, string>, hashKey: string): string {
+  const sortedKeys = Object.keys(fields).filter(k => k !== "ol_SecureHash" && k.startsWith("ol_")).sort();
+  const values = sortedKeys.map(k => fields[k] ?? "").filter(v => v !== "");
+  const message = `${hashKey}&${values.join("&")}`;
+  return createHmac("sha256", hashKey).update(message).digest("hex").toUpperCase();
+}
+
+export function verifyOneLinkCallback(fields: Record<string, string>): boolean {
+  if (!isOneLinkConfigured()) return false;
+  const hashKey = process.env.ONELINK_HASH_KEY!;
+  const received = fields.ol_SecureHash;
+  if (!received) return false;
+  const expected = signOneLinkFields(fields, hashKey);
+  return received.toUpperCase() === expected;
+}

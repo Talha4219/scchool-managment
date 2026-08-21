@@ -46,6 +46,7 @@
     "cmdk": "^1.0.4",
     "date-fns": "^4.1.0",
     "effect": "^3.22.0",
+    "embla-carousel-react": "^8.6.0",
     "framer-motion": "^12.42.2",
     "genkit": "^1.40.0",
     "jose": "^6.2.3",

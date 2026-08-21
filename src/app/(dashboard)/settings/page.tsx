@@ -669,7 +669,7 @@ function TermConfigTab() {
 // ─── TAB 10 – Payment Gateways ───────────────────────────────────────────────
 
 function PaymentGatewaysTab() {
-  const [availability, setAvailability] = useState<{ jazzcash: boolean; easypaisa: boolean }>({ jazzcash: false, easypaisa: false });
+  const [availability, setAvailability] = useState<{ jazzcash: boolean; easypaisa: boolean; onelink: boolean }>({ jazzcash: false, easypaisa: false, onelink: false });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -678,12 +678,9 @@ function PaymentGatewaysTab() {
 
   const gateways = [
     {
-      key: "jazzcash", name: "JazzCash", color: "bg-red-50 text-red-600", configured: availability.jazzcash,
-      envVars: ["JAZZCASH_MERCHANT_ID", "JAZZCASH_PASSWORD", "JAZZCASH_INTEGRITY_SALT", "JAZZCASH_HCP_URL (optional, defaults to sandbox)"],
-    },
-    {
-      key: "easypaisa", name: "EasyPaisa", color: "bg-green-50 text-green-600", configured: availability.easypaisa,
-      envVars: ["EASYPAISA_STORE_ID", "EASYPAISA_HASH_KEY", "EASYPAISA_HCP_URL (optional, defaults to sandbox)"],
+      key: "onelink", name: "OneLink (1LINK)", color: "bg-blue-50 text-blue-600", configured: availability.onelink,
+      envVars: ["ONELINK_MERCHANT_ID", "ONELINK_MERCHANT_PASSWORD", "ONELINK_HASH_KEY", "ONELINK_HCP_URL (optional, defaults to UAT)"],
+      note: "Field names/hash scheme are placeholders pending 1LINK's merchant integration guide — see src/lib/payment-gateways.ts.",
     },
   ];
 
@@ -711,6 +708,9 @@ function PaymentGatewaysTab() {
                 <ul className="mt-1.5 space-y-0.5">
                   {g.envVars.map(v => <li key={v} className="text-[11px] font-mono text-muted-foreground">{v}</li>)}
                 </ul>
+                {"note" in g && g.note && (
+                  <p className="text-[11px] text-amber-600 mt-1.5 max-w-md">{g.note}</p>
+                )}
               </div>
             </div>
             <Badge className={`shrink-0 border-0 gap-1 ${g.configured ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
@@ -719,9 +719,9 @@ function PaymentGatewaysTab() {
             </Badge>
           </div>
         ))}
-        {!loading && !availability.jazzcash && !availability.easypaisa && (
+        {!loading && !availability.onelink && (
           <p className="text-xs text-muted-foreground bg-secondary/30 rounded-xl p-3">
-            Neither gateway is configured yet — students and parents will see fee vouchers as pay-in-person only until one is set up. Restart the app after adding environment variables.
+            OneLink isn't configured yet — students and parents will see fee vouchers as pay-in-person only until it's set up. Restart the app after adding environment variables.
           </p>
         )}
       </div>

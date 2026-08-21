@@ -8,7 +8,14 @@
 import { query, checkDbConnection } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
 import { nanoid } from "nanoid";
-import { requireRole } from "@/lib/auth-scope";
+import { requireRole, withinBranch } from "@/lib/auth-scope";
+import type { SessionPayload } from "@/lib/auth";
+
+async function studentWithinCallerBranch(session: SessionPayload, studentId: string): Promise<boolean> {
+  const st = await query('SELECT branch_id FROM students WHERE id=$1', [studentId]);
+  if (st.rows.length === 0) return false;
+  return withinBranch(session, st.rows[0].branch_id);
+}
 
 export interface StudentDocumentRecord {
   id: string; studentId: string; documentType: string;
@@ -25,6 +32,7 @@ function mapRow(r: any): StudentDocumentRecord {
 export async function fetchStudentDocumentsDB(studentId: string): Promise<StudentDocumentRecord[]> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return [];
+  if (!(await studentWithinCallerBranch(auth.session, studentId))) return [];
   const isOnline = await checkDbConnection();
   if (!isOnline) return [];
   try {
@@ -38,6 +46,7 @@ export async function uploadStudentDocumentDB(
 ): Promise<{ success: boolean; message?: string }> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { success: false, message: auth.error };
+  if (!(await studentWithinCallerBranch(auth.session, studentId))) return { success: false, message: 'Student not found.' };
   try {
     const existing = await query(`SELECT id FROM student_documents WHERE student_id=$1 AND document_type=$2`, [studentId, documentType]);
     if (existing.rows.length > 0) {
@@ -62,6 +71,9 @@ export async function uploadStudentDocumentDB(
 export async function deleteStudentDocumentDB(id: string): Promise<{ success: boolean; message?: string }> {
   const auth = await requireRole('ADMIN');
   if ('error' in auth) return { success: false, message: auth.error };
+  const owner = await query('SELECT student_id FROM student_documents WHERE id=$1', [id]);
+  if (owner.rows.length === 0) return { success: true };
+  if (!(await studentWithinCallerBranch(auth.session, owner.rows[0].student_id))) return { success: false, message: 'Not found.' };
   try {
     await query(`DELETE FROM student_documents WHERE id=$1`, [id]);
     await logAudit({
